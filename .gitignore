@@ -1,0 +1,28 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+
+# Node / frontend
+node_modules/
+dist/
+*.tsbuildinfo
+
+# 环境与密钥
+backend/.env
+frontend/.env
+
+# 日志与临时产物
+*.log
+_temp_b64.txt
+test_img.jpg
+
+# 测试与性能产物
+.coverage
+htmlcov/
+coverage/
+reports/
+playwright-report/
+test-results/

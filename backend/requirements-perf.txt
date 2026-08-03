@@ -1,0 +1,3 @@
+-r requirements-dev.txt
+py-spy>=0.4.0
+locust>=2.32
