@@ -17,7 +17,7 @@ export default function SubscriptionsPage() {
   const [detailNote, setDetailNote] = useState<NoteCardData | null>(null);
   const [viewingNickname, setViewingNickname] = useState("");
 
-  const fetchSubs = async () => { setLoading(true); try { const r = await subService.list(); setSubs(r.data); } finally { setLoading(false); } };
+  const fetchSubs = async () => { setLoading(true); try { const r = await subService.list(); setSubs(r.data); } catch { message.error("加载订阅失败"); } finally { setLoading(false); } };
   useEffect(() => { fetchSubs(); }, []);
 
   const handleAdd = async () => { const v = await form.validateFields(); try { await subService.create({ xhs_user_id: v.xhs_user_id, nickname: v.nickname, avatar: v.avatar }); message.success('已订阅'); setModalOpen(false); form.resetFields(); fetchSubs(); } catch (e: any) { message.error(e?.response?.data?.detail || '失败'); } };

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -68,8 +68,12 @@ async def _get_merchant_or_404(
     return merchant
 
 
-async def _get_shop_or_404(sid: str, db: AsyncSession) -> Shop:
-    result = await db.execute(select(Shop).where(Shop.id == sid))
+async def _get_shop_or_404(sid: str, user: User, db: AsyncSession) -> Shop:
+    result = await db.execute(
+        select(Shop)
+        .join(Merchant, Shop.merchant_id == Merchant.id)
+        .where(Shop.id == sid, Merchant.user_id == user.id)
+    )
     shop = result.scalar_one_or_none()
     if not shop:
         raise HTTPException(status_code=404, detail="Shop not found")
@@ -113,7 +117,7 @@ async def get_shop(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    shop = await _get_shop_or_404(sid, db)
+    shop = await _get_shop_or_404(sid, current_user, db)
     return ShopResponse.model_validate(shop)
 
 
@@ -124,7 +128,7 @@ async def update_shop(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    shop = await _get_shop_or_404(sid, db)
+    shop = await _get_shop_or_404(sid, current_user, db)
     for k, v in body.model_dump(exclude_unset=True).items():
         setattr(shop, k, v)
     await db.flush()
@@ -137,7 +141,7 @@ async def delete_shop(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    shop = await _get_shop_or_404(sid, db)
+    shop = await _get_shop_or_404(sid, current_user, db)
     await db.delete(shop)
 
 
@@ -149,7 +153,7 @@ async def list_platforms(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    await _get_shop_or_404(sid, db)
+    await _get_shop_or_404(sid, current_user, db)
     result = await db.execute(
         select(PlatformShop).where(PlatformShop.shop_id == sid)
     )
@@ -163,7 +167,7 @@ async def create_platform(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_user),
 ):
-    await _get_shop_or_404(sid, db)
+    await _get_shop_or_404(sid, current_user, db)
     plat = PlatformShop(shop_id=sid, **body.model_dump(exclude_unset=True))
     db.add(plat)
     await db.flush()

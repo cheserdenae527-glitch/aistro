@@ -707,7 +707,7 @@ def test_render_templates_sizes_and_chinese_text():
     )
     with Image.open(io.BytesIO(xhs)) as img:
         assert img.size == (1242, 1660)
-        xhs_pixels = list(img.getdata())
+        xhs_pixels = list(img.get_flattened_data() if hasattr(img, "get_flattened_data") else img.getdata())
     assert len(set(xhs_pixels)) > 10  # 有文字/图形内容
 
     a4 = render_menu(
@@ -721,7 +721,7 @@ def test_render_templates_sizes_and_chinese_text():
     )
     with Image.open(io.BytesIO(a4)) as img:
         assert img.size == (2480, 3508)
-        a4_pixels = list(img.getdata())
+        a4_pixels = list(img.get_flattened_data() if hasattr(img, "get_flattened_data") else img.getdata())
     assert len(set(a4_pixels)) > 10
 
 

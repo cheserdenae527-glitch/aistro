@@ -16,7 +16,6 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import asyncpg
-import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 
 from app.models.review import Review

@@ -1,21 +1,22 @@
 import { Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
 import { Layout, Menu, Spin, Button, Dropdown } from "antd";
 import { ShopOutlined, DashboardOutlined, LogoutOutlined, UserOutlined, SearchOutlined, PictureOutlined, BgColorsOutlined, CommentOutlined } from "@ant-design/icons";
-import { useEffect, useState } from "react";
-import LoginPage from "./pages/LoginPage";
-import DashboardPage from "./pages/DashboardPage";
-import MerchantsPage from "./pages/MerchantsPage";
-import ProfileIndexPage from "./pages/ProfileIndexPage";
-import ProfileEditorPage from "./pages/ProfileEditorPage";
-import CrawlJobsPage from "./pages/CrawlJobsPage";
-import SubscriptionsPage from "./pages/SubscriptionsPage";
-import MerchantDetailPage from "./pages/MerchantDetailPage";
-import DesignIndexPage from "./pages/DesignIndexPage";
-import DesignEditorPage from "./pages/DesignEditorPage";
-import ReputationIndexPage from "./pages/ReputationIndexPage";
-import ReputationWorkbenchPage from "./pages/ReputationWorkbenchPage";
+import { lazy, Suspense, useEffect, useState } from "react";
 import { useAuthStore } from "./store/auth";
 import { getMe } from "./services/auth";
+
+const LoginPage = lazy(() => import("./pages/LoginPage"));
+const DashboardPage = lazy(() => import("./pages/DashboardPage"));
+const MerchantsPage = lazy(() => import("./pages/MerchantsPage"));
+const ProfileIndexPage = lazy(() => import("./pages/ProfileIndexPage"));
+const ProfileEditorPage = lazy(() => import("./pages/ProfileEditorPage"));
+const CrawlJobsPage = lazy(() => import("./pages/CrawlJobsPage"));
+const SubscriptionsPage = lazy(() => import("./pages/SubscriptionsPage"));
+const MerchantDetailPage = lazy(() => import("./pages/MerchantDetailPage"));
+const DesignIndexPage = lazy(() => import("./pages/DesignIndexPage"));
+const DesignEditorPage = lazy(() => import("./pages/DesignEditorPage"));
+const ReputationIndexPage = lazy(() => import("./pages/ReputationIndexPage"));
+const ReputationWorkbenchPage = lazy(() => import("./pages/ReputationWorkbenchPage"));
 
 const { Header, Content } = Layout;
 
@@ -101,7 +102,7 @@ export default function App() {
     } else {
       setLoading(false);
     }
-  }, []);
+  }, [setAuth, token, user]);
 
   if (loading)
     return (
@@ -111,8 +112,15 @@ export default function App() {
     );
 
   return (
-    <Routes>
-      <Route path="/login" element={<LoginPage />} />
+    <Suspense
+      fallback={
+        <div style={{ minHeight: "100vh", display: "flex", justifyContent: "center", alignItems: "center" }}>
+          <Spin size="large" />
+        </div>
+      }
+    >
+      <Routes>
+        <Route path="/login" element={<LoginPage />} />
       <Route
         path="/"
         element={
@@ -223,8 +231,9 @@ export default function App() {
           </ProtectedRoute>
         }
       />
-      <Route path="*" element={<Navigate to="/" replace />} />
-    </Routes>
+        <Route path="*" element={<Navigate to="/" replace />} />
+      </Routes>
+    </Suspense>
   );
 }
 

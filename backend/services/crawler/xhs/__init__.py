@@ -12,7 +12,9 @@ AiRestro XHS 爬虫封装层 — 含防风控策略。
 from __future__ import annotations
 
 import os
+import shutil
 import sys
+import threading
 import time
 import random
 import logging
@@ -29,6 +31,7 @@ DEFAULT_MAX_DELAY = 5.0
 DEFAULT_RETRIES = 3
 BACKOFF_BASE = 2.0
 BACKOFF_CAP = 30.0
+_INIT_LOCK = threading.Lock()
 
 
 class XhsCrawler(BaseCrawler):
@@ -55,24 +58,26 @@ class XhsCrawler(BaseCrawler):
         self._proxy_idx = 0
 
     def _ensure_init(self):
-        if self._api is not None:
-            return
-        # ensure node is in PATH for the backend process
-        node_dir = r"C:\Program Files\nodejs"
-        if node_dir not in os.environ.get("PATH", ""):
-            os.environ["PATH"] = node_dir + os.pathsep + os.environ.get("PATH", "")
-            return
-        old_cwd = os.getcwd()
-        os.chdir(_RUNTIME)
-        if _RUNTIME not in sys.path:
-            sys.path.insert(0, _RUNTIME)
-        try:
-            from xhs_utils.xhs_pc import XHSPcAuth
-            from apis.xhs_pc_apis import XHS_Apis
-            self._auth = XHSPcAuth.from_cookie(self._cookies_str, proxies=self._current_proxy())
-            self._api = XHS_Apis(self._auth)
-        finally:
-            os.chdir(old_cwd)
+        with _INIT_LOCK:
+            if self._api is not None:
+                return
+            node = shutil.which("node")
+            if not node:
+                raise RuntimeError("Node.js 未安装，无法初始化小红书爬虫")
+            node_dir = os.path.dirname(node)
+            if node_dir not in os.environ.get("PATH", ""):
+                os.environ["PATH"] = node_dir + os.pathsep + os.environ.get("PATH", "")
+            old_cwd = os.getcwd()
+            os.chdir(_RUNTIME)
+            if _RUNTIME not in sys.path:
+                sys.path.insert(0, _RUNTIME)
+            try:
+                from xhs_utils.xhs_pc import XHSPcAuth
+                from apis.xhs_pc_apis import XHS_Apis
+                self._auth = XHSPcAuth.from_cookie(self._cookies_str, proxies=self._current_proxy())
+                self._api = XHS_Apis(self._auth)
+            finally:
+                os.chdir(old_cwd)
 
     def _current_proxy(self) -> dict | None:
         if self._proxy_pool:

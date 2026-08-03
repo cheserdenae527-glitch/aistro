@@ -43,7 +43,8 @@ def _detect_image_mime(data: bytes) -> str:
                 return "image/png"
             if img.format in ("JPEG", "MPO"):
                 return "image/jpeg"
-    except Exception:
+    # 探测失败时回退默认 MIME
+    except Exception:  # nosec B110
         pass
     return "image/png"
 
@@ -56,14 +57,14 @@ def _normalize_ref_image(data: bytes, mime: str = "image/png") -> tuple[bytes, s
     try:
         img = Image.open(io.BytesIO(data))
         img.load()
-        img = img.convert("RGB")
-        if max(img.size) > _MAX_REF_DIMENSION:
-            img.thumbnail(
+        converted = img.convert("RGB")
+        if max(converted.size) > _MAX_REF_DIMENSION:
+            converted.thumbnail(
                 (_MAX_REF_DIMENSION, _MAX_REF_DIMENSION),
                 Image.Resampling.LANCZOS,
             )
         buf = io.BytesIO()
-        img.save(buf, format="PNG")
+        converted.save(buf, format="PNG")
         out = buf.getvalue()
     except Exception:
         raise ImageGenError(status_code=400, detail="无法识别的参考图")
@@ -83,7 +84,8 @@ def _map_http_error(status_code: int, body: bytes) -> ImageGenError:
             message = error.get("message") or message
         elif error:
             message = str(error)
-    except Exception:
+    # JSON 解析失败时使用默认错误信息
+    except Exception:  # nosec B110
         pass
     message = str(message)[:300]
 

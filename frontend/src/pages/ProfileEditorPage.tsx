@@ -384,7 +384,7 @@ export default function ProfileEditorPage() {
       if (p.ai_variants?.variants) {
         setVariants(p.ai_variants.variants.filter((v) => !v.filtered));
       }
-    } catch (e) {
+    } catch {
       message.error("加载装修数据失败");
     } finally {
       setLoading(false);

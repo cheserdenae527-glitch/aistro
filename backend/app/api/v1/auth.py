@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, status
+import threading
+import time
+
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,16 +17,49 @@ from app.schemas.user import Token, UserLogin, UserRegister, UserResponse
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
+_LOGIN_WINDOW_SECONDS = 900
+_LOGIN_MAX_ATTEMPTS = 200
+_login_attempts: dict[str, list[float]] = {}
+_login_lock = threading.Lock()
+
+
+def _check_login_rate(email: str, ip: str) -> bool:
+    """进程内滑动窗口限流，避免同一账号被暴力撞库。"""
+    key = f"{email}|{ip}"
+    now = time.monotonic()
+    with _login_lock:
+        attempts = [
+            t
+            for t in _login_attempts.get(key, [])
+            if now - t < _LOGIN_WINDOW_SECONDS
+        ]
+        if len(attempts) >= _LOGIN_MAX_ATTEMPTS:
+            return False
+        attempts.append(now)
+        _login_attempts[key] = attempts
+        return True
+
 
 @router.post("/register", response_model=Token, status_code=status.HTTP_201_CREATED)
-async def register(body: UserRegister, db: AsyncSession = Depends(get_db)) -> Token:
-    existing = await db.execute(select(User).where(User.email == body.email))
+async def register(
+    request: Request,
+    body: UserRegister,
+    db: AsyncSession = Depends(get_db),
+) -> Token:
+    email = body.email.lower()
+    ip = request.client.host if request.client else "unknown"
+    if not _check_login_rate(f"register:{email}", ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="注册过于频繁，请稍后再试",
+        )
+    existing = await db.execute(select(User).where(User.email == email))
     if existing.scalar_one_or_none():
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT, detail="Email already registered"
         )
     user = User(
-        email=body.email,
+        email=email,
         password_hash=hash_password(body.password),
         name=body.name,
     )
@@ -36,8 +72,19 @@ async def register(body: UserRegister, db: AsyncSession = Depends(get_db)) -> To
 
 
 @router.post("/login", response_model=Token)
-async def login(body: UserLogin, db: AsyncSession = Depends(get_db)) -> Token:
-    result = await db.execute(select(User).where(User.email == body.email))
+async def login(
+    request: Request,
+    body: UserLogin,
+    db: AsyncSession = Depends(get_db),
+) -> Token:
+    email = body.email.lower()
+    ip = request.client.host if request.client else "unknown"
+    if not _check_login_rate(email, ip):
+        raise HTTPException(
+            status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+            detail="尝试过于频繁，请稍后再试",
+        )
+    result = await db.execute(select(User).where(User.email == email))
     user = result.scalar_one_or_none()
     if not user or not verify_password(body.password, user.password_hash):
         raise HTTPException(

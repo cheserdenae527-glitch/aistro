@@ -13,6 +13,8 @@ dist/
 # 环境与密钥
 backend/.env
 frontend/.env
+backend/services/**/payload_user.json
+backend/services/**/crawler_config.json
 
 # 日志与临时产物
 *.log
@@ -26,3 +28,6 @@ coverage/
 reports/
 playwright-report/
 test-results/
+
+# 本地服务进程
+/.service-pids.json

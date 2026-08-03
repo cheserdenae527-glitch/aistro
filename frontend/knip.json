@@ -1,0 +1,6 @@
+{
+  "ignore": [
+    "src/pages/ProfileEditorPage.tsx",
+    "src/pages/DesignEditorPage.tsx"
+  ]
+}

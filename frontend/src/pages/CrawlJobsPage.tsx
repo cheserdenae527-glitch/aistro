@@ -53,7 +53,7 @@ const [tasks, setTasks] = useState<CrawlTask[]>([]);
 
   const fetchTasks = async () => {
     try { const res = await (await import('../services/api')).default.get('/crawl-jobs'); setTasks(res.data.running || []); }
-    catch {} // silent poll
+    catch { /* silent poll */ }
   };
   useEffect(() => { fetchTasks(); const t = setInterval(fetchTasks,3000); return () => clearInterval(t); }, []);
 

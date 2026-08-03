@@ -5,6 +5,7 @@ import io
 import json
 import re
 from collections import Counter
+from typing import cast
 
 from openai import AsyncOpenAI
 from PIL import Image
@@ -28,7 +29,10 @@ def _extract_dominant_colors(data: bytes, n: int = 6) -> list[str]:
     """从图片提取主色调 hex。"""
     img = Image.open(io.BytesIO(data)).convert("RGB")
     img = img.resize((100, int(100 * img.height / img.width)))
-    pixels = list(img.getdata())
+    if hasattr(img, "get_flattened_data"):
+        pixels = cast(list[tuple[int, int, int]], list(img.get_flattened_data()))
+    else:
+        pixels = cast(list[tuple[int, int, int]], list(img.getdata()))
     counter = Counter(pixels)
     top = [f"#{r:02x}{g:02x}{b:02x}" for (r, g, b), _ in counter.most_common(n)]
     return top

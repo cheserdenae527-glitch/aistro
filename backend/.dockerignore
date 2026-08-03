@@ -1,0 +1,16 @@
+.env
+.git
+.gitignore
+*.log
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+tests/
+benchmarks/
+reports/
+services/**/__pycache__/
+services/**/*.py[cod]
+services/crawler/xhs/scripts/payload_user.json
+services/crawler/xhs/scripts/crawler_config.json

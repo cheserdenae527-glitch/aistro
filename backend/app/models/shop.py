@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 import sqlalchemy as sa
 from sqlalchemy import DateTime, ForeignKey, String, Text

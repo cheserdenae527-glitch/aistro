@@ -5,3 +5,4 @@ pytest-cov>=6.0
 pytest-xdist>=3.6
 pytest-benchmark>=5.0
 respx>=0.22
+httpx2>=2.9.1

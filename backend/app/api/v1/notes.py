@@ -1,9 +1,10 @@
 """笔记浏览代理 API — 直接封装 XHS 搜索/详情/评论。"""
 from __future__ import annotations
 
+import asyncio
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 
 from app.core.deps import get_current_user
 from app.models.user import User
@@ -23,10 +24,10 @@ def _get_crawler():
 
 class SearchNotesRequest(BaseModel):
     query: str
-    limit: int = 20
-    sort: int = 0
-    note_type: int = 0
-    time_range: int = 0
+    limit: int = Field(20, ge=1, le=100)
+    sort: int = Field(0, ge=0, le=4)
+    note_type: int = Field(0, ge=0, le=2)
+    time_range: int = Field(0, ge=0, le=3)
 
 
 @router.post("/search")
@@ -38,7 +39,8 @@ async def search_notes(
     sort_map = {0: 0, 1: 1, 2: 2, 3: 3, 4: 4}
     sort_choice = sort_map.get(body.sort, 0)
     crawler = _get_crawler()
-    result = crawler.search_notes(
+    result = await asyncio.to_thread(
+        crawler.search_notes,
         body.query, limit=body.limit,
         sort_type=sort_choice, note_type=body.note_type, time_range=body.time_range,
     )
@@ -58,7 +60,7 @@ async def get_note_detail(
         raise HTTPException(status_code=400, detail="xsec_token is required")
     url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={xsec_token}&xsec_source=pc_search"
     crawler = _get_crawler()
-    result = crawler.get_note_detail(url)
+    result = await asyncio.to_thread(crawler.get_note_detail, url)
     if not result.success:
         raise HTTPException(status_code=502, detail=result.error or "获取失败")
     items = result.data
@@ -78,7 +80,7 @@ async def get_note_comments(
         raise HTTPException(status_code=400, detail="xsec_token is required")
     url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={xsec_token}&xsec_source=pc_search"
     crawler = _get_crawler()
-    result = crawler.get_comments(url)
+    result = await asyncio.to_thread(crawler.get_comments, url)
     if not result.success:
         raise HTTPException(status_code=502, detail=result.error or "获取失败")
     return {"items": [normalize_comment(c, note_id) for c in result.data]}

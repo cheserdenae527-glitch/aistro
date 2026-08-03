@@ -34,14 +34,17 @@ def _load_cookie() -> str:
     return _XHS_COOKIE
 
 
-def get_task(task_id: str) -> dict[str, Any] | None:
+def get_task(task_id: str, user_id: str) -> dict[str, Any] | None:
     with _lock:
-        return _task_store.get(task_id)
+        job = _task_store.get(task_id)
+        if job and job.get("user_id") == user_id:
+            return job
+        return None
 
 
-def list_tasks() -> list[dict[str, Any]]:
+def list_tasks(user_id: str) -> list[dict[str, Any]]:
     with _lock:
-        return list(_task_store.values())
+        return [job for job in _task_store.values() if job.get("user_id") == user_id]
 
 
 # ── 任务定义 ──
@@ -106,13 +109,53 @@ _TASK_DISPATCH = {
 }
 
 
-def dispatch_job(job_type: str, params: dict) -> str:
+VALID_JOB_TYPES = frozenset(_TASK_DISPATCH)
+
+
+def validate_job_params(job_type: str, params: dict) -> str | None:
+    """返回错误信息，参数合法时返回 None。"""
+    if job_type == "search":
+        if not str(params.get("query", "")).strip():
+            return "query is required"
+        limit = params.get("limit", 20)
+        if not isinstance(limit, int) or not 1 <= limit <= 100:
+            return "limit must be between 1 and 100"
+    elif job_type in ("note_detail", "comment"):
+        note_url = str(params.get("note_url", ""))
+        if not note_url.startswith(("http://", "https://")):
+            return "note_url is required"
+    return None
+
+
+def active_count(user_id: str) -> int:
+    with _lock:
+        return sum(
+            1
+            for job in _task_store.values()
+            if job.get("user_id") == user_id and job.get("status") == "running"
+        )
+
+
+def _run_job_safely(job_id: str, runner, **params) -> None:
+    try:
+        runner(job_id, **params)
+    except Exception as e:
+        with _lock:
+            job = _task_store.get(job_id)
+            if job:
+                job["status"] = "failed"
+                job["result"] = {"error": str(e)}
+                job["finished_at"] = datetime.now(timezone.utc).isoformat()
+
+
+def dispatch_job(job_type: str, params: dict, user_id: str) -> str:
     """创建并调度一个爬虫任务。返回 job_id。"""
     job_id = str(uuid.uuid4())
     job = {
         "id": job_id,
         "type": job_type,
         "params": params,
+        "user_id": user_id,
         "status": "running",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "finished_at": None,
@@ -123,7 +166,12 @@ def dispatch_job(job_type: str, params: dict) -> str:
 
     runner = _TASK_DISPATCH.get(job_type)
     if runner:
-        t = threading.Thread(target=runner, args=(job_id,), kwargs=params, daemon=True)
+        t = threading.Thread(
+            target=_run_job_safely,
+            args=(job_id, runner),
+            kwargs=params,
+            daemon=True,
+        )
         t.start()
     else:
         with _lock:

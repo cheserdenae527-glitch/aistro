@@ -16,7 +16,7 @@ def _get_redis() -> aioredis.Redis:
     if _pool is None:
         _pool = aioredis.ConnectionPool.from_url(
             settings.REDIS_URL,
-            socket_connect_timeout=0.5,
+            socket_connect_timeout=2.0,
             socket_timeout=1.0,
             retry_on_timeout=False,
         )
@@ -38,6 +38,21 @@ async def check_rate_limit(
     except Exception:
         # Redis 不可用时放行，避免装修/生图功能整体不可用。
         logger.warning("Redis 不可用，频控已跳过: %s", key)
+        return True
+
+
+async def consume_rate_limit(
+    key: str, limit: int, window_seconds: int
+) -> bool:
+    """固定窗口计数限流，Redis 不可用时放行。"""
+    r = _get_redis()
+    try:
+        count = await r.incr(key)
+        if count == 1:
+            await r.expire(key, window_seconds)
+        return count <= limit
+    except Exception:
+        logger.warning("Redis 不可用，计数限流已跳过: %s", key)
         return True
 
 

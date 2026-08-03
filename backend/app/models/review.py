@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 import sqlalchemy as sa
 from sqlalchemy import DateTime, Enum, ForeignKey, Index, SmallInteger, String, Text
@@ -34,7 +34,7 @@ class Review(Base):
     reviewer_name: Mapped[str | None] = mapped_column(String(100), nullable=True)
     rating: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
     content: Mapped[str | None] = mapped_column(Text, nullable=True)
-    tags: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    tags: Mapped[list[str] | None] = mapped_column(JSONB, nullable=True)
     sentiment: Mapped[str | None] = mapped_column(
         Enum("positive", "neutral", "negative", name="review_sentiment", create_type=True),
         nullable=True,

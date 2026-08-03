@@ -9,7 +9,7 @@ $root = Split-Path -Parent $PSScriptRoot
 Set-Location (Join-Path $root "backend")
 Write-Host "==> Backend pytest"
 if ($Coverage) {
-    python -m pytest --cov=app --cov-report=term-missing
+    python -m pytest --cov=app --cov-report=term-missing --cov-fail-under=60
 } else {
     python -m pytest
 }

@@ -6,10 +6,9 @@ from __future__ import annotations
 
 import base64
 import io
-import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
 from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -30,7 +29,6 @@ from app.models.shop import Shop
 from app.models.shop_profile import ShopProfile
 from app.models.user import User
 from app.schemas.profile import (
-    AiVariant,
     ColorSchemePreset,
     CropRequest,
     CropResponse,

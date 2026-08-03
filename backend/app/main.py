@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-import sys, os
+import sys
+import os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(__file__)), 'services'))
 
 from contextlib import asynccontextmanager
@@ -37,6 +38,22 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def add_security_headers(request, call_next):
+    response = await call_next(request)
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault(
+        "Referrer-Policy", "strict-origin-when-cross-origin"
+    )
+    response.headers.setdefault(
+        "Permissions-Policy", "camera=(), microphone=(), geolocation=()"
+    )
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    return response
+
 
 for r in routers:
     app.include_router(r, prefix="/api/v1")

@@ -7,7 +7,7 @@ from datetime import datetime
 from typing import Literal
 
 import regex
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.core.sensitive_filter import contains_blocked
 

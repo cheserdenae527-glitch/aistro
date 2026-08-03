@@ -6,6 +6,7 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy.ext.asyncio import create_async_engine
 
+from app.core.config import settings
 from app.core.database import Base
 from app.models import User, Merchant, Shop, PlatformShop, Review, MenuItem, CrawlJob, Report, ManualImport, ShopProfile, DesignProject, DesignAsset, MenuDesign  # noqa: F401
 
@@ -18,7 +19,7 @@ target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
-   url = config.get_main_option("sqlalchemy.url")
+   url = settings.DATABASE_URL
    context.configure(url=url, target_metadata=target_metadata, literal_binds=True)
    with context.begin_transaction():
        context.run_migrations()
@@ -31,7 +32,7 @@ def do_run_migrations(connection):
 
 
 async def run_async_migrations() -> None:
-   url = config.get_main_option("sqlalchemy.url")
+   url = settings.DATABASE_URL
    connect_args = {}
    search_path = config.get_main_option("sqlalchemy_search_path")
    if search_path:

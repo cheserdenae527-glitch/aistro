@@ -18,7 +18,6 @@ from fastapi import (
     HTTPException,
     Query,
     UploadFile,
-    status,
 )
 from PIL import Image
 from sqlalchemy import select
