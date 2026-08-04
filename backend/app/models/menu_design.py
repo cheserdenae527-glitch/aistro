@@ -35,6 +35,7 @@ class MenuDesign(Base):
     color_scheme: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     items: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     output_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_pages: Mapped[list | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(
         Enum("draft", "rendered", name="menu_design_status"),
         nullable=False,

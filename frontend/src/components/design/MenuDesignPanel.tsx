@@ -10,6 +10,7 @@ import {
   Input,
   InputNumber,
   List,
+  Modal,
   message,
   Radio,
   Row,
@@ -35,6 +36,7 @@ import {
   type DesignAsset,
   type MenuColorScheme,
   type MenuDesign,
+  type MenuVersion,
   type MenuType,
 } from "../../services/designs";
 import { profileService, type ColorSchemePreset } from "../../services/profiles";
@@ -90,7 +92,11 @@ export default function MenuDesignPanel({
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftMenu>(blankDraft);
   const [presets, setPresets] = useState<ColorSchemePreset[]>([]);
-  const [renderUrl, setRenderUrl] = useState<string | null>(null);
+  const [renderPages, setRenderPages] = useState<string[]>([]);
+  const [pdfExporting, setPdfExporting] = useState(false);
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [versions, setVersions] = useState<MenuVersion[]>([]);
+  const [versionsLoading, setVersionsLoading] = useState(false);
   const [saving, setSaving] = useState(false);
   const [rendering, setRendering] = useState(false);
 
@@ -121,7 +127,7 @@ export default function MenuDesignPanel({
 
   const openMenu = (menu: MenuDesign) => {
     setActiveMenuId(menu.id);
-    setRenderUrl(menu.output_url);
+    setRenderPages(menu.output_pages?.length ? menu.output_pages : menu.output_url ? [menu.output_url] : []);
     setDraft({
       menu_type: menu.menu_type,
       template_id: menu.template_id,
@@ -146,7 +152,7 @@ export default function MenuDesignPanel({
 
   const handleNew = () => {
     setActiveMenuId(null);
-    setRenderUrl(null);
+    setRenderPages([]);
     setDraft(blankDraft());
   };
 
@@ -268,7 +274,11 @@ export default function MenuDesignPanel({
         activeMenu.id,
         activeMenu.version
       );
-      setRenderUrl(res.data.output_url);
+      setRenderPages(
+        res.data.pages && res.data.pages.length > 0
+          ? res.data.pages
+          : [res.data.output_url]
+      );
       await loadMenus();
       message.success("渲染完成");
     } catch (e) {
@@ -285,6 +295,58 @@ export default function MenuDesignPanel({
       }
     } finally {
       setRendering(false);
+    }
+  };
+
+  const handleOpenVersions = async () => {
+    if (!activeMenu) return;
+    setVersionsOpen(true);
+    setVersionsLoading(true);
+    try {
+      const res = await designService.listMenuVersions(projectId, activeMenu.id);
+      setVersions(res.data);
+    } catch (e) {
+      showApiError(e);
+    } finally {
+      setVersionsLoading(false);
+    }
+  };
+
+  const handleRestoreVersion = async (version: number) => {
+    if (!activeMenu) return;
+    try {
+      await designService.restoreMenuVersion(projectId, activeMenu.id, version);
+      const updated = (
+        await designService.getMenu(projectId, activeMenu.id)
+      ).data;
+      await loadMenus();
+      openMenu(updated);
+      message.success("已恢复到历史版本");
+    } catch (e) {
+      showApiError(e);
+    }
+  };
+
+  const handleExportPdf = async () => {
+    if (!activeMenu) return;
+    setPdfExporting(true);
+    try {
+      const res = await designService.exportPdf(projectId, activeMenu.id, activeMenu.version);
+      window.open(res.data.output_url, "_blank");
+    } catch (e) {
+      if (
+        e &&
+        typeof e === "object" &&
+        "response" in e &&
+        (e as { response?: { status?: number } }).response?.status === 409
+      ) {
+        message.warning("菜单版本已变化，已刷新最新版本，请重新导出");
+        await loadMenus();
+      } else {
+        showApiError(e);
+      }
+    } finally {
+      setPdfExporting(false);
     }
   };
 
@@ -389,7 +451,19 @@ export default function MenuDesignPanel({
           </Space>
         </Card>
 
-        <Card size="small" title="已保存菜单">
+        <Card
+          size="small"
+          title="已保存菜单"
+          extra={
+            <Button
+              size="small"
+              disabled={!activeMenu}
+              onClick={handleOpenVersions}
+            >
+              版本历史
+            </Button>
+          }
+        >
           <List
             size="small"
             dataSource={menus}
@@ -583,36 +657,56 @@ export default function MenuDesignPanel({
             </Button>
           }
         >
-          {!renderUrl && !activeMenu?.output_url ? (
+          {renderPages.length === 0 ? (
             <Empty description="保存菜单后点击渲染，预览将显示在这里" />
           ) : (
             <div>
-              <div style={{ display: "flex", justifyContent: "center" }}>
-                <img
-                  src={renderUrl || activeMenu?.output_url || ""}
-                  alt="菜单渲染结果"
-                  style={{
-                    maxWidth: "100%",
-                    maxHeight: 560,
-                    borderRadius: 8,
-                    boxShadow: "0 2px 12px rgba(0,0,0,0.12)",
-                  }}
-                />
+              <div
+                style={{
+                  display: "flex",
+                  flexDirection: "column",
+                  gap: 12,
+                  alignItems: "center",
+                }}
+              >
+                {renderPages.map((url, index) => (
+                  <img
+                    key={index}
+                    src={url}
+                    alt={`菜单渲染结果 ${index + 1}`}
+                    style={{
+                      maxWidth: "100%",
+                      maxHeight: 560,
+                      borderRadius: 8,
+                      boxShadow: "0 2px 12px rgba(0,0,0,0.12)",
+                    }}
+                  />
+                ))}
               </div>
               <Divider />
-              <Space>
+              <Space wrap>
+                {renderPages.map((url, index) => (
+                  <Button
+                    key={index}
+                    icon={<DownloadOutlined />}
+                    href={url}
+                    target="_blank"
+                    download
+                  >
+                    导出 PNG{renderPages.length > 1 ? ` 第 ${index + 1} 页` : ""}
+                  </Button>
+                ))}
                 <Button
                   type="primary"
                   icon={<DownloadOutlined />}
-                  href={renderUrl || activeMenu?.output_url || undefined}
-                  target="_blank"
-                  download
+                  loading={pdfExporting}
+                  onClick={handleExportPdf}
                 >
-                  导出 PNG
+                  导出 PDF
                 </Button>
                 <Button
                   icon={<EyeOutlined />}
-                  href={renderUrl || activeMenu?.output_url || undefined}
+                  href={renderPages[0]}
                   target="_blank"
                 >
                   新窗口查看
@@ -622,6 +716,42 @@ export default function MenuDesignPanel({
           )}
         </Card>
       </Col>
+
+      <Modal
+        open={versionsOpen}
+        title={`版本历史 — ${activeMenu?.shop_name || "菜单"}`}
+        onCancel={() => setVersionsOpen(false)}
+        footer={null}
+        width={640}
+      >
+        <List
+          size="small"
+          loading={versionsLoading}
+          dataSource={versions}
+          locale={{ emptyText: "暂无版本记录" }}
+          renderItem={(version) => (
+            <List.Item
+              actions={[
+                <Button
+                  key="restore"
+                  size="small"
+                  type="primary"
+                  ghost
+                  disabled={version.version === activeMenu?.version}
+                  onClick={() => handleRestoreVersion(version.version)}
+                >
+                  恢复此版本
+                </Button>,
+              ]}
+            >
+              <List.Item.Meta
+                title={`v${version.version}`}
+                description={new Date(version.created_at).toLocaleString("zh-CN")}
+              />
+            </List.Item>
+          )}
+        />
+      </Modal>
     </Row>
   );
 }

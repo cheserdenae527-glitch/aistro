@@ -1,8 +1,13 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button, Drawer, Form, Input, message, Radio, Space, Spin, Tag, Upload } from "antd";
 import { PictureOutlined, UploadOutlined } from "@ant-design/icons";
-import { designService, type AssetCandidate, type DesignAssetType } from "../../services/designs";
-import { getApiError } from "../../utils/errors";
+import {
+  designService,
+  type AssetCandidate,
+  type DesignAssetType,
+  type GenerateCandidatesResponse,
+} from "../../services/designs";
+import { useDesignJobs } from "../../store/designJobs";
 
 const { TextArea } = Input;
 
@@ -24,21 +29,64 @@ export default function AiGenerateDrawer({
   const [confirming, setConfirming] = useState<string | null>(null);
   const [candidates, setCandidates] = useState<AssetCandidate[]>([]);
   const [batchId, setBatchId] = useState<string | null>(null);
+  const mountedRef = useRef(true);
+  const jobKey = `generate:${projectId}`;
+  const job = useDesignJobs((s) => s.jobs[jobKey]);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
+
+  // 重新打开 Drawer 时恢复后台已完成的候选
+  useEffect(() => {
+    if (!open) return;
+    const stored =
+      useDesignJobs.getState().jobs[`project:${projectId}`] ||
+      useDesignJobs.getState().jobs[jobKey];
+    if (stored?.status === "success" && stored.result) {
+      const data = stored.result as GenerateCandidatesResponse;
+      setCandidates(data.candidates);
+      setBatchId(data.batch_id);
+    }
+  }, [open, projectId, jobKey]);
 
   const handleGenerate = async () => {
     if (!prompt.trim()) {
       message.warning("请输入提示词");
       return;
     }
+    if (job?.status === "running") {
+      message.info("已有生成任务在后台运行，完成后会通知你");
+      return;
+    }
     setGenerating(true);
     try {
-      const res = await designService.generateAssets(projectId, prompt.trim(), refFile, assetType);
-      setCandidates(res.data.candidates);
-      setBatchId(res.data.batch_id);
-    } catch (e) {
-      message.error(getApiError(e));
-    } finally {
+      const jobRes = await designService.createGenerateJob(
+        projectId,
+        prompt.trim(),
+        refFile,
+        assetType
+      );
+      const { ok, result } = await useDesignJobs.getState().trackJob(
+        projectId,
+        jobRes.data.job_id,
+        "AI 生图"
+      );
       setGenerating(false);
+      if (!ok || !mountedRef.current) return;
+      const data = result as GenerateCandidatesResponse;
+      setCandidates(data.candidates);
+      setBatchId(data.batch_id);
+    } catch (e) {
+      setGenerating(false);
+      message.error(
+        e && typeof e === "object" && "response" in e
+          ? String((e as { response?: { data?: { detail?: string } } }).response?.data?.detail || e)
+          : String(e)
+      );
     }
   };
 
@@ -50,13 +98,19 @@ export default function AiGenerateDrawer({
       setBatchId(null);
       setPrompt("");
       setRefFile(null);
+      useDesignJobs.getState().clear(jobKey);
+      useDesignJobs.getState().clear(`project:${projectId}`);
       onClose();
     } catch (e) {
-      message.error(getApiError(e));
+      message.error(e && typeof e === "object" && "response" in e
+        ? String((e as { response?: { data?: { detail?: string } } }).response?.data?.detail || e)
+        : String(e));
     } finally {
       setConfirming(null);
     }
   };
+
+  const showRunning = generating || job?.status === "running";
 
   return (
     <Drawer
@@ -65,8 +119,12 @@ export default function AiGenerateDrawer({
       width={560}
       onClose={onClose}
       extra={
-        <Tag color={batchId ? "green" : "default"}>
-          {candidates.length > 0 ? `已生成 ${candidates.length} 张候选` : "未生成"}
+        <Tag color={batchId ? "green" : showRunning ? "processing" : "default"}>
+          {showRunning
+            ? "后台生成中"
+            : candidates.length > 0
+              ? `已生成 ${candidates.length} 张候选`
+              : "未生成"}
         </Tag>
       }
     >
@@ -110,21 +168,21 @@ export default function AiGenerateDrawer({
         <Button
           type="primary"
           icon={<PictureOutlined />}
-          loading={generating}
+          loading={showRunning}
           onClick={handleGenerate}
           block
         >
-          生成 4 张候选
+          {showRunning ? "后台生成中，可离开页面" : "生成 4 张候选"}
         </Button>
       </Form>
 
-      {generating && (
+      {showRunning && (
         <div style={{ textAlign: "center", padding: 32 }}>
-          <Spin tip="豆包生成中，通常需要 20-60 秒" />
+          <Spin tip="豆包生成中，通常需要 20-60 秒；离开页面也会继续" />
         </div>
       )}
 
-      {!generating && candidates.length > 0 && (
+      {!showRunning && candidates.length > 0 && (
         <div style={{ marginTop: 20 }}>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
             {candidates.map((candidate, index) => (

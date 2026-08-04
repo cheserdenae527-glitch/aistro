@@ -165,6 +165,8 @@ Body：
 默认 `enhance` 不做灰度世界白平衡，保留暖光色调；`color_correct` 显式白平衡。
 结果写入 `processed_url`，频控 30s。
 
+> 前端编辑器已统一使用 `ai-beautify` 作为美化入口，本接口保留用于兼容/内部调用，不再暴露在工具栏。
+
 ### 2.6 背景替换 / 菜品增强
 
 ```http
@@ -184,11 +186,14 @@ Body：`{ "prompt": "..." }`。以当前素材为参考图生成 4 张候选，�
 `ai-beautify/prompt` 用 LLM 生成美化提示词（表明侧重点），Body：
 
 ```json
-{ "focus": "暖色氛围", "dish_name": "红烧肉" }
+{ "kind": "ai", "focus": "暖色氛围", "dish_name": "红烧肉" }
 ```
 
-返回 `{ "prompt": "..." }`，频控 20s；前端可编辑后再调用 `ai-beautify`。
+`kind` 支持 `ai`（AI 美化）/ `bg`（背景替换）/ `enhance`（菜品增强），默认 `ai`；
+返回 `{ "prompt": "..." }`，频控 20s；前端可编辑后再调用对应编辑接口。
 `focus` 与 `dish_name` 可选，敏感词返回 422。
+
+提示词不做结果缓存：同一侧重点每次生成会更换表达方式和细节侧重，避免重复度过高。
 
 ### 2.7 保存成品
 
@@ -275,7 +280,28 @@ override_tagline ?? asset.tagline
 {
   "id": "uuid",
   "output_url": "https://...",
+  "pages": ["https://...page1", "https://...page2"],
   "status": "rendered",
+  "version": 1
+}
+```
+
+菜品超过单页容量时分页渲染：XHS 每页 6 个、A4 每页 12 个；
+`output_url` 指向第 1 页，`pages` 为全部页面预签名 URL。
+
+### 3.3 导出 PDF
+
+```http
+POST /design-projects/{project_id}/menus/{menu_id}/export-pdf
+```
+
+Body：`{ "version": 1 }`。版本不匹配 `409`；菜单未渲染返回 `400`。
+把已渲染的多页 PNG 合成单文件 PDF（300dpi）并返回预签名 URL：
+
+```json
+{
+  "id": "uuid",
+  "output_url": "https://...pdf",
   "version": 1
 }
 ```
@@ -287,9 +313,50 @@ override_tagline ?? asset.tagline
   derived_from_asset_id（FK ON DELETE SET NULL）/ original_url / processed_url /
   thumb_url / edit_stack / beauty_config / dish_name / price / tagline
 - `menu_designs`：id / project_id / menu_type / template_id / shop_name / logo_url /
-  color_scheme / items / output_url / status / version
+  color_scheme / items / output_url / output_pages / status / version
 
-## 5. 错误码
+## 5. 工程接口
+
+### 5.1 后台异步生图任务
+
+创建任务（全部返回 202 + `job_id`）：
+
+```http
+POST /design-projects/{project_id}/assets/generate/job
+POST /design-projects/{project_id}/assets/{asset_id}/ai-beautify/job
+POST /design-projects/{project_id}/assets/{asset_id}/bg-replace/job
+POST /design-projects/{project_id}/assets/{asset_id}/enhance/job
+```
+
+轮询：
+
+```http
+GET /design-projects/{project_id}/jobs/{job_id}
+```
+
+`status`：`pending / running / success / failed`。成功后 `result.candidates` 为 4 张候选
+（含 `thumb_url`），可直接确认；失败时 `error` 返回原因。任务在服务端执行，
+即使客户端关闭页面也会继续。
+
+### 5.2 废弃候选清理
+
+```http
+POST /design-projects/{project_id}/assets/cleanup-discarded
+```
+
+删除全部 `discarded` 候选及其 MinIO 对象，返回 `{ "deleted": n }`。
+
+### 5.3 菜单历史版本
+
+```http
+GET  /design-projects/{project_id}/menus/{menu_id}/versions
+POST /design-projects/{project_id}/menus/{menu_id}/restore
+```
+
+创建/PATCH/渲染都会写入版本快照；`restore` Body `{ "version": n }` 恢复后
+`version` 自增并追加新快照。
+
+## 6. 错误码
 
 | 状态码 | 场景 |
 |---|---|

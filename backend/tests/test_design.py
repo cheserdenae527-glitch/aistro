@@ -99,7 +99,7 @@ def _upload_dish(
     return resp.json()
 
 
-async def _stub_generate_edited(prompt, ref_data=None, ref_mime="image/png"):
+async def _stub_generate_edited(prompt, ref_data=None, ref_mime="image/png", on_progress=None):
     return [(_make_png((160, 120), (190, 90, 40)), "image/png") for _ in range(4)]
 
 
@@ -469,24 +469,26 @@ def test_ai_beautify_rate_limit_429(client, monkeypatch):
 def test_ai_beautify_prompt_generation(client, monkeypatch):
     captured: dict = {}
 
-    async def fake_generate(focus=None, dish_name=None):
+    async def fake_generate(kind, focus=None, dish_name=None):
+        captured["kind"] = kind
         captured["focus"] = focus
         captured["dish_name"] = dish_name
         return f"AI 美化提示词：{focus or '默认'}，保留主体与构图"
 
     monkeypatch.setattr(
-        "app.api.v1.designs.generate_beautify_prompt", fake_generate
+        "app.api.v1.designs.generate_edit_prompt", fake_generate
     )
     project = _create_project(client)
     asset = _upload_dish(client, project["id"], dish_name="红烧肉")
     resp = client.post(
         f"/api/v1/design-projects/{project['id']}/assets/{asset['id']}/ai-beautify/prompt",
-        json={"focus": "暖色氛围"},
+        json={"kind": "bg", "focus": "深夜暖光"},
         headers=auth_headers(client),
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["prompt"].startswith("AI 美化提示词：暖色氛围")
-    assert captured["focus"] == "暖色氛围"
+    assert resp.json()["prompt"].startswith("AI 美化提示词：深夜暖光")
+    assert captured["focus"] == "深夜暖光"
+    assert captured["kind"] == "bg"
     assert captured["dish_name"] == "红烧肉"
 
 
@@ -502,11 +504,11 @@ def test_ai_beautify_prompt_sensitive_422(client):
 
 
 def test_ai_beautify_prompt_rate_limit_429(client, monkeypatch):
-    async def fake_generate(focus=None, dish_name=None):
+    async def fake_generate(kind, focus=None, dish_name=None):
         return "测试提示词"
 
     monkeypatch.setattr(
-        "app.api.v1.designs.generate_beautify_prompt", fake_generate
+        "app.api.v1.designs.generate_edit_prompt", fake_generate
     )
     project = _create_project(client)
     asset = _upload_dish(client, project["id"])
@@ -731,3 +733,300 @@ def test_save_base64_size_limit():
     big = base64.b64encode(b"\x00" * (10 * 1024 * 1024 + 1)).decode()
     with pytest.raises(ValidationError):
         SaveRequest(image_base64=big)
+
+
+# ============================================================
+# 菜单分页 / PDF 导出
+# ============================================================
+
+
+def test_render_menu_pages_chunks_and_pdf_unit():
+    from app.services.menu_render import render_menu_pages, render_menu_pdf
+
+    images = {
+        f"a{i}": _make_png((300, 200), (180 + i * 10, 100, 60)) for i in range(7)
+    }
+    items = [
+        {
+            "asset_id": f"a{i}",
+            "section": "招牌",
+            "name": f"菜{i}",
+            "price": str(10 + i),
+            "tagline": "",
+        }
+        for i in range(7)
+    ]
+    config = {
+        "template_id": "xhs_menu_01",
+        "shop_name": "测试",
+        "color_scheme": {},
+        "items": items,
+    }
+    pages = render_menu_pages(config, images)
+    assert len(pages) == 2
+    pdf = render_menu_pdf(pages)
+    assert pdf.startswith(b"%PDF")
+
+
+def test_menu_render_pagination_api(client):
+    project = _create_project(client)
+    asset_ids = [
+        _upload_dish(client, project["id"], dish_name=f"菜{i}", price=str(10 + i))["id"]
+        for i in range(7)
+    ]
+    headers = auth_headers(client)
+    menu = client.post(
+        f"/api/v1/design-projects/{project['id']}/menus",
+        json={
+            "menu_type": "xhs",
+            "template_id": "xhs_menu_01",
+            "shop_name": "分页测试",
+            "items": [
+                {"asset_id": aid, "section": "招牌", "sort": i + 1}
+                for i, aid in enumerate(asset_ids)
+            ],
+        },
+        headers=headers,
+    ).json()
+
+    render = client.post(
+        f"/api/v1/design-projects/{project['id']}/menus/{menu['id']}/render",
+        json={"version": 0},
+        headers=headers,
+    )
+    assert render.status_code == 200, render.text
+    data = render.json()
+    assert len(data["pages"]) == 2
+    assert data["version"] == 1
+
+    get_menu = client.get(
+        f"/api/v1/design-projects/{project['id']}/menus/{menu['id']}",
+        headers=headers,
+    ).json()
+    assert len(get_menu["output_pages"]) == 2
+
+
+def test_menu_export_pdf(client):
+    from urllib.request import urlopen
+
+    project = _create_project(client)
+    asset = _upload_dish(client, project["id"])
+    menu = client.post(
+        f"/api/v1/design-projects/{project['id']}/menus",
+        json={"items": [{"asset_id": asset["id"]}]},
+        headers=auth_headers(client),
+    ).json()
+    client.post(
+        f"/api/v1/design-projects/{project['id']}/menus/{menu['id']}/render",
+        json={"version": 0},
+        headers=auth_headers(client),
+    )
+    resp = client.post(
+        f"/api/v1/design-projects/{project['id']}/menus/{menu['id']}/export-pdf",
+        json={"version": 1},
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["output_url"].startswith("http")
+    with urlopen(resp.json()["output_url"], timeout=30) as f:
+        head = f.read(4)
+    assert head == b"%PDF"
+
+
+def test_menu_export_pdf_version_mismatch(client):
+    project = _create_project(client)
+    asset = _upload_dish(client, project["id"])
+    menu = client.post(
+        f"/api/v1/design-projects/{project['id']}/menus",
+        json={"items": [{"asset_id": asset["id"]}]},
+        headers=auth_headers(client),
+    ).json()
+    client.post(
+        f"/api/v1/design-projects/{project['id']}/menus/{menu['id']}/render",
+        json={"version": 0},
+        headers=auth_headers(client),
+    )
+    resp = client.post(
+        f"/api/v1/design-projects/{project['id']}/menus/{menu['id']}/export-pdf",
+        json={"version": 0},
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 409
+
+
+def test_menu_export_pdf_not_rendered(client):
+    project = _create_project(client)
+    asset = _upload_dish(client, project["id"])
+    menu = client.post(
+        f"/api/v1/design-projects/{project['id']}/menus",
+        json={"items": [{"asset_id": asset["id"]}]},
+        headers=auth_headers(client),
+    ).json()
+    resp = client.post(
+        f"/api/v1/design-projects/{project['id']}/menus/{menu['id']}/export-pdf",
+        json={"version": 0},
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 400
+
+
+
+def _wait_job(client, headers, url: str, timeout: float = 15.0) -> dict:
+    import time
+
+    deadline = time.time() + timeout
+    data: dict = {}
+    while time.time() < deadline:
+        resp = client.get(url, headers=headers)
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        if data["status"] in ("success", "failed"):
+            return data
+        time.sleep(0.2)
+    return data
+# ============================================================
+# D6 工程补强：异步任务 / 缩略图 / GC / 菜单版本
+# ============================================================
+
+
+def test_generate_job_end_to_end(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.api.v1.designs.generate_edited", _stub_generate_edited
+    )
+    project = _create_project(client)
+    headers = auth_headers(client)
+    resp = client.post(
+        f"/api/v1/design-projects/{project['id']}/assets/generate/job",
+        data={"prompt": "后台生成测试", "asset_type": "photo"},
+        headers=headers,
+    )
+    assert resp.status_code == 202, resp.text
+    job_id = resp.json()["job_id"]
+
+    data = _wait_job(
+        client,
+        headers,
+        f"/api/v1/design-projects/{project['id']}/jobs/{job_id}",
+    )
+    assert data["status"] == "success"
+    assert len(data["result"]["candidates"]) == 4
+    assert data["result"]["candidates"][0]["thumb_url"].startswith("http")
+
+
+def test_ai_beautify_job_derived_candidates(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.api.v1.designs.generate_edited", _stub_generate_edited
+    )
+    project = _create_project(client)
+    original = _upload_dish(client, project["id"])
+    headers = auth_headers(client)
+    resp = client.post(
+        f"/api/v1/design-projects/{project['id']}/assets/{original['id']}/ai-beautify/job",
+        json={},
+        headers=headers,
+    )
+    assert resp.status_code == 202, resp.text
+    job_id = resp.json()["job_id"]
+    job = _wait_job(
+        client,
+        headers,
+        f"/api/v1/design-projects/{project['id']}/jobs/{job_id}",
+    )
+    assert job["status"] == "success"
+    assert len(job["result"]["candidates"]) == 4
+
+    derived = [
+        a
+        for a in client.get(
+            f"/api/v1/design-projects/{project['id']}/assets?include_derived=true",
+            headers=headers,
+        ).json()
+        if a["derived_from_asset_id"] == original["id"]
+    ]
+    assert len(derived) == 4
+    assert all(a["status"] == "pending" for a in derived)
+
+
+def test_upload_generates_thumb(client):
+    project = _create_project(client)
+    asset = _upload_dish(client, project["id"])
+    assert asset["thumb_url"] is not None
+    listed = client.get(
+        f"/api/v1/design-projects/{project['id']}/assets",
+        headers=auth_headers(client),
+    ).json()
+    assert listed[0]["thumb_url"].startswith("http")
+
+
+def test_cleanup_discarded_assets(client, monkeypatch):
+    monkeypatch.setattr(
+        "app.api.v1.designs.generate_edited", _stub_generate_edited
+    )
+    project = _create_project(client)
+    headers = auth_headers(client)
+    gen = client.post(
+        f"/api/v1/design-projects/{project['id']}/assets/generate",
+        data={"prompt": "批量"},
+        headers=headers,
+    ).json()
+    client.post(
+        f"/api/v1/design-projects/{project['id']}/assets/{gen['candidates'][0]['aid']}/confirm",
+        headers=headers,
+    )
+    cleanup = client.post(
+        f"/api/v1/design-projects/{project['id']}/assets/cleanup-discarded",
+        headers=headers,
+    )
+    assert cleanup.status_code == 200, cleanup.text
+    assert cleanup.json()["deleted"] == 3
+    remaining = client.get(
+        f"/api/v1/design-projects/{project['id']}/assets?include_derived=true",
+        headers=headers,
+    ).json()
+    assert len(remaining) == 1
+    assert remaining[0]["status"] == "active"
+
+
+def test_menu_versions_and_restore(client):
+    project = _create_project(client)
+    asset = _upload_dish(client, project["id"])
+    headers = auth_headers(client)
+    base = f"/api/v1/design-projects/{project['id']}/menus"
+    menu = client.post(
+        base,
+        json={
+            "items": [{"asset_id": asset["id"]}],
+            "shop_name": "v0",
+        },
+        headers=headers,
+    ).json()
+
+    versions1 = client.get(f"{base}/{menu['id']}/versions", headers=headers).json()
+    assert len(versions1) == 1
+    assert versions1[0]["version"] == 0
+
+    patched = client.patch(
+        f"{base}/{menu['id']}",
+        json={"version": 0, "shop_name": "v1"},
+        headers=headers,
+    ).json()
+    assert patched["version"] == 1
+    render = client.post(
+        f"{base}/{menu['id']}/render",
+        json={"version": 1},
+        headers=headers,
+    )
+    assert render.status_code == 200
+    versions2 = client.get(f"{base}/{menu['id']}/versions", headers=headers).json()
+    assert len(versions2) == 3
+
+    restored = client.post(
+        f"{base}/{menu['id']}/restore",
+        json={"version": 0},
+        headers=headers,
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["shop_name"] == "v0"
+    assert restored.json()["version"] == 3
+    versions3 = client.get(f"{base}/{menu['id']}/versions", headers=headers).json()
+    assert len(versions3) == 4

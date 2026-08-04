@@ -31,3 +31,9 @@ test-results/
 
 # 本地服务进程
 /.service-pids.json
+
+# 临时调试脚本
+/_probe_*.py
+/_verify_*.py
+/backend/_check_*.py
+/backend/_dbg_*.py

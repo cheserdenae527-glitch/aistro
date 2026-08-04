@@ -1,12 +1,15 @@
 import { describe, expect, it } from "vitest";
+import { buildFilterChain, outputSize } from "./canvasRenderer";
 import {
   commit,
+  createEditorHistory,
   createHistory,
   DEFAULT_SETTINGS,
   redo,
   replace,
   serializeSettings,
   undo,
+  type EditorSettings,
 } from "./editStack";
 
 describe("editStack undo/redo", () => {
@@ -74,7 +77,7 @@ describe("slider params serialization", () => {
           color: "#FFFFFF",
         },
       ],
-    });
+    } as EditorSettings);
 
     const serialized = serializeSettings(state.present);
     expect(Object.keys(serialized).sort()).toEqual([
@@ -82,6 +85,8 @@ describe("slider params serialization", () => {
       "contrast",
       "crop",
       "filter",
+      "filterStrength",
+      "outputSize",
       "rotation",
       "saturation",
       "temperature",
@@ -101,5 +106,34 @@ describe("slider params serialization", () => {
     expect(serialized.brightness).toBe(100);
     expect(serialized.texts).toEqual([]);
     expect(serialized.crop).toBeNull();
+    expect(serialized.outputSize).toBeNull();
+  });
+
+  it("filter strength scales new presets", () => {
+    const chain = buildFilterChain({
+      ...DEFAULT_SETTINGS,
+      filter: "film",
+      filterStrength: 50,
+    });
+    expect(chain.join(" ")).toContain("sepia(0.175)");
+    expect(chain.join(" ")).toContain("saturate(1.075)");
+  });
+
+  it("snapshot history can undo source changes (beautify)", () => {
+    const state = createEditorHistory("original-url");
+    const beautified = commit(state, {
+      settings: DEFAULT_SETTINGS,
+      sourceUrl: "processed-url",
+    });
+    expect(beautified.present.sourceUrl).toBe("processed-url");
+    const undone = undo(beautified);
+    expect(undone.present.sourceUrl).toBe("original-url");
+    expect(redo(undone).present.sourceUrl).toBe("processed-url");
+  });
+
+  it("outputSize template overrides natural canvas size", () => {
+      const templated = { ...DEFAULT_SETTINGS, outputSize: { width: 1242, height: 1660 } };
+    expect(outputSize(templated, 800, 600)).toEqual({ width: 1242, height: 1660 });
+    expect(outputSize(DEFAULT_SETTINGS, 800, 600)).toEqual({ width: 800, height: 600 });
   });
 });

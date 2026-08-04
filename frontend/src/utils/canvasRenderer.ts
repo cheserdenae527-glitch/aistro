@@ -11,18 +11,57 @@ export function buildFilterChain(settings: EditorSettings): string[] {
   if (settings.saturation !== 100) {
     filters.push(`saturate(${(settings.saturation / 100).toFixed(3)})`);
   }
+  const strength = Math.min(1, Math.max(0, settings.filterStrength / 100));
   switch (settings.filter) {
     case "warm":
-      filters.push("saturate(1.15) sepia(0.18) contrast(1.06)");
+      filters.push(
+        `saturate(${(1 + 0.15 * strength).toFixed(3)}) sepia(${(0.18 * strength).toFixed(3)}) contrast(${(1 + 0.06 * strength).toFixed(3)})`
+      );
       break;
     case "japanese":
-      filters.push("saturate(0.88) brightness(1.06) contrast(0.96) hue-rotate(-6deg)");
+      filters.push(
+        `saturate(${(1 - 0.12 * strength).toFixed(3)}) brightness(${(1 + 0.06 * strength).toFixed(3)}) contrast(${(1 - 0.04 * strength).toFixed(3)}) hue-rotate(${(-6 * strength).toFixed(2)}deg)`
+      );
       break;
     case "vivid":
-      filters.push("saturate(1.35) contrast(1.1)");
+      filters.push(
+        `saturate(${(1 + 0.35 * strength).toFixed(3)}) contrast(${(1 + 0.1 * strength).toFixed(3)})`
+      );
       break;
     case "bw":
-      filters.push("grayscale(1) contrast(1.05)");
+      filters.push(
+        `grayscale(${strength.toFixed(3)}) contrast(${(1 + 0.05 * strength).toFixed(3)})`
+      );
+      break;
+    case "film":
+      filters.push(
+        `sepia(${(0.35 * strength).toFixed(3)}) saturate(${(1 + 0.15 * strength).toFixed(3)}) contrast(${(1 + 0.05 * strength).toFixed(3)}) brightness(${(1 - 0.03 * strength).toFixed(3)})`
+      );
+      break;
+    case "tealOrange":
+      filters.push(
+        `contrast(${(1 + 0.1 * strength).toFixed(3)}) saturate(${(1 + 0.35 * strength).toFixed(3)}) sepia(${(0.25 * strength).toFixed(3)}) hue-rotate(${(-12 * strength).toFixed(2)}deg)`
+      );
+      break;
+    case "cool":
+      filters.push(
+        `brightness(${(1 + 0.02 * strength).toFixed(3)}) contrast(${(1 + 0.04 * strength).toFixed(3)}) saturate(${(1 - 0.05 * strength).toFixed(3)}) hue-rotate(${(8 * strength).toFixed(2)}deg)`
+      );
+      break;
+    case "soft":
+      filters.push(
+        `brightness(${(1 + 0.06 * strength).toFixed(3)}) contrast(${(1 - 0.08 * strength).toFixed(3)}) saturate(${(1 + 0.05 * strength).toFixed(3)})`
+      );
+      break;
+    case "moody":
+      filters.push(
+        `brightness(${(1 - 0.1 * strength).toFixed(3)}) contrast(${(1 + 0.15 * strength).toFixed(3)}) saturate(${(1 - 0.1 * strength).toFixed(3)})`
+      );
+      break;
+    case "fresh":
+      filters.push(
+        `saturate(${(1 + 0.1 * strength).toFixed(3)}) brightness(${(1 + 0.04 * strength).toFixed(3)}) contrast(${(1 + 0.02 * strength).toFixed(3)}) hue-rotate(${(-4 * strength).toFixed(2)}deg)`
+      );
       break;
     default:
       break;
@@ -62,6 +101,9 @@ export function cropSource(settings: EditorSettings, naturalWidth: number, natur
 }
 
 export function outputSize(settings: EditorSettings, naturalWidth: number, naturalHeight: number) {
+  if (settings.outputSize) {
+    return { width: settings.outputSize.width, height: settings.outputSize.height };
+  }
   const { sw, sh } = cropSource(settings, naturalWidth, naturalHeight);
   const rotation = ((settings.rotation % 360) + 360) % 360;
   return rotation === 90 || rotation === 270
@@ -79,6 +121,9 @@ export function renderToCanvas(
   const naturalHeight = image.naturalHeight || 1;
   const { sx, sy, sw, sh } = cropSource(settings, naturalWidth, naturalHeight);
   const rotation = ((settings.rotation % 360) + 360) % 360;
+  const rotated = rotation === 90 || rotation === 270;
+  const tmpWidth = rotated ? Math.round(sh) : Math.round(sw);
+  const tmpHeight = rotated ? Math.round(sw) : Math.round(sh);
   const { width, height } = outputSize(settings, naturalWidth, naturalHeight);
 
   canvas.width = width;
@@ -87,13 +132,24 @@ export function renderToCanvas(
   if (!ctx) return;
   ctx.clearRect(0, 0, width, height);
 
-  ctx.save();
-  const filters = buildFilterChain(settings);
-  if (filters.length > 0) ctx.filter = filters.join(" ");
-  ctx.translate(width / 2, height / 2);
-  ctx.rotate((rotation * Math.PI) / 180);
-  ctx.drawImage(image, sx, sy, sw, sh, -sw / 2, -sh / 2, sw, sh);
-  ctx.restore();
+  // 先按旋转绘制到临时画布，再 cover 适配目标尺寸
+  const tmp = document.createElement("canvas");
+  tmp.width = tmpWidth;
+  tmp.height = tmpHeight;
+  const tctx = tmp.getContext("2d");
+  if (tctx) {
+    tctx.save();
+    const filters = buildFilterChain(settings);
+    if (filters.length > 0) tctx.filter = filters.join(" ");
+    tctx.translate(tmpWidth / 2, tmpHeight / 2);
+    tctx.rotate((rotation * Math.PI) / 180);
+    tctx.drawImage(image, sx, sy, sw, sh, -sw / 2, -sh / 2, sw, sh);
+    tctx.restore();
+  }
+  const scale = Math.max(width / tmpWidth, height / tmpHeight);
+  const drawWidth = tmpWidth * scale;
+  const drawHeight = tmpHeight * scale;
+  ctx.drawImage(tmp, (width - drawWidth) / 2, (height - drawHeight) / 2, drawWidth, drawHeight);
 
   if (settings.temperature !== 0) {
     ctx.save();

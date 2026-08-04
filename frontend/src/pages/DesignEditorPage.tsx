@@ -23,11 +23,11 @@ import {
   message,
 } from "antd";
 import {
-  BgColorsOutlined,
   DeleteOutlined,
   EditOutlined,
   ExperimentOutlined,
   FontSizeOutlined,
+  LoadingOutlined,
   PictureOutlined,
   RedoOutlined,
   RotateRightOutlined,
@@ -47,20 +47,24 @@ import {
   type AssetCandidate,
   type DesignAsset,
   type DesignProject,
+  type GenerateCandidatesResponse,
 } from "../services/designs";
 import {
   clampSlider,
   commit,
-  createHistory,
+  createEditorHistory,
+  DEFAULT_SETTINGS,
   replace,
   redo,
   serializeSettings,
   undo,
   type EditorSettings,
+  type EditorSnapshot,
   type HistoryState,
 } from "../utils/editStack";
 import { loadImageElement, renderToCanvas } from "../utils/canvasRenderer";
 import { showApiError } from "../utils/errors";
+import { useDesignJobs } from "../store/designJobs";
 
 const { Text, Title } = Typography;
 const { TextArea } = Input;
@@ -71,7 +75,40 @@ const FILTER_OPTIONS = [
   { label: "日系", value: "japanese" },
   { label: "高饱和", value: "vivid" },
   { label: "黑白", value: "bw" },
+  { label: "胶片", value: "film" },
+  { label: "青橙", value: "tealOrange" },
+  { label: "冷调", value: "cool" },
+  { label: "柔光", value: "soft" },
+  { label: "暗调", value: "moody" },
+  { label: "清新", value: "fresh" },
 ] as const;
+
+const PROMPT_FOCUS_OPTIONS: Record<"ai" | "bg" | "enhance", { label: string; value: string }[]> = {
+  ai: [
+    { label: "提升食欲感", value: "提升食欲感" },
+    { label: "暖色氛围", value: "暖色氛围" },
+    { label: "突出食材", value: "突出食材" },
+    { label: "日系干净", value: "日系干净" },
+    { label: "构图留白", value: "构图留白" },
+    { label: "高级质感", value: "高级质感" },
+  ],
+  bg: [
+    { label: "深夜暖光", value: "深夜暖光" },
+    { label: "木质餐桌", value: "木质餐桌" },
+    { label: "市井烟火", value: "市井烟火" },
+    { label: "日系干净", value: "日系干净" },
+    { label: "简约留白", value: "简约留白" },
+    { label: "高级质感", value: "高级质感" },
+  ],
+  enhance: [
+    { label: "突出光泽", value: "突出光泽" },
+    { label: "提升质感", value: "提升质感" },
+    { label: "增强食欲", value: "增强食欲" },
+    { label: "构图饱满", value: "构图饱满" },
+    { label: "细节清晰", value: "细节清晰" },
+    { label: "色彩浓郁", value: "色彩浓郁" },
+  ],
+};
 
 export default function DesignEditorPage() {
   const { id } = useParams<{ id: string }>();
@@ -81,15 +118,28 @@ export default function DesignEditorPage() {
   const [loading, setLoading] = useState(true);
   const [assets, setAssets] = useState<DesignAsset[]>([]);
   const [selectedAsset, setSelectedAsset] = useState<DesignAsset | null>(null);
-  const [canvasSourceUrl, setCanvasSourceUrl] = useState<string | null>(null);
   const [naturalSize, setNaturalSize] = useState<{ w: number; h: number } | null>(null);
-  const [history, setHistory] = useState<HistoryState>(() => createHistory());
-  const settings = history.present;
+  const [history, setHistory] = useState<HistoryState<EditorSnapshot>>(() =>
+    createEditorHistory(null)
+  );
+  const present = history.present;
+  const settings = present.settings;
+  const canvasSourceUrl = present.sourceUrl;
+  const beforeUrl =
+    history.past.length > 0
+      ? history.past[history.past.length - 1].sourceUrl
+      : selectedAsset?.original_url ?? null;
+  const canCompare = !!beforeUrl && beforeUrl !== canvasSourceUrl;
+  const runningForProject = useDesignJobs((s) =>
+    Object.values(s.jobs).some(
+      (j) => j.status === "running" && j.key.includes(projectId)
+    )
+  );
 
   const [aiDrawerOpen, setAiDrawerOpen] = useState(false);
   const [cropOpen, setCropOpen] = useState(false);
-  const [beautifying, setBeautifying] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [compareOpen, setCompareOpen] = useState(false);
 
   const [placingText, setPlacingText] = useState(false);
   const [textDraft, setTextDraft] = useState("");
@@ -123,16 +173,34 @@ export default function DesignEditorPage() {
     originX: number;
     originY: number;
   } | null>(null);
-  const sliderPendingRef = useRef<EditorSettings | null>(null);
+  const sliderPendingRef = useRef<EditorSnapshot | null>(null);
+  const textDragOriginRef = useRef<EditorSnapshot | null>(null);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    return () => {
+      mountedRef.current = false;
+    };
+  }, []);
 
   const commitUpdate = useCallback(
     (patch: Partial<EditorSettings>) =>
-      setHistory((s) => commit(s, { ...s.present, ...patch })),
+      setHistory((s) =>
+        commit(s, {
+          settings: { ...s.present.settings, ...patch },
+          sourceUrl: s.present.sourceUrl,
+        })
+      ),
     []
   );
   const replaceUpdate = useCallback(
     (patch: Partial<EditorSettings>) =>
-      setHistory((s) => replace(s, { ...s.present, ...patch })),
+      setHistory((s) =>
+        replace(s, {
+          settings: { ...s.present.settings, ...patch },
+          sourceUrl: s.present.sourceUrl,
+        })
+      ),
     []
   );
 
@@ -153,7 +221,7 @@ export default function DesignEditorPage() {
         const first = assetList.find((a) => a.status === "active");
         if (first && !selectedAsset) {
           setSelectedAsset(first);
-          setCanvasSourceUrl(first.processed_url || first.original_url);
+          setHistory(createEditorHistory(first.processed_url || first.original_url));
         }
       } catch (e) {
         showApiError(e);
@@ -163,16 +231,46 @@ export default function DesignEditorPage() {
     })();
   }, [projectId, loadAssets]);
 
+  useEffect(() => {
+    const onKeyDown = (e: KeyboardEvent) => {
+      const mod = e.ctrlKey || e.metaKey;
+      if (!mod) return;
+      const key = e.key.toLowerCase();
+      if (key === "z" && !e.shiftKey) {
+        e.preventDefault();
+        setHistory((s) => undo(s));
+      } else if ((key === "z" && e.shiftKey) || key === "y") {
+        e.preventDefault();
+        setHistory((s) => redo(s));
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, []);
+
   const selectAsset = (asset: DesignAsset) => {
     setSelectedAsset(asset);
-    setCanvasSourceUrl(asset.processed_url || asset.original_url);
-    setHistory(createHistory());
+    setHistory(createEditorHistory(asset.processed_url || asset.original_url));
     setNaturalSize(null);
     setCropOpen(false);
     setPlacingText(false);
   };
 
+  useEffect(() => {
+    const stored = useDesignJobs.getState().jobs[`project:${projectId}`];
+    if (stored?.status === "success" && stored.result) {
+      const data = stored.result as GenerateCandidatesResponse;
+      const type = stored.label.includes("背景替换")
+        ? "bg"
+        : stored.label.includes("菜品增强")
+          ? "enhance"
+          : "ai";
+      setCandidates({ type, items: data.candidates || [] });
+    }
+  }, [projectId]);
+
   const handleCanvasClick = (e: React.MouseEvent) => {
+    if ((e.target as HTMLElement).dataset.textHandle === "true") return;
     if (!placingText || !textDraft.trim()) return;
     const rect = wrapperRef.current?.getBoundingClientRect();
     if (!rect) return;
@@ -197,6 +295,7 @@ export default function DesignEditorPage() {
 
   const handleTextDragStart = (e: React.MouseEvent, label: EditorSettings["texts"][number]) => {
     e.stopPropagation();
+    textDragOriginRef.current = history.present;
     textDragRef.current = {
       id: label.id,
       startX: e.clientX,
@@ -225,10 +324,24 @@ export default function DesignEditorPage() {
     });
   };
 
+  const handleTextDragEnd = () => {
+    const origin = textDragOriginRef.current;
+    textDragOriginRef.current = null;
+    textDragRef.current = null;
+    if (!origin) return;
+    setHistory((s) => {
+      if (s.present === origin) return s;
+      return { past: [...s.past, origin].slice(-100), present: s.present, future: [] };
+    });
+  };
+
   const handleSliderChange = (patch: Partial<EditorSettings>) =>
     setHistory((s) => {
       if (!sliderPendingRef.current) sliderPendingRef.current = s.present;
-      return replace(s, { ...s.present, ...patch });
+      return replace(s, {
+        settings: { ...s.present.settings, ...patch },
+        sourceUrl: s.present.sourceUrl,
+      });
     });
 
   const handleSliderComplete = () => {
@@ -260,11 +373,10 @@ export default function DesignEditorPage() {
       const list = await loadAssets();
       if (selectedAsset?.id === asset.id) {
         setSelectedAsset(null);
-        setCanvasSourceUrl(null);
-        setHistory(createHistory());
+        setHistory(createEditorHistory(null));
       } else if (!list.some((a) => a.id === selectedAsset?.id)) {
         setSelectedAsset(null);
-        setCanvasSourceUrl(null);
+        setHistory(createEditorHistory(null));
       }
       message.success("素材已删除");
     } catch (e) {
@@ -272,56 +384,58 @@ export default function DesignEditorPage() {
     }
   };
 
-  const handleBeautify = async () => {
-    if (!selectedAsset) return;
-    setBeautifying(true);
-    try {
-      const res = await designService.beautifyAsset(projectId, selectedAsset.id, {
-        mode: "enhance",
-      });
-      setSelectedAsset(res.data);
-      setCanvasSourceUrl(res.data.processed_url || res.data.original_url);
-      setHistory(createHistory());
-      await loadAssets();
-      message.success("一键美化完成");
-    } catch (e) {
-      showApiError(e);
-    } finally {
-      setBeautifying(false);
-    }
-  };
 
   const handleEditSubmit = async () => {
-    if (!selectedAsset || !editPrompt.trim()) return;
-    setEditLoading(true);
-    try {
-      const res =
-        editModal.type === "bg"
-          ? await designService.bgReplace(projectId, selectedAsset.id, editPrompt.trim())
-          : editModal.type === "enhance"
-            ? await designService.enhance(projectId, selectedAsset.id, editPrompt.trim())
-            : await designService.aiBeautify(
-                projectId,
-                selectedAsset.id,
-                editPrompt.trim() || undefined
-              );
-      setCandidates({ type: editModal.type, items: res.data.candidates });
-      setEditModal({ type: editModal.type, open: false });
-      setEditPrompt("");
-    } catch (e) {
-      showApiError(e);
-    } finally {
-      setEditLoading(false);
+    if (!selectedAsset) return;
+    if (editModal.type !== "ai" && !editPrompt.trim()) {
+      message.warning("请输入提示词");
+      return;
     }
+    const label =
+      editModal.type === "bg"
+        ? "背景替换"
+        : editModal.type === "enhance"
+          ? "菜品增强"
+          : "AI 美化";
+    const hasRunning = Object.values(useDesignJobs.getState().jobs).some(
+      (j) => j.status === "running" && j.key.includes(projectId)
+    );
+    if (hasRunning) {
+      message.info("该素材已有后台生成任务，生成完成会通知你");
+      return;
+    }
+    setEditLoading(true);
+    const jobRes =
+      editModal.type === "bg"
+        ? await designService.createBgReplaceJob(projectId, selectedAsset.id, editPrompt.trim())
+        : editModal.type === "enhance"
+          ? await designService.createEnhanceJob(projectId, selectedAsset.id, editPrompt.trim())
+          : await designService.createAiBeautifyJob(
+              projectId,
+              selectedAsset.id,
+              editPrompt.trim() || undefined
+            );
+    const { ok, result } = await useDesignJobs.getState().trackJob(
+      projectId,
+      jobRes.data.job_id,
+      label
+    );
+    setEditLoading(false);
+    if (!ok || !mountedRef.current) return;
+    const data = result as GenerateCandidatesResponse;
+    setCandidates({ type: editModal.type, items: data.candidates });
+    setEditModal({ type: editModal.type, open: false });
+    setEditPrompt("");
   };
 
   const handleGeneratePrompt = async () => {
     if (!selectedAsset) return;
     setPromptGenerating(true);
     try {
-      const res = await designService.generateBeautifyPrompt(
+      const res = await designService.generateEditPrompt(
         projectId,
         selectedAsset.id,
+        editModal.type,
         promptFocus,
         selectedAsset.dish_name
       );
@@ -338,12 +452,14 @@ export default function DesignEditorPage() {
     setConfirmingAid(candidate.aid);
     try {
       await designService.confirmAsset(projectId, candidate.aid);
-      // 派生候选只替换画布源图，正式素材仍是原 aid
-      setCanvasSourceUrl(candidate.url);
-      setHistory(createHistory());
+      // 派生候选只替换画布源图，正式素材仍是原 aid；可撤销
+      setHistory((s) =>
+        commit(s, { settings: { ...DEFAULT_SETTINGS }, sourceUrl: candidate.url })
+      );
       setNaturalSize(null);
       await loadAssets();
       message.success("已应用候选图");
+      useDesignJobs.getState().clear(`project:${projectId}`);
       setCandidates(null);
     } catch (e) {
       showApiError(e);
@@ -374,7 +490,6 @@ export default function DesignEditorPage() {
         selectedAsset.beauty_config
       );
       setSelectedAsset(res.data);
-      setCanvasSourceUrl(res.data.processed_url || res.data.original_url);
       await loadAssets();
       message.success("成品已保存到素材库");
     } catch (e) {
@@ -541,9 +656,21 @@ export default function DesignEditorPage() {
 
         {/* ===== 编辑器 ===== */}
         <Col xs={24} lg={18}>
-          <Card size="small" title="工具栏">
+          <Card
+            size="small"
+            title={
+              <Space>
+                工具栏
+                {runningForProject && (
+                  <Tag color="processing" icon={<LoadingOutlined />}>
+                    后台生成中
+                  </Tag>
+                )}
+              </Space>
+            }
+          >
             <Space wrap>
-              <Tooltip title="撤销">
+              <Tooltip title={`撤销 · Ctrl+Z（${history.past.length} 步）`}>
                 <Button
                   icon={<UndoOutlined />}
                   disabled={history.past.length === 0}
@@ -552,7 +679,7 @@ export default function DesignEditorPage() {
                   撤销
                 </Button>
               </Tooltip>
-              <Tooltip title="重做">
+              <Tooltip title={`重做 · Ctrl+Shift+Z / Ctrl+Y（${history.future.length} 步）`}>
                 <Button
                   icon={<RedoOutlined />}
                   disabled={history.future.length === 0}
@@ -591,20 +718,14 @@ export default function DesignEditorPage() {
                 </Button>
               </Tooltip>
               <Divider type="vertical" />
-              <Button
-                icon={<BgColorsOutlined />}
-                loading={beautifying}
-                disabled={!selectedAsset}
-                onClick={handleBeautify}
-              >
-                一键美化
-              </Button>
+
               <Button
                 icon={<PictureOutlined />}
                 disabled={!selectedAsset}
                 onClick={() => {
                   setEditModal({ type: "bg", open: true });
                   setEditPrompt("");
+                  setPromptFocus("深夜暖光");
                 }}
               >
                 背景替换
@@ -615,6 +736,7 @@ export default function DesignEditorPage() {
                 onClick={() => {
                   setEditModal({ type: "enhance", open: true });
                   setEditPrompt("");
+                  setPromptFocus("突出光泽");
                 }}
               >
                 菜品增强
@@ -625,6 +747,7 @@ export default function DesignEditorPage() {
                 onClick={() => {
                   setEditModal({ type: "ai", open: true });
                   setEditPrompt("");
+                  setPromptFocus("提升食欲感");
                 }}
               >
                 AI 美化
@@ -652,7 +775,20 @@ export default function DesignEditorPage() {
           ) : (
             <Row gutter={16} style={{ marginTop: 16 }}>
               <Col xs={24} md={16}>
-                <Card size="small" title={placingText ? "点击画布放置文字" : "实时预览"}>
+                <Card
+                  size="small"
+                  title={placingText ? "点击画布放置文字" : "实时预览"}
+                  extra={
+                    <Button
+                      size="small"
+                      type={compareOpen ? "primary" : "default"}
+                      disabled={!canCompare}
+                      onClick={() => setCompareOpen((v) => !v)}
+                    >
+                      前后对比
+                    </Button>
+                  }
+                >
                   <div
                     ref={wrapperRef}
                     style={{
@@ -667,19 +803,21 @@ export default function DesignEditorPage() {
                     }}
                     onClick={handleCanvasClick}
                     onMouseMove={handleTextDragMove}
-                    onMouseUp={() => (textDragRef.current = null)}
-                    onMouseLeave={() => (textDragRef.current = null)}
+                    onMouseUp={handleTextDragEnd}
+                    onMouseLeave={handleTextDragEnd}
                   >
                     {canvasSourceUrl && (
                       <CanvasPreview
                         sourceUrl={canvasSourceUrl}
                         settings={settings}
+                        includeTexts
                         onImageLoad={(w, h) => setNaturalSize({ w, h })}
                       />
                     )}
                     {settings.texts.map((label) => (
                       <div
                         key={label.id}
+                        data-text-handle="true"
                         style={{
                           position: "absolute",
                           left: `${label.x * 100}%`,
@@ -689,41 +827,60 @@ export default function DesignEditorPage() {
                           transform: "translate(-50%,-50%)",
                           cursor: "move",
                           zIndex: 3,
+                          borderRadius: "50%",
+                          background: "rgba(22,119,255,0.45)",
                         }}
                         onMouseDown={(e) => handleTextDragStart(e, label)}
                         title={label.text}
                       />
                     ))}
+                    {compareOpen && canCompare && beforeUrl && (
+                      <>
+                        <img
+                          src={beforeUrl}
+                          alt="美化前"
+                          style={{
+                            position: "absolute",
+                            inset: 0,
+                            width: "100%",
+                            height: "100%",
+                            objectFit: "cover",
+                            clipPath: "inset(0 50% 0 0)",
+                            zIndex: 2,
+                            pointerEvents: "none",
+                          }}
+                        />
+                        <div
+                          style={{
+                            position: "absolute",
+                            left: "50%",
+                            top: 0,
+                            bottom: 0,
+                            width: 2,
+                            background: "#1677ff",
+                            zIndex: 2,
+                          }}
+                        />
+                        <div
+                          style={{
+                            position: "absolute",
+                            left: "50%",
+                            top: 8,
+                            transform: "translateX(-50%)",
+                            zIndex: 3,
+                            background: "rgba(22,119,255,0.92)",
+                            color: "#fff",
+                            borderRadius: 4,
+                            padding: "2px 8px",
+                            fontSize: 12,
+                          }}
+                        >
+                          美化前 | 美化后
+                        </div>
+                      </>
+                    )}
                   </div>
-                  {selectedAsset.processed_url && (
-                    <div
-                      style={{
-                        marginTop: 10,
-                        display: "flex",
-                        alignItems: "center",
-                        gap: 10,
-                      }}
-                    >
-                      <Text type="secondary" style={{ fontSize: 12 }}>
-                        Pillow 美化结果对照：
-                      </Text>
-                      <img
-                        src={selectedAsset.processed_url}
-                        alt="Pillow 美化结果"
-                        style={{ width: 56, height: 42, objectFit: "cover", borderRadius: 4 }}
-                      />
-                      <Button
-                        size="small"
-                        onClick={() => {
-                          setCanvasSourceUrl(selectedAsset.processed_url || "");
-                          setHistory(createHistory());
-                          setNaturalSize(null);
-                        }}
-                      >
-                        载入为源图
-                      </Button>
-                    </div>
-                  )}
+
                 </Card>
               </Col>
 
@@ -776,6 +933,43 @@ export default function DesignEditorPage() {
                     buttonStyle="solid"
                     size="small"
                   />
+                  <Slider
+                    min={0}
+                    max={100}
+                    value={settings.filterStrength}
+                    onChange={(v) => handleSliderChange({ filterStrength: v })}
+                    onAfterChange={handleSliderComplete}
+                    disabled={settings.filter === "none"}
+                    marks={{ 0: "弱", 100: "强" }}
+                    tooltip={{ formatter: (v) => `${v}` }}
+                  />
+                  <Text type="secondary" style={{ fontSize: 12 }}>滤镜强度</Text>
+                  <Divider style={{ margin: "12px 0" }} />
+                  <Text type="secondary" style={{ fontSize: 12 }}>画布尺寸</Text>
+                  <Select
+                    size="small"
+                    style={{ width: "100%" }}
+                    value={
+                      settings.outputSize
+                        ? `${settings.outputSize.width}x${settings.outputSize.height}`
+                        : "原始"
+                    }
+                    onChange={(value) =>
+                      commitUpdate({
+                        outputSize:
+                          value === "原始"
+                            ? null
+                            : value === "小红书"
+                              ? { width: 1242, height: 1660 }
+                              : { width: 2480, height: 3508 },
+                      })
+                    }
+                    options={[
+                      { label: "原始尺寸", value: "原始" },
+                      { label: "小红书竖版 1242×1660", value: "小红书" },
+                      { label: "A4 2480×3508", value: "A4" },
+                    ]}
+                  />
                 </Card>
 
                 <Card size="small" title="卖点文字">
@@ -808,7 +1002,7 @@ export default function DesignEditorPage() {
                           { label: "江湖红", value: "#C93828" },
                         ]}
                       />
-                      <Button size="small" type={placingText ? "primary" : "default"} onClick={() => setPlacingText((v) => !v)}>
+                      <Button size="small" autoInsertSpace={false} type={placingText ? "primary" : "default"} onClick={() => setPlacingText((v) => !v)}>
                         放置
                       </Button>
                     </Space>
@@ -856,6 +1050,7 @@ export default function DesignEditorPage() {
       />
 
       {/* ===== 弹窗 ===== */}
+
       <AiGenerateDrawer
         open={aiDrawerOpen}
         projectId={projectId}
@@ -866,8 +1061,9 @@ export default function DesignEditorPage() {
           const confirmed = list.find((a) => a.id === candidate.aid);
           if (confirmed) {
             setSelectedAsset(confirmed);
-            setCanvasSourceUrl(confirmed.processed_url || confirmed.original_url);
-            setHistory(createHistory());
+            setHistory(
+              createEditorHistory(confirmed.processed_url || confirmed.original_url)
+            );
             setNaturalSize(null);
           }
         }}
@@ -903,32 +1099,23 @@ export default function DesignEditorPage() {
         confirmLoading={editLoading}
       >
         <Space direction="vertical" style={{ width: "100%" }}>
-          {editModal.type === "ai" && (
-            <Space wrap>
-              <Select
-                size="small"
-                value={promptFocus}
-                onChange={setPromptFocus}
-                style={{ width: 140 }}
-                options={[
-                  { label: "提升食欲感", value: "提升食欲感" },
-                  { label: "暖色氛围", value: "暖色氛围" },
-                  { label: "突出食材", value: "突出食材" },
-                  { label: "日系干净", value: "日系干净" },
-                  { label: "构图留白", value: "构图留白" },
-                  { label: "高级质感", value: "高级质感" },
-                ]}
-              />
-              <Button
-                size="small"
-                icon={<ThunderboltOutlined />}
-                loading={promptGenerating}
-                onClick={handleGeneratePrompt}
-              >
-                AI 生成提示词
-              </Button>
-            </Space>
-          )}
+          <Space wrap>
+            <Select
+              size="small"
+              value={promptFocus}
+              onChange={setPromptFocus}
+              style={{ width: 140 }}
+              options={PROMPT_FOCUS_OPTIONS[editModal.type]}
+            />
+            <Button
+              size="small"
+              icon={<ThunderboltOutlined />}
+              loading={promptGenerating}
+              onClick={handleGeneratePrompt}
+            >
+              AI 生成提示词
+            </Button>
+          </Space>
           <TextArea
             rows={4}
             value={editPrompt}

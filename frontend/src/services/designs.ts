@@ -70,6 +70,29 @@ export interface MenuItemInput {
   override_tagline?: string | null;
 }
 
+export interface DesignJob {
+  id: string;
+  project_id: string;
+  job_type: string;
+  status: "pending" | "running" | "success" | "failed";
+  batch_id: string | null;
+  result:
+    | { batch_id?: string; candidates?: AssetCandidate[]; progress?: number; stage?: string }
+    | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+export interface MenuVersion {
+  id: string;
+  menu_id: string;
+  version: number;
+  snapshot: Record<string, unknown>;
+  created_at: string;
+}
+
 export interface MenuDesign {
   id: string;
   project_id: string;
@@ -80,6 +103,7 @@ export interface MenuDesign {
   color_scheme: MenuColorScheme | null;
   items: MenuItemInput[] | null;
   output_url: string | null;
+  output_pages: string[] | null;
   status: "draft" | "rendered";
   version: number;
   created_at: string;
@@ -178,10 +202,16 @@ export const designService = {
       { timeout: 180000 }
     ),
 
-  generateBeautifyPrompt: (projectId: string, assetId: string, focus?: string, dishName?: string | null) =>
+  generateEditPrompt: (
+    projectId: string,
+    assetId: string,
+    kind: "ai" | "bg" | "enhance",
+    focus?: string,
+    dishName?: string | null
+  ) =>
     api.post<{ prompt: string }>(
       `/design-projects/${projectId}/assets/${assetId}/ai-beautify/prompt`,
-      { focus: focus || null, dish_name: dishName || null }
+      { kind, focus: focus || null, dish_name: dishName || null }
     ),
 
   saveAsset: (
@@ -211,9 +241,68 @@ export const designService = {
     api.patch<MenuDesign>(`/design-projects/${projectId}/menus/${menuId}`, data),
 
   renderMenu: (projectId: string, menuId: string, version: number) =>
-    api.post<{ id: string; output_url: string; status: string; version: number }>(
+    api.post<{ id: string; output_url: string; pages?: string[]; status: string; version: number }>(
       `/design-projects/${projectId}/menus/${menuId}/render`,
       { version },
       { timeout: 90000 }
+    ),
+
+  exportPdf: (projectId: string, menuId: string, version: number) =>
+    api.post<{ id: string; output_url: string; version: number }>(
+      `/design-projects/${projectId}/menus/${menuId}/export-pdf`,
+      { version },
+      { timeout: 90000 }
+    ),
+
+  // ---- 后台任务 ----
+  createGenerateJob: (projectId: string, prompt: string, refFile?: File | null, assetType?: DesignAssetType) => {
+    const fd = new FormData();
+    fd.append("prompt", prompt);
+    if (refFile) fd.append("ref_image", refFile);
+    if (assetType) fd.append("asset_type", assetType);
+    return api.post<{ job_id: string; status: string }>(
+      `/design-projects/${projectId}/assets/generate/job`,
+      fd
+    );
+  },
+
+  createAiBeautifyJob: (projectId: string, assetId: string, prompt?: string) =>
+    api.post<{ job_id: string; status: string }>(
+      `/design-projects/${projectId}/assets/${assetId}/ai-beautify/job`,
+      { prompt: prompt || null }
+    ),
+
+  createBgReplaceJob: (projectId: string, assetId: string, prompt: string) =>
+    api.post<{ job_id: string; status: string }>(
+      `/design-projects/${projectId}/assets/${assetId}/bg-replace/job`,
+      { prompt }
+    ),
+
+  createEnhanceJob: (projectId: string, assetId: string, prompt: string) =>
+    api.post<{ job_id: string; status: string }>(
+      `/design-projects/${projectId}/assets/${assetId}/enhance/job`,
+      { prompt }
+    ),
+
+  getDesignJob: (projectId: string, jobId: string) =>
+    api.get<DesignJob>(
+      `/design-projects/${projectId}/jobs/${jobId}`
+    ),
+
+  cleanupDiscarded: (projectId: string) =>
+    api.post<{ deleted: number }>(
+      `/design-projects/${projectId}/assets/cleanup-discarded`
+    ),
+
+  // ---- 菜单版本 ----
+  listMenuVersions: (projectId: string, menuId: string) =>
+    api.get<MenuVersion[]>(
+      `/design-projects/${projectId}/menus/${menuId}/versions`
+    ),
+
+  restoreMenuVersion: (projectId: string, menuId: string, version: number) =>
+    api.post<MenuDesign>(
+      `/design-projects/${projectId}/menus/${menuId}/restore`,
+      { version }
     ),
 };

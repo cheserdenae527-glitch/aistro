@@ -5,6 +5,7 @@ import asyncio
 import base64
 import io
 import json
+from collections.abc import Awaitable, Callable
 
 import httpx
 from PIL import Image
@@ -133,8 +134,12 @@ async def _stream_image_urls(
     prompt: str,
     size: str,
     ref_data_url: str | None,
+    on_progress: "Callable[[int, int], Awaitable[None]] | None" = None,
 ) -> list[str]:
-    """调用 Seedream 5.0 流式接口，一次生成最多 4 张。"""
+    """调用 Seedream 5.0 流式接口，一次生成最多 4 张。
+
+    on_progress(done, total) 在每张图 partial_succeeded 时回调，用于上报进度。
+    """
     payload: dict = {
         "model": settings.VOLCENGINE_IMAGE_MODEL,
         "prompt": prompt,
@@ -155,6 +160,7 @@ async def _stream_image_urls(
     url = f"{settings.VOLCENGINE_BASE_URL}/images/generations"
 
     lines: list[str] = []
+    completed = 0
     try:
         async with httpx.AsyncClient(timeout=_STREAM_TIMEOUT) as http:
             async with http.stream(
@@ -165,6 +171,16 @@ async def _stream_image_urls(
                     raise _map_http_error(resp.status_code, body)
                 async for line in resp.aiter_lines():
                     lines.append(line)
+                    if not line.startswith("data: ") or line == "data: [DONE]":
+                        continue
+                    try:
+                        data = json.loads(line[6:])
+                    except json.JSONDecodeError:
+                        continue
+                    if data.get("type") == "image_generation.partial_succeeded":
+                        completed += 1
+                        if on_progress:
+                            await on_progress(completed, 4)
     except ImageGenError:
         raise
     except httpx.HTTPError:
@@ -205,9 +221,10 @@ async def generate_edited(
     prompt: str,
     ref_data: bytes | None = None,
     ref_mime: str = "image/png",
+    on_progress: "Callable[[int, int], Awaitable[None]] | None" = None,
 ) -> list[tuple[bytes, str]]:
     """豆包通用编辑入口 — 纯文生图 / 背景替换 / 菜品增强，一次 4 张候选。"""
-    return await _generate_image(prompt, _EDIT_SIZE, ref_data, ref_mime)
+    return await _generate_image(prompt, _EDIT_SIZE, ref_data, ref_mime, on_progress=on_progress)
 
 
 async def _generate_image(
@@ -215,6 +232,7 @@ async def _generate_image(
     size: str,
     ref_data: bytes | None = None,
     ref_mime: str = "image/png",
+    on_progress: "Callable[[int, int], Awaitable[None]] | None" = None,
 ) -> list[tuple[bytes, str]]:
     ref_data_url = None
     if ref_data:
@@ -224,6 +242,6 @@ async def _generate_image(
     prompt_text = prompt + _SEQUENTIAL_TAIL
     if ref_data_url:
         prompt_text += _ANCHOR_TAIL
-    urls = await _stream_image_urls(prompt_text, size, ref_data_url)
+    urls = await _stream_image_urls(prompt_text, size, ref_data_url, on_progress=on_progress)
     results = await asyncio.gather(*(_download_image(url) for url in urls))
     return list(results)

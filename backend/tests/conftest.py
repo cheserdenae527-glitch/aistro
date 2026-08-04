@@ -37,8 +37,22 @@ def _init_test_database():
     yield
 
 
-@pytest.fixture(scope="session")
+@pytest.fixture(scope="module")
 def client() -> TestClient:
     """共享同一个 TestClient，避免跨模块轮换事件循环导致连接池失效。"""
     with TestClient(app) as c:
         yield c
+
+@pytest.fixture(scope="module", autouse=True)
+def _reset_shared_async_resources():
+    """模块结束后清理跨模块共享的 engine / Redis 池，避免事件循环串用。"""
+    yield
+    from app.api.v1 import auth as auth_module
+    from app.core import rate_limit
+    from app.core.database import engine
+
+    asyncio.run(engine.dispose())
+    rate_limit._pool = None
+    # 进程内登录限流按模块重置，避免整套测试共享窗口触发 429
+    auth_module._login_attempts.clear()
+

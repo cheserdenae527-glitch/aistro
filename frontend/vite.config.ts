@@ -6,7 +6,7 @@ const nodeEnv = (
     process?: { env?: Record<string, string | undefined> };
   }
 ).process?.env ?? {};
-const apiTarget = nodeEnv.VITE_API_TARGET || "http://localhost:8000";
+const apiTarget = nodeEnv.VITE_API_TARGET || "http://127.0.0.1:8000";
 
 // https://vite.dev/config/
 export default defineConfig({

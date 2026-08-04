@@ -7,11 +7,13 @@ export default function CanvasPreview({
   settings,
   onImageLoad,
   style,
+  includeTexts = false,
 }: {
   sourceUrl: string;
   settings: EditorSettings;
   onImageLoad?: (w: number, h: number) => void;
   style?: React.CSSProperties;
+  includeTexts?: boolean;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imageRef = useRef<HTMLImageElement | null>(null);
@@ -20,7 +22,7 @@ export default function CanvasPreview({
     const canvas = canvasRef.current;
     const image = imageRef.current;
     if (!canvas || !image) return;
-    renderToCanvas(canvas, image, settings);
+    renderToCanvas(canvas, image, settings, { includeTexts });
   }, [settings]);
 
   useEffect(() => {

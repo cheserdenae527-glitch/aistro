@@ -79,7 +79,7 @@ def test_generate_image_requests_four_and_downloads(monkeypatch):
     png_bytes = _make_png_bytes()
     captured: dict = {}
 
-    async def fake_stream(prompt, size, ref_data_url):
+    async def fake_stream(prompt, size, ref_data_url, on_progress=None):
         captured["prompt"] = prompt
         captured["size"] = size
         captured["ref_data_url"] = ref_data_url
@@ -103,7 +103,7 @@ def test_generate_image_with_ref_uses_png_data_url(monkeypatch):
     png_bytes = _make_png_bytes()
     captured: dict = {}
 
-    async def fake_stream(prompt, size, ref_data_url):
+    async def fake_stream(prompt, size, ref_data_url, on_progress=None):
         captured["ref_data_url"] = ref_data_url
         captured["prompt"] = prompt
         return [f"http://img/{i}" for i in range(4)]
@@ -126,3 +126,55 @@ def test_generate_image_with_ref_uses_png_data_url(monkeypatch):
     assert captured["ref_data_url"].startswith("data:image/png;base64,")
     assert "必须保留锚点图中的核心主体" in captured["prompt"]
     assert len(results) == 4
+def test_stream_image_urls_reports_progress(monkeypatch):
+    """流式 partial_succeeded 逐张到达时 on_progress 递增上报。"""
+    from app.ai.doubao_image import _stream_image_urls
+
+    lines = [
+        'data: {"type":"image_generation.partial_succeeded","image_index":0,"url":"u0"}',
+        'data: {"type":"image_generation.partial_succeeded","image_index":1,"url":"u1"}',
+        'data: {"type":"image_generation.completed","usage":{"generated_images":2}}',
+        "data: [DONE]",
+    ]
+
+    class _FakeStream:
+        status_code = 200
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def aread(self):
+            return b""
+
+        async def aiter_lines(self):
+            for line in lines:
+                yield line
+
+    class _FakeClient:
+        def __init__(self, timeout=None):
+            pass
+
+        def stream(self, *a, **k):
+            return _FakeStream()
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+    monkeypatch.setattr("app.ai.doubao_image.httpx.AsyncClient", _FakeClient)
+
+    calls: list[tuple[int, int]] = []
+
+    async def on_progress(done, total):
+        calls.append((done, total))
+
+    urls = asyncio.run(
+        _stream_image_urls("p", "2K", None, on_progress=on_progress)
+    )
+    assert urls == ["u0", "u1"]
+    assert calls == [(1, 4), (2, 4)]

@@ -96,3 +96,12 @@ def get_object_bytes(object_name: str) -> bytes:
     finally:
         response.close()
         response.release_conn()
+
+
+def delete_object(object_name: str) -> None:
+    """删除 MinIO 对象（不存在时静默忽略）。"""
+    try:
+        client = _get_client()
+        client.remove_object(settings.MINIO_BUCKET, object_name)
+    except Exception:
+        pass

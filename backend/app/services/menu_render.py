@@ -15,6 +15,9 @@ FONT_DIR = Path(__file__).resolve().parents[2] / "assets" / "fonts"
 REGULAR_FONT = FONT_DIR / "NotoSansSC-Regular.otf"
 BOLD_FONT = FONT_DIR / "NotoSansSC-Bold.otf"
 
+XHS_PAGE_ITEMS = 6
+A4_PAGE_ITEMS = 12
+
 
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     path = BOLD_FONT if bold else REGULAR_FONT
@@ -105,7 +108,7 @@ def _render_xhs(config: dict, asset_images: dict[str, bytes]) -> bytes:
 
     card_w, gap = 560, 40
     left, start_y, img_h, row_h = 60, 250, 373, 470
-    items = (config.get("items") or [])[:6]
+    items = config.get("items") or []
 
     for idx, item in enumerate(items):
         row, col = divmod(idx, 2)
@@ -178,7 +181,7 @@ def _render_a4(config: dict, asset_images: dict[str, bytes]) -> bytes:
             break
         _draw_centered(draw, section, _font(82, bold=True), width / 2, y, primary)
         y += 150
-        for idx, item in enumerate(items[:12]):
+        for idx, item in enumerate(items):
             row, col = divmod(idx, 2)
             x = left + col * (card_w + gap)
             yy = y + row * row_h
@@ -228,10 +231,46 @@ def _render_a4(config: dict, asset_images: dict[str, bytes]) -> bytes:
 
 
 def render_menu(config: dict, asset_images: dict[str, bytes]) -> bytes:
-    """纯函数渲染：config + asset_id -> bytes 的素材字典 -> PNG bytes。"""
+    """纯函数渲染：config + asset_id -> bytes 的素材字典 -> 单页 PNG bytes。"""
     template_id = config.get("template_id")
     if template_id == "xhs_menu_01":
         return _render_xhs(config, asset_images)
     if template_id == "a4_menu_01":
         return _render_a4(config, asset_images)
     raise ValueError(f"未知模板: {template_id}")
+
+
+def render_menu_pages(config: dict, asset_images: dict[str, bytes]) -> list[bytes]:
+    """按页渲染：XHS 每页 6 个菜品、A4 每页 12 个，返回多页 PNG。"""
+    template_id = config.get("template_id")
+    items = config.get("items") or []
+    page_size = {
+        "xhs_menu_01": XHS_PAGE_ITEMS,
+        "a4_menu_01": A4_PAGE_ITEMS,
+    }.get(template_id)
+    if page_size is None:
+        raise ValueError(f"未知模板: {template_id}")
+    if not items:
+        return [render_menu(config, asset_images)]
+    pages: list[bytes] = []
+    for index in range(0, len(items), page_size):
+        page_config = {**config, "items": items[index : index + page_size]}
+        pages.append(render_menu(page_config, asset_images))
+    return pages
+
+
+def render_menu_pdf(pages: list[bytes]) -> bytes:
+    """把多页 PNG 合成单个 PDF（300dpi），纯函数输出 PDF bytes。"""
+    if not pages:
+        raise ValueError("没有可导出的渲染页面")
+    images = [Image.open(io.BytesIO(p)).convert("RGB") for p in pages]
+    first, rest = images[0], images[1:]
+    buf = io.BytesIO()
+    first.save(
+        buf,
+        format="PDF",
+        save_all=True,
+        append_images=rest,
+        resolution=300,
+    )
+    return buf.getvalue()

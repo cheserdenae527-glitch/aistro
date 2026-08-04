@@ -140,8 +140,9 @@ class AiBeautifyRequest(BaseModel):
 
 
 class BeautifyPromptRequest(BaseModel):
-    """AI 一键美化提示词生成 — focus 表明侧重点。"""
+    """AI 编辑提示词生成 — kind 支持 ai/bg/enhance，focus 表明侧重点。"""
 
+    kind: Literal["ai", "bg", "enhance"] = "ai"
     focus: str | None = Field(None, max_length=100)
     dish_name: str | None = Field(None, max_length=200)
 
@@ -234,6 +235,7 @@ class MenuResponse(BaseModel):
     color_scheme: dict | None = None
     items: list | None = None
     output_url: str | None = None
+    output_pages: list[str] | None = None
     status: str
     version: int
     created_at: datetime
@@ -247,5 +249,51 @@ class RenderRequest(BaseModel):
 class RenderResponse(BaseModel):
     id: uuid.UUID
     output_url: str
+    pages: list[str] | None = None
     status: str = "rendered"
+    version: int
+
+
+class PdfExportResponse(BaseModel):
+    id: uuid.UUID
+    output_url: str
+    version: int
+
+
+# ============================================================
+# 后台任务 / 菜单历史版本
+# ============================================================
+
+
+class DesignJobResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    project_id: uuid.UUID
+    job_type: str
+    status: str
+    batch_id: uuid.UUID | None = None
+    result: dict | None = None
+    error: str | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    finished_at: datetime | None = None
+
+
+class DesignJobCreateResponse(BaseModel):
+    job_id: uuid.UUID
+    status: str = "pending"
+
+
+class MenuVersionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    id: uuid.UUID
+    menu_id: uuid.UUID
+    version: int
+    snapshot: dict
+    created_at: datetime
+
+
+class RestoreVersionRequest(BaseModel):
     version: int

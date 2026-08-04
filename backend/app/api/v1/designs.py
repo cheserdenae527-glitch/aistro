@@ -12,6 +12,7 @@ from decimal import Decimal, InvalidOperation
 
 from fastapi import (
     APIRouter,
+    BackgroundTasks,
     Depends,
     File,
     Form,
@@ -24,14 +25,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.doubao_image import ImageGenError, generate_edited
-from app.ai.design_prompt import generate_beautify_prompt
-from app.core.database import get_db
+from app.ai.design_prompt import generate_edit_prompt
+from app.core.database import async_session_factory, get_db
 from app.core.deps import get_current_user
 from app.core.rate_limit import check_rate_limit
 from app.core.sensitive_filter import contains_blocked
 from app.models.design_asset import DesignAsset
+from app.models.design_job import DesignJob
 from app.models.design_project import DesignProject
 from app.models.menu_design import MenuDesign
+from app.models.menu_design_version import MenuDesignVersion
 from app.models.merchant import Merchant
 from app.models.shop import Shop
 from app.models.user import User
@@ -43,6 +46,8 @@ from app.schemas.design import (
     BeautifyRequest,
     ConfirmResponse,
     DesignAssetResponse,
+    DesignJobCreateResponse,
+    DesignJobResponse,
     DesignAssetUpdate,
     DesignProjectCreate,
     DesignProjectResponse,
@@ -53,13 +58,17 @@ from app.schemas.design import (
     MenuItemInput,
     MenuResponse,
     MenuUpdate,
+    MenuVersionResponse,
     RenderRequest,
+    PdfExportResponse,
+    RestoreVersionRequest,
     RenderResponse,
     SaveRequest,
 )
 from app.services.design_beautify import auto_beautify
-from app.services.menu_render import render_menu, resolve_item
+from app.services.menu_render import render_menu_pages, render_menu_pdf, resolve_item
 from app.services.storage import (
+    delete_object,
     get_object_bytes,
     get_presigned_url,
     safe_get_presigned_url,
@@ -155,6 +164,10 @@ def _menu_response(menu: MenuDesign) -> dict:
         resp["output_url"] = (
             safe_get_presigned_url(resp["output_url"]) or resp["output_url"]
         )
+    if resp.get("output_pages"):
+        resp["output_pages"] = [
+            safe_get_presigned_url(name) or name for name in resp["output_pages"]
+        ]
     return resp
 
 
@@ -201,6 +214,164 @@ def _decode_image_base64(image_base64: str) -> tuple[bytes, str]:
         raise HTTPException(status_code=400, detail="无法识别的图片格式")
     mime = "image/jpeg" if fmt in ("JPEG", "MPO") else "image/png"
     return data, mime
+
+
+def _make_thumb(data: bytes, mime: str) -> tuple[bytes, str]:
+    """生成最长边 320px 的 JPEG 缩略图。"""
+    img = Image.open(io.BytesIO(data)).convert("RGB")
+    img.thumbnail((320, 320), Image.Resampling.LANCZOS)
+    buf = io.BytesIO()
+    img.save(buf, format="JPEG", quality=82)
+    return buf.getvalue(), "image/jpeg"
+
+
+def _snapshot_menu(menu: MenuDesign) -> dict:
+    return {
+        "menu_type": menu.menu_type,
+        "template_id": menu.template_id,
+        "shop_name": menu.shop_name,
+        "logo_url": menu.logo_url,
+        "color_scheme": menu.color_scheme,
+        "items": menu.items,
+        "output_url": menu.output_url,
+        "output_pages": menu.output_pages,
+        "status": menu.status,
+        "version": menu.version,
+    }
+
+
+async def _record_menu_version(menu: MenuDesign, db: AsyncSession) -> None:
+    db.add(
+        MenuDesignVersion(
+            menu_id=menu.id,
+            version=menu.version,
+            snapshot=_snapshot_menu(menu),
+        )
+    )
+
+
+async def _build_candidates(
+    db: AsyncSession, project_id: uuid.UUID, batch_id: uuid.UUID
+) -> list[dict]:
+    result = await db.execute(
+        select(DesignAsset).where(
+            DesignAsset.project_id == project_id,
+            DesignAsset.batch_id == batch_id,
+        )
+    )
+    candidates: list[dict] = []
+    for asset in result.scalars().all():
+        candidates.append(
+            AssetCandidate(
+                aid=asset.id,
+                url=get_presigned_url(asset.original_url),
+                thumb_url=(
+                    get_presigned_url(asset.thumb_url) if asset.thumb_url else None
+                ),
+                batch_id=batch_id,
+            ).model_dump()
+        )
+    return candidates
+
+
+async def _run_generation_job(
+    job_id: uuid.UUID,
+    job_type: str,
+    prompt: str,
+    ref_data: bytes | None,
+    ref_mime: str,
+    asset_type: str,
+    derived_from_asset_id: uuid.UUID | None,
+) -> None:
+    """后台执行豆包生成任务：落库 pending 候选并更新 job 状态。"""
+    try:
+        async with async_session_factory() as db:
+            job = await db.get(DesignJob, job_id)
+            if not job:
+                return
+            job.status = "running"
+            job.started_at = datetime.now(timezone.utc)
+            job.result = {"progress": 5, "stage": "提交生图任务"}
+            await db.commit()
+
+            project = await db.get(DesignProject, job.project_id)
+            if not project:
+                raise RuntimeError("项目不存在")
+
+            if derived_from_asset_id:
+                asset = await db.get(DesignAsset, derived_from_asset_id)
+                if not asset:
+                    raise RuntimeError("素材不存在")
+                source = asset.processed_url or asset.original_url
+                if not source:
+                    raise RuntimeError("素材缺少源图")
+                ref_data = get_object_bytes(source)
+                asset_type = asset.asset_type
+
+            async def _report_progress(done: int, total: int) -> None:
+                """豆包流式逐张返回时更新 job 进度。"""
+                pct = round(done / total * 100)
+                try:
+                    async with async_session_factory() as sdb:
+                        row = await sdb.get(DesignJob, job_id)
+                        if row:
+                            row.result = {
+                                "progress": pct,
+                                "stage": f"已生成 {done}/{total} 张",
+                                "batch_id": None,
+                            }
+                            await sdb.commit()
+                except Exception:
+                    pass
+
+            images = await generate_edited(
+                prompt, ref_data, ref_mime, on_progress=_report_progress
+            )
+            batch_id = uuid.uuid4()
+            try:
+                async with async_session_factory() as sdb:
+                    row = await sdb.get(DesignJob, job_id)
+                    if row:
+                        row.result = {"progress": 95, "stage": "保存候选图", "batch_id": None}
+                        await sdb.commit()
+            except Exception:
+                pass
+            for img_bytes, mime in images:
+                object_name = upload_bytes(img_bytes, mime, folder="design")
+                thumb_bytes, thumb_mime = _make_thumb(img_bytes, mime)
+                thumb_name = upload_bytes(
+                    thumb_bytes, thumb_mime, folder="design_thumbs"
+                )
+                db.add(
+                    DesignAsset(
+                        project_id=project.id,
+                        asset_type=asset_type,
+                        source="ai",
+                        status="pending",
+                        batch_id=batch_id,
+                        derived_from_asset_id=derived_from_asset_id,
+                        original_url=object_name,
+                        thumb_url=thumb_name,
+                    )
+                )
+            await db.flush()
+
+            job.batch_id = batch_id
+            job.result = {"batch_id": str(batch_id), "progress": 100, "stage": "完成"}
+            job.status = "success"
+            job.finished_at = datetime.now(timezone.utc)
+            await db.commit()
+    except Exception as exc:
+        try:
+            async with async_session_factory() as db:
+                job = await db.get(DesignJob, job_id)
+                if job:
+                    job.status = "failed"
+                    job.error = str(exc)[:500]
+                    job.finished_at = datetime.now(timezone.utc)
+                    await db.commit()
+        except Exception:
+            pass
 
 
 def _asset_source_bytes(asset: DesignAsset) -> bytes:
@@ -422,12 +593,17 @@ async def upload_asset(
             raise HTTPException(status_code=400, detail="price 格式无效")
 
     object_name = upload_bytes(data, file.content_type or "image/png", folder="design")
+    thumb_bytes, thumb_mime = _make_thumb(
+        data, file.content_type or "image/png"
+    )
+    thumb_name = upload_bytes(thumb_bytes, thumb_mime, folder="design_thumbs")
     asset = DesignAsset(
         project_id=project.id,
         asset_type=asset_type,
         source="upload",
         status="active",
         original_url=object_name,
+        thumb_url=thumb_name,
         dish_name=dish_name,
         price=parsed_price,
         tagline=tagline,
@@ -481,6 +657,34 @@ async def delete_asset(
     await db.delete(asset)
     await db.flush()
     return {"ok": True}
+
+
+@router.post(
+    "/design-projects/{project_id}/assets/cleanup-discarded",
+)
+async def cleanup_discarded_assets(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """删除全部 discarded 候选及其 MinIO 对象。"""
+    project = await _get_project(project_id, current_user, db)
+    result = await db.execute(
+        select(DesignAsset).where(
+            DesignAsset.project_id == project.id,
+            DesignAsset.status == "discarded",
+        )
+    )
+    assets = result.scalars().all()
+    deleted = 0
+    for asset in assets:
+        for name in (asset.original_url, asset.processed_url, asset.thumb_url):
+            if name:
+                delete_object(name)
+        await db.delete(asset)
+        deleted += 1
+    await db.flush()
+    return {"deleted": deleted}
 
 
 # ============================================================
@@ -673,13 +877,203 @@ async def generate_ai_beautify_prompt(
     ):
         raise HTTPException(status_code=429, detail="操作过于频繁，请 20 秒后重试")
     try:
-        prompt = await generate_beautify_prompt(
+        prompt = await generate_edit_prompt(
+            kind=body.kind,
             focus=body.focus,
             dish_name=body.dish_name or asset.dish_name,
         )
     except Exception:
         raise HTTPException(status_code=502, detail="提示词生成失败，请稍后重试")
     return BeautifyPromptResponse(prompt=prompt)
+
+
+@router.post(
+    "/design-projects/{project_id}/assets/generate/job",
+    response_model=DesignJobCreateResponse,
+    status_code=202,
+)
+async def create_generate_job(
+    project_id: str,
+    background_tasks: BackgroundTasks,
+    prompt: str = Form(...),
+    ref_image: UploadFile | None = None,
+    asset_type: str = Form("photo"),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    if contains_blocked(prompt):
+        raise HTTPException(status_code=422, detail="prompt 包含敏感词")
+    if asset_type not in ("dish", "logo", "photo"):
+        raise HTTPException(status_code=400, detail=f"未知素材类型: {asset_type}")
+    if not await check_rate_limit(
+        _rate_key("generate", current_user, project.shop_id), ttl_seconds=60
+    ):
+        raise HTTPException(status_code=429, detail="操作过于频繁，请 60 秒后重试")
+    ref_data, ref_mime = await _read_ref_image(ref_image)
+    job = DesignJob(
+        project_id=project.id,
+        user_id=current_user.id,
+        job_type="generate",
+    )
+    db.add(job)
+    await db.flush()
+    await db.commit()
+    background_tasks.add_task(
+        _run_generation_job,
+        job.id,
+        "generate",
+        prompt,
+        ref_data,
+        ref_mime,
+        asset_type,
+        None,
+    )
+    return DesignJobCreateResponse(job_id=job.id)
+
+
+@router.post(
+    "/design-projects/{project_id}/assets/{asset_id}/ai-beautify/job",
+    response_model=DesignJobCreateResponse,
+    status_code=202,
+)
+async def create_ai_beautify_job(
+    project_id: str,
+    asset_id: str,
+    body: AiBeautifyRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    asset = await _get_project_asset(project, asset_id, db)
+    prompt = body.prompt or _AI_BEAUTIFY_DEFAULT_PROMPT
+    if not await check_rate_limit(
+        _rate_key("ai_beautify", current_user, project.shop_id), ttl_seconds=60
+    ):
+        raise HTTPException(status_code=429, detail="操作过于频繁，请 60 秒后重试")
+    job = DesignJob(
+        project_id=project.id,
+        user_id=current_user.id,
+        job_type="ai-beautify",
+    )
+    db.add(job)
+    await db.flush()
+    await db.commit()
+    background_tasks.add_task(
+        _run_generation_job,
+        job.id,
+        "ai-beautify",
+        prompt,
+        None,
+        "image/png",
+        asset.asset_type,
+        asset.id,
+    )
+    return DesignJobCreateResponse(job_id=job.id)
+
+
+@router.post(
+    "/design-projects/{project_id}/assets/{asset_id}/bg-replace/job",
+    response_model=DesignJobCreateResponse,
+    status_code=202,
+)
+async def create_bg_replace_job(
+    project_id: str,
+    asset_id: str,
+    body: EditRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    asset = await _get_project_asset(project, asset_id, db)
+    if not await check_rate_limit(
+        _rate_key("edit", current_user, project.shop_id), ttl_seconds=60
+    ):
+        raise HTTPException(status_code=429, detail="操作过于频繁，请 60 秒后重试")
+    job = DesignJob(
+        project_id=project.id,
+        user_id=current_user.id,
+        job_type="bg-replace",
+    )
+    db.add(job)
+    await db.flush()
+    await db.commit()
+    background_tasks.add_task(
+        _run_generation_job,
+        job.id,
+        "bg-replace",
+        body.prompt,
+        None,
+        "image/png",
+        asset.asset_type,
+        asset.id,
+    )
+    return DesignJobCreateResponse(job_id=job.id)
+
+
+@router.post(
+    "/design-projects/{project_id}/assets/{asset_id}/enhance/job",
+    response_model=DesignJobCreateResponse,
+    status_code=202,
+)
+async def create_enhance_job(
+    project_id: str,
+    asset_id: str,
+    body: EditRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    asset = await _get_project_asset(project, asset_id, db)
+    if not await check_rate_limit(
+        _rate_key("edit", current_user, project.shop_id), ttl_seconds=60
+    ):
+        raise HTTPException(status_code=429, detail="操作过于频繁，请 60 秒后重试")
+    job = DesignJob(
+        project_id=project.id,
+        user_id=current_user.id,
+        job_type="enhance",
+    )
+    db.add(job)
+    await db.flush()
+    await db.commit()
+    background_tasks.add_task(
+        _run_generation_job,
+        job.id,
+        "enhance",
+        body.prompt,
+        None,
+        "image/png",
+        asset.asset_type,
+        asset.id,
+    )
+    return DesignJobCreateResponse(job_id=job.id)
+
+
+@router.get(
+    "/design-projects/{project_id}/jobs/{job_id}",
+    response_model=DesignJobResponse,
+)
+async def get_design_job(
+    project_id: str,
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    job = await db.get(DesignJob, job_id)
+    if not job or str(job.project_id) != str(project.id):
+        raise HTTPException(status_code=404, detail="Job not found")
+    resp = DesignJobResponse.model_validate(job).model_dump()
+    if job.status == "success" and job.batch_id:
+        resp["result"] = {
+            "batch_id": str(job.batch_id),
+            "candidates": await _build_candidates(db, project.id, job.batch_id),
+        }
+    return resp
 
 
 async def _generate_derived_candidates(
@@ -776,7 +1170,10 @@ async def save_asset(
     asset = await _get_project_asset(project, asset_id, db)
     data, mime = _decode_image_base64(body.image_base64)
     object_name = upload_bytes(data, mime, folder="design")
+    thumb_bytes, thumb_mime = _make_thumb(data, mime)
+    thumb_name = upload_bytes(thumb_bytes, thumb_mime, folder="design_thumbs")
     asset.processed_url = object_name
+    asset.thumb_url = thumb_name
     if body.edit_stack is not None:
         asset.edit_stack = body.edit_stack
     if body.beauty_config is not None:
@@ -831,6 +1228,7 @@ async def create_menu(
     )
     db.add(menu)
     await db.flush()
+    await _record_menu_version(menu, db)
     return _menu_response(menu)
 
 
@@ -905,6 +1303,7 @@ async def update_menu(
     menu.version += 1
     _touch(menu)
     await db.flush()
+    await _record_menu_version(menu, db)
     return _menu_response(menu)
 
 
@@ -955,18 +1354,116 @@ async def render_menu_api(
         "items": resolved_items,
     }
     try:
-        png_bytes = render_menu(config, asset_images)
+        page_bytes = render_menu_pages(config, asset_images)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
-    object_name = upload_bytes(png_bytes, "image/png", folder="design_menus")
-    menu.output_url = object_name
+    object_names = [
+        upload_bytes(png, "image/png", folder="design_menus") for png in page_bytes
+    ]
+    menu.output_pages = object_names
+    menu.output_url = object_names[0] if object_names else None
     menu.status = "rendered"
     menu.version += 1
     _touch(menu)
     await db.flush()
+    await _record_menu_version(menu, db)
     return RenderResponse(
+        id=menu.id,
+        output_url=get_presigned_url(object_names[0]),
+        pages=[get_presigned_url(name) for name in object_names],
+        version=menu.version,
+    )
+
+@router.post(
+    "/design-projects/{project_id}/menus/{menu_id}/export-pdf",
+    response_model=PdfExportResponse,
+)
+async def export_menu_pdf(
+    project_id: str,
+    menu_id: str,
+    body: RenderRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """把已渲染菜单的多页 PNG 合成 PDF 导出（300dpi）。"""
+    project = await _get_project(project_id, current_user, db)
+    menu = await _get_project_menu(project, menu_id, db)
+    if body.version != menu.version:
+        raise HTTPException(status_code=409, detail="菜单版本不匹配，请刷新后重试")
+    if menu.status != "rendered" or not menu.output_pages:
+        raise HTTPException(status_code=400, detail="请先渲染菜单再导出 PDF")
+    try:
+        page_bytes = [get_object_bytes(name) for name in menu.output_pages]
+        pdf_bytes = render_menu_pdf(page_bytes)
+    except Exception:
+        raise HTTPException(status_code=502, detail="PDF 导出失败，请重新渲染")
+    object_name = upload_bytes(pdf_bytes, "application/pdf", folder="design_menus")
+    return PdfExportResponse(
         id=menu.id,
         output_url=get_presigned_url(object_name),
         version=menu.version,
     )
+
+
+@router.get(
+    "/design-projects/{project_id}/menus/{menu_id}/versions",
+    response_model=list[MenuVersionResponse],
+)
+async def list_menu_versions(
+    project_id: str,
+    menu_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    menu = await _get_project_menu(project, menu_id, db)
+    result = await db.execute(
+        select(MenuDesignVersion)
+        .where(MenuDesignVersion.menu_id == menu.id)
+        .order_by(MenuDesignVersion.version.desc())
+    )
+    return result.scalars().all()
+
+
+@router.post(
+    "/design-projects/{project_id}/menus/{menu_id}/restore",
+    response_model=MenuResponse,
+)
+async def restore_menu_version(
+    project_id: str,
+    menu_id: str,
+    body: RestoreVersionRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    menu = await _get_project_menu(project, menu_id, db)
+    result = await db.execute(
+        select(MenuDesignVersion).where(
+            MenuDesignVersion.menu_id == menu.id,
+            MenuDesignVersion.version == body.version,
+        )
+    )
+    version = result.scalar_one_or_none()
+    if not version:
+        raise HTTPException(status_code=404, detail="版本不存在")
+    snapshot = version.snapshot
+    for key in (
+        "menu_type",
+        "template_id",
+        "shop_name",
+        "logo_url",
+        "color_scheme",
+        "items",
+        "output_url",
+        "output_pages",
+        "status",
+    ):
+        setattr(menu, key, snapshot.get(key))
+    menu.version += 1
+    _touch(menu)
+    await db.flush()
+    await _record_menu_version(menu, db)
+    return _menu_response(menu)
+

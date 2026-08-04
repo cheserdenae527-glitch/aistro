@@ -42,10 +42,29 @@ class Settings(BaseSettings):
     VOLCENGINE_BASE_URL: str = "https://ark.cn-beijing.volces.com/api/v3"
     VOLCENGINE_IMAGE_MODEL: str = "doubao-seedream-5-0-260128"
 
+    # --- 高德地图 MCP ---
+    # 高德开放平台 Web 服务 Key：https://lbs.amap.com/
+    AMAP_MAPS_API_KEY: str = ""
+    # MCP 服务地址。留空时默认走高德官方 Streamable HTTP：
+    #   https://mcp.amap.com/mcp?key=<AMAP_MAPS_API_KEY>
+    # 也可填 ModelScope MCP 广场生成的 SSE 地址，例如：
+    #   https://mcp.api-inference.modelscope.net/<your-id>/sse
+    AMAP_MCP_URL: str = ""
+    # 可选：连接 ModelScope 等代理时需要的鉴权 Token（如 MODELSCOPE_API_KEY）
+    AMAP_MCP_AUTH_TOKEN: str = ""
+
+    # --- 高德 Web API（商圈分析产品功能） ---
+    AMAP_WEB_API_KEY: str = ""
+    AMAP_JS_KEY: str = ""
+    AMAP_SECURITY_JS_CODE: str = ""
+    # 账号级日配额熔断阈值（默认 8000 次/日，按 Asia/Shanghai 自然日）
+    AMAP_DAILY_QUOTA_LIMIT: int = 8000
+
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
 
 settings = Settings()
+
 
 
 
