@@ -443,6 +443,17 @@ class ComplianceCheckRequest(BaseModel):
     script_id: uuid.UUID | None = None
 
 
+class AiGenerateImageRequest(BaseModel):
+    """AI 生成数字人形象图请求：用户自定义形象描述。"""
+
+    prompt: str = Field(..., min_length=2, max_length=500)
+
+    @field_validator("prompt")
+    @classmethod
+    def text_blocked(cls, v: str) -> str:
+        return _check_no_blocked(v)
+
+
 class EngineAvatarCreateRequest(BaseModel):
     """形象 → 引擎 Avatar 生成：可覆盖引擎地址（不传则用形象已存 engine_base_url）。"""
 

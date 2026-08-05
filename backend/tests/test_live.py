@@ -2076,3 +2076,58 @@ def test_engine_avatar_status_idle_before_create(client, monkeypatch):
     assert resp.status_code == 200
     assert resp.json()["status"] == "idle"
 
+
+def test_ai_generate_avatar_image_ok(client, monkeypatch):
+    """AI 生成形象图：豆包生图 4 张 → 存 MinIO → 返回 4 个可选 URL。"""
+    from app.ai.doubao_image import ImageGenError
+    import asyncio
+
+    async def fake_generate(prompt):
+        png = _make_png_bytes()
+        return [(png, "image/png")] * 4
+
+    monkeypatch.setattr("app.api.v1.live.doubao_generate_avatar", fake_generate)
+    _stub_storage(monkeypatch)
+    resp = client.post(
+        "/api/v1/live-avatars/ai-generate-image",
+        json={"prompt": "一位年轻女性虚拟主播，正面端坐，明亮打光，直播间背景"},
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    items = resp.json()["items"]
+    assert len(items) == 4
+    assert all(it["url"].startswith("http://minio.local/live_avatars/") for it in items)
+
+
+def test_ai_generate_avatar_image_engine_error(client, monkeypatch):
+    from app.ai.doubao_image import ImageGenError
+
+    async def fake_generate(prompt):
+        raise ImageGenError(status_code=400, detail="火山引擎生图服务返回错误")
+
+    monkeypatch.setattr("app.api.v1.live.doubao_generate_avatar", fake_generate)
+    resp = client.post(
+        "/api/v1/live-avatars/ai-generate-image",
+        json={"prompt": "虚拟主播形象"},
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 400
+    assert "生图" in resp.json()["detail"]
+
+
+def test_ai_generate_avatar_image_requires_prompt(client, monkeypatch):
+    resp = client.post(
+        "/api/v1/live-avatars/ai-generate-image",
+        json={"prompt": "x"},
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 422
+
+
+def test_ai_generate_avatar_image_requires_auth(client):
+    resp = client.post(
+        "/api/v1/live-avatars/ai-generate-image",
+        json={"prompt": "虚拟主播形象"},
+    )
+    assert resp.status_code == 401
+

@@ -36,6 +36,7 @@ from app.ai.live_script_agent import LiveScriptAgent, LiveScriptAgentError
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.rate_limit import peek_rate_limit, set_rate_limit
+from app.ai.doubao_image import ImageGenError, generate_avatar as doubao_generate_avatar
 from app.services.storage import get_presigned_url, upload_bytes
 from app.models.live_avatar import LiveAvatar
 from app.models.live_danmaku_config import LiveDanmakuConfig
@@ -47,6 +48,7 @@ from app.models.merchant import Merchant
 from app.models.shop import Shop
 from app.models.user import User
 from app.schemas.live import (
+    AiGenerateImageRequest,
     EngineAvatarCreateRequest,
     EngineTestRequest,
     EngineTestResult,
@@ -770,6 +772,33 @@ async def get_engine_avatar_status(
         "engine_avatar_id": avatar.engine_avatar_id,
         "error_msg": str(data.get("error_msg") or ""),
     }
+
+
+@router.post("/live-avatars/ai-generate-image")
+async def ai_generate_avatar_image(
+    body: AiGenerateImageRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """用 AI（豆包 Seedream）按用户自定义描述生成数字人形象图，存 MinIO 后返回 4 张候选。
+
+    供形象表单「AI 生成形象」使用：用户输入风格描述（性别/年龄/职业/风格等）定义具体形象。
+    """
+    try:
+        results = await doubao_generate_avatar(body.prompt)
+    except ImageGenError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=exc.detail)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"AI 生成形象失败：{exc}")
+    options = []
+    for data, mime in results:
+        object_name = upload_bytes(data, mime or "image/png", folder="live_avatars")
+        options.append(
+            {
+                "url": get_presigned_url(object_name, expires=7 * 24 * 3600),
+                "object_name": object_name,
+            }
+        )
+    return {"items": options}
 
 
 @router.post("/live-avatars", response_model=LiveAvatarOut)

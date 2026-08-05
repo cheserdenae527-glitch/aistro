@@ -22,6 +22,7 @@ import {
   EditOutlined,
   PlusOutlined,
   RobotOutlined,
+  ThunderboltOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
 import {
@@ -52,6 +53,14 @@ const TTS_OPTIONS: { value: string; label: string }[] = [
   { value: "indextts2", label: "indextts2" },
   { value: "qwentts", label: "qwentts（通义）" },
   { value: "omnitts", label: "omnitts" },
+];
+
+const AI_STYLE_PRESETS: { label: string; prompt: string }[] = [
+  { label: "年轻女性", prompt: "一位年轻女性虚拟主播，正面端坐，表情自然微笑，明亮均匀打光，简洁干净直播间背景，半身构图，专业主播气质" },
+  { label: "年轻男性", prompt: "一位年轻男性虚拟主播，正面端坐，表情自然，明亮均匀打光，简洁干净直播间背景，半身构图，专业主播气质" },
+  { label: "成熟知性女性", prompt: "一位成熟知性女性主持人，正面端坐，气质优雅，明亮打光，干净背景，半身构图" },
+  { label: "阳光活力男性", prompt: "一位阳光活力的男性主播，正面端坐，笑容自然，明亮打光，干净直播间背景，半身构图" },
+  { label: "动漫风格", prompt: "一位动漫风格虚拟主播，二次元形象，正面端坐，明亮打光，简洁背景，半身构图" },
 ];
 
 const STATUS_OPTIONS: { value: AvatarStatus; label: string }[] = [
@@ -94,6 +103,10 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
   const [uploadingVideo, setUploadingVideo] = useState(false);
   const [generatingAvatarId, setGeneratingAvatarId] = useState<string | null>(null);
   const [avatarProgress, setAvatarProgress] = useState(0);
+  const [aiModalOpen, setAiModalOpen] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiGenerating, setAiGenerating] = useState(false);
+  const [aiOptions, setAiOptions] = useState<{ url: string; object_name: string }[]>([]);
   const [form] = Form.useForm<AvatarFormValues>();
 
   const load = useCallback(async () => {
@@ -169,6 +182,30 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
       setUploadingVideo(false);
     }
     return false;
+  };
+
+  const handleAiGenerate = async () => {
+    if (!aiPrompt.trim()) {
+      message.warning("请先填写形象描述或选择一个预设风格");
+      return;
+    }
+    setAiGenerating(true);
+    setAiOptions([]);
+    try {
+      const res = await liveService.aiGenerateImage(aiPrompt.trim());
+      setAiOptions(res.data.items);
+      if (!res.data.items.length) message.error("AI 未生成出形象，请换个描述重试");
+    } catch (e) {
+      showApiError(e);
+    } finally {
+      setAiGenerating(false);
+    }
+  };
+
+  const handleAiPick = (url: string) => {
+    form.setFieldValue("image_url", url);
+    message.success("已选用 AI 生成的形象图，保存后生效");
+    setAiModalOpen(false);
   };
 
   const handleSubmit = async () => {
@@ -358,6 +395,67 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
       )}
 
       <Modal
+        title="AI 生成数字人形象"
+        open={aiModalOpen}
+        onCancel={() => setAiModalOpen(false)}
+        footer={null}
+        width={760}
+      >
+        <div style={{ marginBottom: 12 }}>
+          <Text strong>选择风格（可再自行修改描述）</Text>
+          <Space wrap style={{ marginTop: 8 }}>
+            {AI_STYLE_PRESETS.map((p) => (
+              <Button
+                key={p.label}
+                size="small"
+                onClick={() => setAiPrompt(p.prompt)}
+              >
+                {p.label}
+              </Button>
+            ))}
+          </Space>
+        </div>
+        <Input.TextArea
+          rows={3}
+          value={aiPrompt}
+          onChange={(e) => setAiPrompt(e.target.value)}
+          placeholder="描述你想要的数字人形象，如：一位戴眼镜的知性女讲师，正面端坐，明亮打光，直播间背景，半身构图"
+        />
+        <Button
+          type="primary"
+          icon={<ThunderboltOutlined />}
+          loading={aiGenerating}
+          onClick={handleAiGenerate}
+          style={{ marginTop: 12 }}
+        >
+          生成形象
+        </Button>
+        {aiOptions.length > 0 && (
+          <div
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(2, 1fr)",
+              gap: 12,
+              marginTop: 16,
+            }}
+          >
+            {aiOptions.map((opt, idx) => (
+              <div
+                key={idx}
+                onClick={() => handleAiPick(opt.url)}
+                style={{ cursor: "pointer", border: "1px solid #d9d9d9", borderRadius: 8, overflow: "hidden" }}
+              >
+                <img src={opt.url} alt={`AI 形象 ${idx + 1}`} style={{ width: "100%", display: "block" }} />
+                <div style={{ textAlign: "center", padding: 6, fontSize: 12 }}>
+                  选用此形象
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
         title={editing ? `编辑形象 — ${editing.name}` : "新建数字人形象"}
         open={modalOpen}
         onOk={handleSubmit}
@@ -373,9 +471,19 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
           <Form.Item name="avatar_type" label="驱动类型">
             <Select options={TYPE_OPTIONS} />
           </Form.Item>
-          <Form.Item name="image_url" label="形象图（可上传图片或填直链 URL）">
+          <Form.Item name="image_url" label="形象图（AI 生成 / 上传图片 / 直链 URL）">
             <Space.Compact style={{ width: "100%" }}>
-              <Input placeholder="https://... 或点右侧上传" />
+              <Input placeholder="https://... 或点右侧 AI 生成/上传" />
+              <Button
+                icon={<ThunderboltOutlined />}
+                onClick={() => {
+                  setAiModalOpen(true);
+                  setAiPrompt("");
+                  setAiOptions([]);
+                }}
+              >
+                AI 生成
+              </Button>
               <Upload
                 accept="image/png,image/jpeg,image/webp"
                 showUploadList={false}

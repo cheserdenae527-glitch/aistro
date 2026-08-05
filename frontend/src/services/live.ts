@@ -344,6 +344,12 @@ export const liveService = {
       { timeout: 300_000 }
     );
   },
+  aiGenerateImage: (prompt: string) =>
+    api.post<{ items: { url: string; object_name: string }[] }>(
+      "/live-avatars/ai-generate-image",
+      { prompt },
+      { timeout: 120_000 }
+    ),
   generateEngineAvatar: (id: string, engineBaseUrl?: string | null) =>
     api.post<{ task_id: string; avatar_id: string }>(
       `/live-avatars/${id}/engine-avatar`,

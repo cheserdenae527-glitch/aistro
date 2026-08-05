@@ -170,3 +170,12 @@
 - 机制：base_asr.get_audio_frame 静音时 type=1（1=silence）；process_frames 静音时按 audio_frames[0].type 找 custom_img_cycle
 - 修复：customvideo_config.json 的 audiotype 由 2 改为 **1** → 静音时自动播放动作序列，无需手动切换
 - 实测：连接后不手动切换，静音两帧 diff 1810 万（动作自动循环）；说话（type=0）自动走嘴型，说完自动回静音动作
+
+## 2026-08-05 回退引擎 + AiRestro「AI 生成数字人形象」
+- 回退：引擎恢复最初版本（--avatar_id wav2lip_avatar_female_model 动态形象，去掉 ai_avatar_v4 静态形象与动作编排 customvideo_config）
+- 新增后端 POST /live-avatars/ai-generate-image：用户自定义描述 → 豆包 Seedream 生成 4 张 → 存 MinIO → 返回 4 个 URL
+- 新增前端：形象表单「AI 生成」按钮 → 弹窗（5 个预设风格 + 自定义描述）→ 生成 4 张 grid → 点选填入形象图
+- 用户自定义形象 = AI 风格描述（性别/年龄/职业/风格）+ 表单（名称/驱动类型/声音 TTS/人设）组合
+- AI 视频素材：项目暂无视频生成 API，用户用可灵/即梦等生成后走既有 upload-video 上传
+- 测试：后端 +4（生成成功/生图错误/缺 prompt 422/未登录 401）→ test_live.py 76 项全绿；前端 86 项全绿；typecheck/eslint/build 通过
+- 实测：ai-generate-image 真实调用 75s 返回 4 张 MinIO URL
