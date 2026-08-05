@@ -13,6 +13,7 @@ import {
   Select,
   Spin,
   Tag,
+  Tooltip,
   Typography,
   Upload,
   message,
@@ -382,15 +383,17 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
                 }
                 extra={
                   <Space>
-                    <Button
-                      size="small"
-                      icon={<RobotOutlined />}
-                      loading={generatingAvatarId === avatar.id}
-                      disabled={generatingAvatarId !== null && generatingAvatarId !== avatar.id}
-                      onClick={() => handleGenerateEngineAvatar(avatar)}
-                    >
-                      {generatingAvatarId === avatar.id ? `${avatarProgress}%` : "生成引擎形象"}
-                    </Button>
+                    <Tooltip title="需达标驱动视频：≥6秒、正面、单人、光线充足（引擎官方 s3fd 流程，生成后自动切换引擎形象）">
+                      <Button
+                        size="small"
+                        icon={<RobotOutlined />}
+                        loading={generatingAvatarId === avatar.id}
+                        disabled={generatingAvatarId !== null && generatingAvatarId !== avatar.id}
+                        onClick={() => handleGenerateEngineAvatar(avatar)}
+                      >
+                        {generatingAvatarId === avatar.id ? `${avatarProgress}%` : "生成引擎形象"}
+                      </Button>
+                    </Tooltip>
                     <Button
                       size="small"
                       icon={<SyncOutlined />}

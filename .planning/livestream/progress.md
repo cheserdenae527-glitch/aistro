@@ -196,3 +196,14 @@
 - 测试：+1 动态（20 帧视频 → dynamic 形象）→ test_live.py 81 项全绿；前端 86 项全绿；typecheck/eslint/build 通过
 - 实测：动态 sync 21s，引擎重启用 airestro_01d785f958aa（300 帧）；不说话两帧 diff 2343 万（身体在动）、说话嘴型正常
 - 动态素材来源：用户可用可灵/即梦「图生视频」生成动态视频 → 上传驱动视频 → 同步即得动态形象
+
+## 2026-08-05 「生成引擎形象」稳化：视频达标检查 + 预处理 + 生成后自动重启
+- 背景：用户反馈「同步到引擎」效果差（静态不动/动态扭曲），想走引擎 s3fd 官方流程（生成引擎形象），但卡 40%
+- 实现：
+  - _prepare_engine_video：提交前达标检查（≥6秒/150帧、平均亮度≥45、haar 正脸检出率≥50%）→ 不达标返回 400 明确原因（不再让引擎卡 40%）；达标则转 720x960 竖版 + gamma 提亮后提交引擎
+  - create_engine_avatar：下载视频 → _prepare_engine_video → 提交 /api/avatar/task（预处理后的视频）
+  - get_engine_avatar_status：completed → 自动 _restart_live_engine 用新形象（幂等：已在用则跳过）
+  - _restart_live_engine 幂等：当前引擎 cmdline 已含该 avatar_id 则跳过重启
+  - 前端「生成引擎形象」按钮加 Tooltip（需达标视频说明）
+- 测试：+3（不达标视频 400 / 短视频拒绝单元 / completed 自动重启断言）→ test_live.py 83 项全绿；前端 86 项全绿
+- 说明：用户用 AI 生成达标视频（正面/单人/≥6秒/光线足）→ 生成引擎形象 → 引擎 s3fd 高质量动态形象 → 自动重启引擎切换

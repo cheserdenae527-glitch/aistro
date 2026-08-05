@@ -1990,6 +1990,7 @@ def test_engine_avatar_create_ok(client, monkeypatch):
         video_url="http://minio.local/v.mp4", engine_base_url="http://localhost:8010",
     )
     fake = _patch_engine_avatar(client, monkeypatch)
+    monkeypatch.setattr("app.api.v1.live._prepare_engine_video", lambda vb: (b"prepared", "video/mp4"))
 
     resp = client.post(
         f"/api/v1/live-avatars/{avatar['id']}/engine-avatar",
@@ -2039,6 +2040,7 @@ def test_engine_avatar_create_engine_error_502(client, monkeypatch):
         video_url="http://minio.local/v.mp4", engine_base_url="http://localhost:8010",
     )
     _patch_engine_avatar(client, monkeypatch, create_status=500)
+    monkeypatch.setattr("app.api.v1.live._prepare_engine_video", lambda vb: (b"prepared", "video/mp4"))
 
     resp = client.post(
         f"/api/v1/live-avatars/{avatar['id']}/engine-avatar",
@@ -2054,6 +2056,9 @@ def test_engine_avatar_status_completed(client, monkeypatch):
         video_url="http://minio.local/v.mp4", engine_base_url="http://localhost:8010",
     )
     fake = _patch_engine_avatar(client, monkeypatch, task_status="completed", task_progress=100)
+    monkeypatch.setattr("app.api.v1.live._prepare_engine_video", lambda vb: (b"prepared", "video/mp4"))
+    restarted = {"v": False}
+    monkeypatch.setattr("app.api.v1.live._restart_live_engine", lambda aid: restarted.update(v=True) or True)
     client.post(f"/api/v1/live-avatars/{avatar['id']}/engine-avatar", headers=auth_headers(client))
 
     resp = client.get(
@@ -2065,6 +2070,7 @@ def test_engine_avatar_status_completed(client, monkeypatch):
     assert body["status"] == "completed"
     assert body["progress"] == 100
     assert body["engine_avatar_id"].startswith("airestro_")
+    assert body["restarted"] is True  # 生成完成自动重启引擎用新形象
 
 
 def test_engine_avatar_status_idle_before_create(client, monkeypatch):
@@ -2256,4 +2262,42 @@ def test_sync_engine_dynamic_video(client, monkeypatch, tmp_path):
     assert os.path.exists(os.path.join(d, "coords.pkl"))
     assert len(os.listdir(os.path.join(d, "full_imgs"))) == 20
     assert len(os.listdir(os.path.join(d, "face_imgs"))) == 20
+
+
+def test_engine_avatar_rejects_bad_video(client, monkeypatch):
+    """视频不达标（真实 _prepare_engine_video 检查）→ 400 明确提示，不再让引擎卡 40%。"""
+    _patch_agents(monkeypatch)
+    avatar = _create_avatar(
+        client, persona=_PERSONA,
+        video_url="http://minio.local/v.mp4", engine_base_url="http://localhost:8010",
+    )
+    monkeypatch.setattr(
+        "app.api.v1.live.httpx.AsyncClient",
+        lambda *a, **k: _FakeDownloadClient(b"not-a-real-video", "video/mp4"),
+    )
+    resp = client.post(
+        f"/api/v1/live-avatars/{avatar['id']}/engine-avatar",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 400
+    assert "驱动视频不达标" in resp.json()["detail"]
+
+
+def test_prepare_engine_video_rejects_short():
+    """预处理单元：短视频直接拒绝（避免引擎 40% 卡死）。"""
+    import cv2
+    import numpy as np
+    import tempfile
+
+    from app.api.v1.live import _prepare_engine_video
+
+    tmp = os.path.join(tempfile.gettempdir(), "short_test.mp4")
+    vw = cv2.VideoWriter(tmp, cv2.VideoWriter_fourcc(*"mp4v"), 25, (320, 240))
+    for _ in range(30):  # 1.2s < 6s
+        vw.write(np.zeros((240, 320, 3), np.uint8))
+    vw.release()
+    with open(tmp, "rb") as f:
+        data = f.read()
+    with pytest.raises(ValueError, match="视频过短"):
+        _prepare_engine_video(data)
 

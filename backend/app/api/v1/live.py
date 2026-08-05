@@ -702,11 +702,19 @@ async def create_engine_avatar(
             vr = await client.get(video_url)
             vr.raise_for_status()
             video_bytes = vr.content
-            mime = vr.headers.get("content-type") or "video/mp4"
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"下载驱动视频失败：{_engine_exc_text(exc)}")
+    # 达标检查 + 预处理（转 720x960 竖版 + 提亮），避免引擎卡在 40% 人脸检测
+    try:
+        prepared, mime = _prepare_engine_video(video_bytes)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=f"驱动视频不达标：{exc}")
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
             resp = await client.post(
                 f"{engine_base}/api/avatar/task",
                 data={"model": "wav2lip", "avatar_id": engine_avatar_id},
-                files={"video_file": (f"{engine_avatar_id}.mp4", video_bytes, mime)},
+                files={"video_file": (f"{engine_avatar_id}.mp4", prepared, mime)},
             )
     except httpx.HTTPError as exc:
         raise HTTPException(status_code=502, detail=f"连接引擎失败：{_engine_exc_text(exc)}")
@@ -770,11 +778,16 @@ async def get_engine_avatar_status(
         progress = int(data.get("progress") or 0)
     except (TypeError, ValueError):
         progress = 0
+    restarted = False
+    if status == "completed" and avatar.engine_avatar_id:
+        # 生成完成 → 自动重启引擎用新形象（幂等：已在用则跳过）
+        restarted = _restart_live_engine(avatar.engine_avatar_id)
     return {
         "status": status,
         "progress": max(0, min(100, progress)),
         "engine_avatar_id": avatar.engine_avatar_id,
         "error_msg": str(data.get("error_msg") or ""),
+        "restarted": restarted,
     }
 
 
@@ -933,12 +946,111 @@ def _build_dynamic_avatar(video_bytes: bytes, workdir: str, avatar_id: str) -> s
     return base
 
 
+def _prepare_engine_video(video_bytes: bytes) -> tuple[bytes, str]:
+    """驱动视频达标检查 + 预处理（转 720x960 竖版 + 提亮），供引擎 s3fd 生成形象。
+
+    不达标抛 ValueError（含明确原因），避免引擎卡在 40% 人脸检测：
+    - 过短（<150 帧 ≈ 6 秒）
+    - 过暗（平均亮度 <45/255）
+    - 未检测到清晰正脸（haar 检出率 <50%）
+    """
+    import cv2
+    import numpy as np
+    import tempfile
+
+    tmp = os.path.join(tempfile.gettempdir(), f"prep_{uuid.uuid4().hex}.mp4")
+    with open(tmp, "wb") as f:
+        f.write(video_bytes)
+    cap = cv2.VideoCapture(tmp)
+    if not cap.isOpened():
+        raise ValueError("无法解析视频文件")
+    total = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+    fps = cap.get(cv2.CAP_PROP_FPS) or 25
+    if total < 150:
+        raise ValueError(f"视频过短（{total} 帧 ≈ {total / fps:.0f} 秒），需 ≥6 秒（≥150 帧）")
+    cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
+    idx = 0
+    sample: list[bool] = []
+    brightness: list[float] = []
+    step = max(1, total // 30)
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        if idx % step == 0:
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            brightness.append(float(gray.mean()))
+            sample.append(len(cascade.detectMultiScale(gray, 1.1, 5, minSize=(80, 80))) > 0)
+        idx += 1
+    cap.release()
+    if brightness and np.mean(brightness) < 45:
+        raise ValueError(f"视频过暗（平均亮度 {np.mean(brightness):.0f}/255），请用光线充足的正面视频")
+    if not sample or sum(sample) / len(sample) < 0.5:
+        raise ValueError("未检测到清晰正脸（检出率不足 50%），请用正面、单人、面部清晰的视频")
+
+    cap = cv2.VideoCapture(tmp)
+    out_tmp = os.path.join(tempfile.gettempdir(), f"prepout_{uuid.uuid4().hex}.mp4")
+    vw = cv2.VideoWriter(out_tmp, cv2.VideoWriter_fourcc(*"mp4v"), 25, (720, 960))
+    gamma = 1.15
+    table = np.array([((i / 255.0) ** (1 / gamma)) * 255 for i in range(256)], dtype=np.uint8)
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        h, w = frame.shape[:2]
+        if w / h > 3 / 4:
+            tw = int(h * 3 / 4)
+            x0 = (w - tw) // 2
+            frame = frame[:, x0 : x0 + tw]
+        else:
+            th = int(w * 4 / 3)
+            y0 = int((h - th) * 0.35)
+            y0 = max(0, min(y0, h - th))
+            frame = frame[y0 : y0 + th, :]
+        frame = cv2.resize(frame, (720, 960))
+        vw.write(cv2.LUT(frame, table))
+    vw.release()
+    cap.release()
+    try:
+        os.remove(tmp)
+    except Exception:
+        pass
+    with open(out_tmp, "rb") as f:
+        out = f.read()
+    try:
+        os.remove(out_tmp)
+    except Exception:
+        pass
+    return out, "video/mp4"
+
+
 def _restart_live_engine(avatar_id: str) -> bool:
     """重启本机 LiveTalking 引擎（--avatar_id <新形象>）。配置缺失或失败返回 False。"""
     workdir = settings.LIVE_ENGINE_WORKDIR
     venv = settings.LIVE_ENGINE_VENV
     if not workdir or not venv or not os.path.isfile(venv):
         return False
+    # 幂等：当前引擎已在用该形象则跳过重启
+    try:
+        out = subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                "Where-Object { $_.CommandLine -match 'listenport 8010' } | "
+                "Select-Object -First 1 -ExpandProperty CommandLine",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=20,
+        )
+        if avatar_id in out.stdout:
+            return True
+    except Exception:
+        pass
     try:
         subprocess.run(
             [
