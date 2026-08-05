@@ -15,6 +15,9 @@
 from __future__ import annotations
 
 import io
+import os
+import pickle
+import subprocess
 import time
 import uuid
 from datetime import datetime, timezone
@@ -33,6 +36,7 @@ from app.ai.live_compliance import LiveCompliance, default_wordlist
 from app.ai.live_danmaku_agent import LiveDanmakuAgent, LiveDanmakuAgentError
 from app.ai.live_review_agent import LiveReviewAgent, LiveReviewAgentError
 from app.ai.live_script_agent import LiveScriptAgent, LiveScriptAgentError
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.rate_limit import peek_rate_limit, set_rate_limit
@@ -799,6 +803,145 @@ async def ai_generate_avatar_image(
             }
         )
     return {"items": options}
+
+
+def _build_static_avatar(img_bytes: bytes, workdir: str, avatar_id: str) -> str:
+    """把单张形象图生成为 wav2lip 静态形象（full_imgs/face_imgs/coords.pkl）。
+
+    竖版 3:4（720x960）、300 帧静态循环；haar 检测人脸 → face_imgs 256x256（wav2lip256 要求）。
+    """
+    import cv2
+    import numpy as np
+
+    arr = np.frombuffer(img_bytes, np.uint8)
+    src = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if src is None:
+        raise ValueError("无法解析形象图")
+    h, w = src.shape[:2]
+    th = h
+    tw = int(th * 3 / 4)
+    if tw > w:
+        tw = w
+        th = int(w * 4 / 3)
+    x0 = max(0, (w - tw) // 2)
+    img = cv2.resize(src[:, x0 : x0 + tw], (720, 960))
+    gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+    cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
+    faces = cascade.detectMultiScale(gray, 1.1, 5, minSize=(60, 60))
+    if len(faces):
+        fx, fy, fw, fh = max(faces, key=lambda f: f[2] * f[3])
+    else:
+        fw = int(img.shape[1] * 0.6)
+        fh = int(fw * 1.15)
+        fx = (img.shape[1] - fw) // 2
+        fy = int(img.shape[0] * 0.18)
+    x1, y1 = fx, fy
+    x2, y2 = min(img.shape[1], fx + fw), min(img.shape[0], fy + fh + 10)
+    base = os.path.join(workdir, "data", "avatars", avatar_id)
+    os.makedirs(os.path.join(base, "full_imgs"), exist_ok=True)
+    os.makedirs(os.path.join(base, "face_imgs"), exist_ok=True)
+    face256 = cv2.resize(img[y1:y2, x1:x2], (256, 256))
+    coord = (int(y1), int(y2), int(x1), int(x2))
+    coords = []
+    for i in range(300):
+        cv2.imwrite(f"{base}/full_imgs/{i:08d}.png", img)
+        cv2.imwrite(f"{base}/face_imgs/{i:08d}.png", face256)
+        coords.append(coord)
+    with open(os.path.join(base, "coords.pkl"), "wb") as f:
+        pickle.dump(coords, f)
+    return base
+
+
+def _restart_live_engine(avatar_id: str) -> bool:
+    """重启本机 LiveTalking 引擎（--avatar_id <新形象>）。配置缺失或失败返回 False。"""
+    workdir = settings.LIVE_ENGINE_WORKDIR
+    venv = settings.LIVE_ENGINE_VENV
+    if not workdir or not venv or not os.path.isfile(venv):
+        return False
+    try:
+        subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                "Where-Object { $_.CommandLine -match 'listenport 8010' } | "
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }",
+            ],
+            timeout=30,
+        )
+    except Exception:
+        pass
+    log = open(os.path.join(workdir, "lt.log"), "a", encoding="utf-8")
+    err = open(os.path.join(workdir, "lt.err.log"), "a", encoding="utf-8")
+    try:
+        subprocess.Popen(
+            [
+                venv,
+                "app.py",
+                "--transport",
+                "webrtc",
+                "--model",
+                "wav2lip",
+                "--avatar_id",
+                avatar_id,
+                "--listenport",
+                "8010",
+            ],
+            cwd=workdir,
+            stdout=log,
+            stderr=err,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return True
+    except Exception:
+        return False
+
+
+@router.post("/live-avatars/{avatar_id}/sync-engine-static")
+async def sync_avatar_to_engine_static(
+    avatar_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """把形象图同步为引擎静态 wav2lip 形象，并自动重启引擎使用它。
+
+    流程：下载形象图 → 本地生成 full_imgs/face_imgs/coords.pkl → 写入引擎
+    data/avatars/<airestro_xxx>/ → 更新形象 engine_avatar_id → 重启引擎
+    （--avatar_id <airestro_xxx>）→ 引擎画面预览即显示该新形象。
+    """
+    avatar = await _get_avatar(avatar_id, current_user, db)
+    image_url = (avatar.image_url or "").strip()
+    if not image_url:
+        raise HTTPException(
+            status_code=400, detail="该形象还没有形象图，请先上传或 AI 生成形象图"
+        )
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
+            r = await client.get(image_url)
+            r.raise_for_status()
+            img_bytes = r.content
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"下载形象图失败：{_engine_exc_text(exc)}")
+    if not settings.LIVE_ENGINE_WORKDIR or not os.path.isdir(settings.LIVE_ENGINE_WORKDIR):
+        raise HTTPException(
+            status_code=400, detail="未配置引擎目录（LIVE_ENGINE_WORKDIR），无法同步到引擎"
+        )
+    engine_aid = f"airestro_{uuid.uuid4().hex[:12]}"
+    try:
+        avatar_dir = _build_static_avatar(img_bytes, settings.LIVE_ENGINE_WORKDIR, engine_aid)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=f"生成引擎形象失败：{exc}")
+    avatar.engine_avatar_id = engine_aid
+    await db.flush()
+    restarted = _restart_live_engine(engine_aid)
+    return {
+        "engine_avatar_id": engine_aid,
+        "restarted": restarted,
+        "dir": avatar_dir,
+    }
 
 
 @router.post("/live-avatars", response_model=LiveAvatarOut)

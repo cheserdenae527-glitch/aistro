@@ -10,6 +10,7 @@ AI Agent 与频控全部 monkeypatch，不调用真实 LLM / Redis。
 from __future__ import annotations
 
 import io
+import os
 
 import httpx
 import pytest
@@ -2128,6 +2129,92 @@ def test_ai_generate_avatar_image_requires_auth(client):
     resp = client.post(
         "/api/v1/live-avatars/ai-generate-image",
         json={"prompt": "虚拟主播形象"},
+    )
+    assert resp.status_code == 401
+
+
+# ============================================================
+# 形象图同步到引擎（静态 wav2lip 形象 + 自动重启）
+# ============================================================
+
+
+class _FakeDownloadClient:
+    def __init__(self, content, mime="image/png"):
+        self.content = content
+        self.mime = mime
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url, **kw):
+        return httpx.Response(
+            200, content=self.content,
+            headers={"content-type": self.mime},
+            request=httpx.Request("GET", url),
+        )
+
+
+def test_sync_engine_static_ok(client, monkeypatch, tmp_path):
+    _patch_agents(monkeypatch)
+    avatar = _create_avatar(client, persona=_PERSONA, image_url="http://minio.local/a.png")
+    monkeypatch.setattr("app.api.v1.live.settings.LIVE_ENGINE_WORKDIR", str(tmp_path))
+    monkeypatch.setattr("app.api.v1.live._restart_live_engine", lambda aid: True)
+    monkeypatch.setattr(
+        "app.api.v1.live.httpx.AsyncClient",
+        lambda *a, **k: _FakeDownloadClient(_make_png_bytes()),
+    )
+
+    resp = client.post(
+        f"/api/v1/live-avatars/{avatar['id']}/sync-engine-static",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["engine_avatar_id"].startswith("airestro_")
+    assert body["restarted"] is True
+    d = os.path.join(str(tmp_path), "data", "avatars", body["engine_avatar_id"])
+    assert os.path.exists(os.path.join(d, "coords.pkl"))
+    assert len(os.listdir(os.path.join(d, "full_imgs"))) == 300
+    assert len(os.listdir(os.path.join(d, "face_imgs"))) == 300
+    got = client.get(
+        f"/api/v1/live-avatars/{avatar['id']}", headers=auth_headers(client)
+    ).json()
+    assert got["engine_avatar_id"] == body["engine_avatar_id"]
+
+
+def test_sync_engine_static_no_image_400(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    avatar = _create_avatar(client, persona=_PERSONA, image_url=None)
+    resp = client.post(
+        f"/api/v1/live-avatars/{avatar['id']}/sync-engine-static",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 400
+    assert "形象图" in resp.json()["detail"]
+
+
+def test_sync_engine_static_no_workdir_400(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    avatar = _create_avatar(client, persona=_PERSONA, image_url="http://minio.local/a.png")
+    monkeypatch.setattr("app.api.v1.live.settings.LIVE_ENGINE_WORKDIR", "")
+    monkeypatch.setattr(
+        "app.api.v1.live.httpx.AsyncClient",
+        lambda *a, **k: _FakeDownloadClient(_make_png_bytes()),
+    )
+    resp = client.post(
+        f"/api/v1/live-avatars/{avatar['id']}/sync-engine-static",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 400
+    assert "LIVE_ENGINE_WORKDIR" in resp.json()["detail"]
+
+
+def test_sync_engine_static_requires_auth(client):
+    resp = client.post(
+        "/api/v1/live-avatars/00000000-0000-0000-0000-000000000000/sync-engine-static",
     )
     assert resp.status_code == 401
 

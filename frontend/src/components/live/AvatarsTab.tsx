@@ -22,6 +22,7 @@ import {
   EditOutlined,
   PlusOutlined,
   RobotOutlined,
+  SyncOutlined,
   ThunderboltOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
@@ -107,6 +108,7 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiGenerating, setAiGenerating] = useState(false);
   const [aiOptions, setAiOptions] = useState<{ url: string; object_name: string }[]>([]);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
   const [form] = Form.useForm<AvatarFormValues>();
 
   const load = useCallback(async () => {
@@ -199,6 +201,27 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
       showApiError(e);
     } finally {
       setAiGenerating(false);
+    }
+  };
+
+  const handleSyncEngine = async (avatar: LiveAvatar) => {
+    if (!avatar.image_url) {
+      message.warning("该形象还没有形象图，请先上传或 AI 生成形象图");
+      return;
+    }
+    setSyncingId(avatar.id);
+    try {
+      const res = await liveService.syncEngineStatic(avatar.id);
+      if (res.data.restarted) {
+        message.success(`已同步并重启引擎，当前引擎形象：${res.data.engine_avatar_id}（刷新预览即可看到）`);
+      } else {
+        message.success(`已同步：${res.data.engine_avatar_id}（引擎未自动重启，请用 --avatar_id ${res.data.engine_avatar_id} 启动）`);
+      }
+      await load();
+    } catch (e) {
+      showApiError(e);
+    } finally {
+      setSyncingId(null);
     }
   };
 
@@ -366,6 +389,14 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
                       onClick={() => handleGenerateEngineAvatar(avatar)}
                     >
                       {generatingAvatarId === avatar.id ? `${avatarProgress}%` : "生成引擎形象"}
+                    </Button>
+                    <Button
+                      size="small"
+                      icon={<SyncOutlined />}
+                      loading={syncingId === avatar.id}
+                      onClick={() => handleSyncEngine(avatar)}
+                    >
+                      同步到引擎
                     </Button>
                     <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(avatar)}>
                       编辑

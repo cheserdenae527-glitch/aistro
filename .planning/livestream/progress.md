@@ -179,3 +179,12 @@
 - AI 视频素材：项目暂无视频生成 API，用户用可灵/即梦等生成后走既有 upload-video 上传
 - 测试：后端 +4（生成成功/生图错误/缺 prompt 422/未登录 401）→ test_live.py 76 项全绿；前端 86 项全绿；typecheck/eslint/build 通过
 - 实测：ai-generate-image 真实调用 75s 返回 4 张 MinIO URL
+
+## 2026-08-05 形象图一键「同步到引擎」（预览显示新 AI 形象）
+- 背景：用户反馈引擎预览还是原形象——AI 生成图只存 AiRestro 记录，引擎渲染用的是启动时 --avatar_id 的形象
+- 后端 POST /live-avatars/{id}/sync-engine-static：下载形象图 → 本地生成 wav2lip 静态形象（720x960 竖版 300 帧 + face_imgs 256x256 + coords.pkl，haar 检测人脸）→ 写入引擎 data/avatars/<airestro_xxx>/ → 更新 engine_avatar_id → 自动重启引擎（--avatar_id 新形象）
+- config.py 加 LIVE_ENGINE_WORKDIR / LIVE_ENGINE_VENV（本机 .env 配置；未配置则返回 400 提示）
+- 前端：形象列表「同步到引擎」按钮 + 引擎形象徽标；同步后自动重启引擎并提示刷新预览
+- 测试：后端 +4（成功生成/缺形象图 400/未配置目录 400/未登录 401）→ test_live.py 80 项全绿；前端 86 项全绿；typecheck/eslint/build 通过
+- 实测：sync-engine-static 8s 完成，引擎自动重启用 airestro_89d1651d3365（300 帧加载 + 渲染成功）
+- 用户流程：AI 生成选图保存 → 点「同步到引擎」→ 刷新预览即显示新形象

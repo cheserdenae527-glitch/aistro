@@ -42,6 +42,10 @@ class Settings(BaseSettings):
     VOLCENGINE_BASE_URL: str = "https://ark.cn-beijing.volces.com/api/v3"
     VOLCENGINE_IMAGE_MODEL: str = "doubao-seedream-5-0-260128"
 
+    # --- 本地数字人引擎（形象同步 / 自动重启用；留空则不自动重启引擎） ---
+    LIVE_ENGINE_WORKDIR: str = ""
+    LIVE_ENGINE_VENV: str = ""
+
     # --- 高德地图 MCP ---
     # 高德开放平台 Web 服务 Key：https://lbs.amap.com/
     AMAP_MAPS_API_KEY: str = ""
