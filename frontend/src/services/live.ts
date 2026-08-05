@@ -29,6 +29,34 @@ export interface EngineConfig {
   api_key_configured?: boolean;
 }
 
+export interface EnginePushResult {
+  status: "ok" | "skipped" | "failed";
+  detail: string;
+}
+
+export interface EngineTestResult {
+  ok: boolean;
+  base_url: string;
+  health: {
+    ok: boolean;
+    status_code: number;
+    latency_ms: number;
+    detail: string;
+  } | null;
+  persona_push: EnginePushResult | null;
+  wordlist_push: EnginePushResult | null;
+  last_health_check: string | null;
+  error?: string | null;
+}
+
+export interface EngineTestRequest {
+  base_url?: string | null;
+  push_persona?: boolean;
+  push_wordlist?: boolean;
+  persona_json?: Persona | null;
+  wordlist?: string[] | null;
+}
+
 export interface PromoItem {
   name: string;
   price?: number | null;
@@ -281,6 +309,10 @@ export const liveService = {
   updateProject: (id: string, data: LiveProjectUpdate) =>
     api.patch<LiveProject>(`/live-projects/${id}`, data),
   deleteProject: (id: string) => api.delete<{ ok: boolean }>(`/live-projects/${id}`),
+  engineTest: (id: string, data?: EngineTestRequest) =>
+    api.post<EngineTestResult>(`/live-projects/${id}/engine-test`, data ?? {}, {
+      timeout: 30_000,
+    }),
 
   // ---- 数字人形象（org 维度） ----
   listAvatars: (params?: { page?: number; page_size?: number }) =>

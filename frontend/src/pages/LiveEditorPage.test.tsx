@@ -16,6 +16,7 @@ vi.mock("../services/live", () => ({
     listScripts: vi.fn(),
     listAvatars: vi.fn(),
     updateProject: vi.fn(),
+    engineTest: vi.fn(),
     generateScript: vi.fn(),
     updateScript: vi.fn(),
     confirmScript: vi.fn(),
@@ -295,6 +296,81 @@ describe("LiveEditorPage · 场次与复盘", () => {
 
     await screen.findByText("必填");
     expect(liveService.updateSession).not.toHaveBeenCalled();
+  });
+});
+
+
+describe("LiveEditorPage · 本地引擎连接测试", () => {
+  it("未配置 base_url 时连接测试按钮禁用，不调用接口", async () => {
+    (liveService.listScripts as ReturnType<typeof vi.fn>).mockResolvedValue({ data: [] });
+    await renderPage();
+    await screen.findByText("火锅直播间");
+    expect(screen.getByRole("button", { name: /连接测试/ })).toBeDisabled();
+    await userEvent.click(screen.getByRole("button", { name: /连接测试/ }));
+    expect(liveService.engineTest).not.toHaveBeenCalled();
+  });
+
+  it("清空已保存 base_url 后点击 → 不调用接口", async () => {
+    (liveService.listScripts as ReturnType<typeof vi.fn>).mockResolvedValue({ data: [] });
+    (liveService.getProject as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        ...project,
+        engine_config: { base_url: "http://localhost:8010", enabled: true, api_key_configured: true },
+      },
+    });
+    await renderPage();
+    await screen.findByText("火锅直播间");
+    const input = screen.getByPlaceholderText("http://localhost:8010");
+    await userEvent.clear(input);
+    await userEvent.click(screen.getByRole("button", { name: /连接测试/ }));
+    expect(liveService.engineTest).not.toHaveBeenCalled();
+  });
+
+  it("填写 base_url → 连接测试调用 engineTest 并展示报告", async () => {
+    (liveService.listScripts as ReturnType<typeof vi.fn>).mockResolvedValue({ data: [] });
+    (liveService.engineTest as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        ok: true,
+        base_url: "http://localhost:8010",
+        health: { ok: true, status_code: 200, latency_ms: 12, detail: "ok" },
+        persona_push: { status: "ok", detail: "ok" },
+        wordlist_push: { status: "skipped", detail: "纯 LiveTalking" },
+        last_health_check: "2026-08-05T03:00:00+00:00",
+        error: null,
+      },
+    });
+
+    await renderPage();
+    await screen.findByText("火锅直播间");
+    const input = screen.getByPlaceholderText("http://localhost:8010");
+    await userEvent.type(input, "http://localhost:8010");
+    await userEvent.click(screen.getByRole("button", { name: /连接测试/ }));
+
+    await waitFor(() =>
+      expect(liveService.engineTest).toHaveBeenCalledWith("proj-1", {
+        base_url: "http://localhost:8010",
+      })
+    );
+    expect(await screen.findByText(/健康检查：通过/)).toBeInTheDocument();
+    expect(screen.getByText(/人设推送：已推送/)).toBeInTheDocument();
+    expect(screen.getByText(/敏感词推送：已跳过/)).toBeInTheDocument();
+  });
+
+  it("接口失败（502）→ 展示错误且不展示报告", async () => {
+    (liveService.listScripts as ReturnType<typeof vi.fn>).mockResolvedValue({ data: [] });
+    (liveService.engineTest as ReturnType<typeof vi.fn>).mockRejectedValue({
+      response: { status: 502, data: { detail: "引擎健康检查失败：无法连接" } },
+    });
+
+    await renderPage();
+    await screen.findByText("火锅直播间");
+    const input = screen.getByPlaceholderText("http://localhost:8010");
+    await userEvent.type(input, "http://localhost:8010");
+    await userEvent.click(screen.getByRole("button", { name: /连接测试/ }));
+
+    await waitFor(() => expect(liveService.engineTest).toHaveBeenCalled());
+    expect(await screen.findByText(/引擎健康检查失败/)).toBeInTheDocument();
+    expect(screen.queryByText(/健康检查：通过/)).not.toBeInTheDocument();
   });
 });
 

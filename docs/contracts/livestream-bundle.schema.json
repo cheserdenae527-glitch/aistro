@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://airestro.local/contracts/livestream-bundle.schema.json",
+  "title": "AiRestro 直播工坊 · 开播包（Livestream Export Bundle）",
+  "description": "AiRestro 直播脚本导出开播包的结构定义。字段与 digital-human-livestream（基于 LiveTalking）的 config/ 结构与管理后台 API 对齐，可直接导入本地数字人引擎。依据 docs/SPEC-LIVESTREAM.md §开播包导出结构 / docs/contracts/livestream-api.md §7。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["script_markdown", "persona_json", "wordlist", "reply_rules", "compliance", "engine_guide"],
+  "properties": {
+    "script_markdown": {
+      "type": "string",
+      "description": "直播脚本 Markdown 全文（分段标题+时长+正文+画面/动作提示），供值守人对照执行或粘贴到引擎文本驱动。",
+      "minLength": 1
+    },
+    "persona_json": {
+      "type": "object",
+      "description": "数字人设。三态优先级：弹幕配置 persona → 脚本人设快照 → 默认占位（含 persona_placeholder 提示）。字段名与 digital-human-livestream config/persona.json 对齐。",
+      "additionalProperties": true,
+      "properties": {
+        "name": { "type": "string", "description": "主播/人设名称" },
+        "personality": { "type": "string", "description": "性格设定，如：亲切热情，懂美食" },
+        "style": { "type": "string", "description": "表达风格，如：烟火气，口语化" },
+        "knowledge_scope": { "type": "string", "description": "知识范围，如：本店菜品、优惠、营业信息" },
+        "forbidden_topics": {
+          "type": "array",
+          "description": "禁忌话题列表",
+          "items": { "type": "string" }
+        }
+      }
+    },
+    "wordlist": {
+      "type": "array",
+      "description": "敏感词/红线话术列表，与 digital-human-livestream config/wordlist.txt 格式对齐：每项为一个词；以 regex: 开头表示正则匹配（如 \"regex:广告\\d+\"）。",
+      "items": { "type": "string", "minLength": 1 }
+    },
+    "reply_rules": {
+      "type": "array",
+      "description": "弹幕回复规则（触发词→回复→模式）。mode=auto 仅限引擎支持自动回复的平台（如 B站）；其余平台一律 manual（值守人人工粘贴候选话术）。",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["trigger", "reply", "mode"],
+        "properties": {
+          "trigger": { "type": "string", "description": "触发词/触发句" },
+          "reply": { "type": "string", "description": "回复内容" },
+          "mode": { "type": "string", "enum": ["auto", "manual"], "description": "auto=引擎自动回复；manual=人工粘贴" }
+        }
+      }
+    },
+    "compliance": {
+      "type": "object",
+      "description": "合规自检结果。pass=false 时脚本不可定稿/导出；导出包可能含非阻断提示项（ok=true），如 persona_placeholder / danmaku_missing / danmaku_stale。",
+      "additionalProperties": false,
+      "required": ["pass", "items"],
+      "properties": {
+        "pass": { "type": "boolean" },
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "ok", "detail"],
+            "properties": {
+              "key": { "type": "string", "description": "检查项标识：ai_label / persona_absolute / content_blocked / off_platform_trade / persona_placeholder / danmaku_missing / danmaku_stale 等" },
+              "ok": { "type": "boolean" },
+              "detail": { "type": "string" }
+            }
+          }
+        }
+      }
+    },
+    "engine_guide": {
+      "type": "string",
+      "description": "引擎启动说明：启动命令 + RTMP 地址 + LiveTalking 水印提醒 + AI 标识文案 + 平台规则以最新公告为准。",
+      "minLength": 1
+    }
+  }
+}

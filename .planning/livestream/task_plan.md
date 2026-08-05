@@ -22,3 +22,13 @@
 - [x] 场次与复盘 Tab：排期/状态流转（开播前置确认弹窗）/补录标记/复盘录入 + AI 复盘
 - [x] 联调真实 L1 API（dev 后端在线）
 - [x] 前端测试：状态流转前置校验/定稿导出禁用/regenerate 二次确认/补录必填
+
+## L3 — 本地引擎接入（文档 + 验证）
+- [x] 核实 LiveTalking / digital-human-livestream 最新部署方式（固定 commit：c963ad4 / db728c7）
+- [x] deploy/livestream/README.md：Windows/Ubuntu + GPU 要求 + RTMP/WebRTC/虚拟摄像头 + 水印/AI 标识提醒 + 管理后台与 Docker
+- [x] docs/contracts/livestream-bundle.schema.json（draft-2020-12，样例校验通过）
+- [x] 后端 engine-test 连接测试 API（健康检查 + persona/wordlist 推送 + last_health_check）+ pytest 12 项
+- [x] 前端「连接测试」按钮 + liveService.engineTest + vitest 4 项
+- [x] 契约文档 livestream-api.md 增补 engine-test
+- [x] 端到端验证：mock 引擎（:8010）→ 健康检查 + 配置导入 + 热加载回读 + 覆盖地址 502；开播包 JSON Schema 校验
+- [x] 合规终审：无「无人直播」宣传；导出包保留 LiveTalking 水印提醒（test_live.py:823）

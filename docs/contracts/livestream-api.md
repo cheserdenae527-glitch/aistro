@@ -69,6 +69,48 @@ Body 任意子集：`title` / `platform` / `goal` / `promo_items` / `ai_label_te
 ### DELETE /live-projects/{id}
 **级联删除** scripts / danmaku_configs / sessions（→ metrics），DB `ON DELETE CASCADE`；形象为 org 维度，不随项目删除。
 
+### POST /live-projects/{id}/engine-test（L3 本地引擎连接测试）
+**目标**：对本地数字人引擎执行健康检查 + 配置推送，验证「开播包 → 引擎」链路连通。
+
+Body（全可选）：
+```json
+{
+  "base_url": "http://localhost:8010",
+  "push_persona": true,
+  "push_wordlist": true,
+  "persona_json": { "name": "店长小雅", "personality": "亲切热情", "style": "烟火气", "knowledge_scope": "本店信息", "forbidden_topics": ["政治", "宗教"] },
+  "wordlist": ["加微信", "regex:广告\\d+"]
+}
+```
+
+- `base_url`：可覆盖项目已存 `engine_config.base_url`（前端测试未保存的表单地址）；不传则用项目配置。均需以 `http://` / `https://` 开头，否则 400
+- `push_persona` / `push_wordlist`：默认 true；为 false 时跳过对应推送
+- `persona_json` / `wordlist`：显式覆盖推送内容；不传时按开播包导出同款优先级解析
+  - persona：`live_danmaku_configs.persona` → 当前活跃批次 confirmed 脚本 `persona_snapshot` → 默认占位人设
+  - wordlist：`danmaku.sensitive_words` → 内置词库（红线话术 + 站外交易引导词）
+
+执行流程（超时 15s）：
+1. `GET {base_url}/health` — 非 2xx / 连接失败 → **502**（不更新 last_health_check）
+2. `POST {base_url}/admin/persona` — 非 404 失败 → **502**
+3. `POST {base_url}/admin/wordlist` — 非 404 失败 → **502**
+4. 引擎未提供 `/admin` API（HTTP 404，纯 LiveTalking 场景）→ 推送标记 `skipped`，不阻断
+5. 全部通过 → 200，写回 `engine_config.last_health_check`（UTC ISO）；`base_url` 为覆盖值时不写回（不污染项目配置）
+
+成功响应：
+```json
+{
+  "ok": true,
+  "base_url": "http://localhost:8010",
+  "health": { "ok": true, "status_code": 200, "latency_ms": 12, "detail": "ok" },
+  "persona_push": { "status": "ok", "detail": "..." },
+  "wordlist_push": { "status": "skipped", "detail": "引擎未提供 /admin 接口（HTTP 404）..." },
+  "last_health_check": "2026-08-05T04:00:00+00:00"
+}
+```
+
+- `api_key` 已配置时以 `Authorization: Bearer <api_key>` 头发送（引擎无需鉴权时无副作用）
+- 前端「基本信息」Tab 提供「连接测试」按钮，直接调用本接口并展示健康检查 / 人设推送 / 敏感词推送结果
+
 ---
 
 ## 2. 数字人形象（org 维度）
@@ -263,6 +305,7 @@ Body：`{ "metrics": { viewers, peak_viewers, avg_watch_sec, interaction_count, 
 | sessions PATCH（planned→live） | 值守/AI 标识/脚本前置任一不满足 → 422 逐项列出 |
 | sessions PATCH 字段可编辑性 | live 起排期/绑定字段锁定；终态仅 notes |
 | engine_config GET | api_key 等脱敏，仅返回 api_key_configured |
+| engine-test | 未配置/非法 base_url 400；健康检查或配置推送失败（非 404）→ 502；仅通过后写回 last_health_check |
 | 形象删除 | 被 scripts/sessions 引用 → 409 |
 | 形象读写改删 / avatar_id 入参 | org 归属校验，跨 org 一律 404 |
 | 全部文本字段 | 敏感词校验（脚本/人设/回复规则/notes/engine_config） |

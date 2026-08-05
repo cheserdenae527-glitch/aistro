@@ -10,11 +10,26 @@ AI Agent 与频控全部 monkeypatch，不调用真实 LLM / Redis。
 from __future__ import annotations
 
 
+import httpx
 import pytest
 
 from app.ai.live_compliance import LiveCompliance
 from app.ai.live_danmaku_agent import LiveDanmakuAgentError
 from app.ai.live_script_agent import LiveScriptAgent, LiveScriptAgentError
+
+
+
+@pytest.fixture(autouse=True)
+def _reset_login_rate_per_test():
+    """每测试重置进程内登录频控，避免整套测试共享 900s 窗口累计触发 429。
+
+    仅测试隔离用，不改动应用侧限流逻辑（app.api.v1.auth._LOGIN_MAX_ATTEMPTS）。
+    """
+    from app.api.v1 import auth as auth_module
+
+    auth_module._login_attempts.clear()
+    yield
+    auth_module._login_attempts.clear()
 
 
 # ============================================================
@@ -984,7 +999,7 @@ def test_export_persona_priority_danmaku_over_snapshot(client, monkeypatch):
         headers=headers,
     )
     # 人工精调弹幕 persona
-    client.put(
+    put_resp = client.put(
         f"/api/v1/live-projects/{project['id']}/danmaku-config",
         json={"persona": {**_PERSONA, "identity": "精调后的店长"}},
         headers=headers,
@@ -1353,6 +1368,312 @@ def test_session_sensitive_notes_422(client, monkeypatch):
     assert resp.status_code == 422
 
 
+# ============================================================
+# L3 本地引擎接入 — engine-test 连接测试
+# ============================================================
 
 
+class _FakeEngineClient:
+    """替换 live.py 里的 httpx.AsyncClient：记录调用并按配置返回。"""
+
+    def __init__(
+        self,
+        *,
+        timeout=None,
+        health_status=200,
+        health_text="ok",
+        persona_status=200,
+        persona_text='{"code":0,"data":{}}',
+        wordlist_status=200,
+        wordlist_text='{"code":0,"data":{}}',
+        connect_error=False,
+    ):
+        self.calls = []
+        self.health_status = health_status
+        self.health_text = health_text
+        self.persona_status = persona_status
+        self.persona_text = persona_text
+        self.wordlist_status = wordlist_status
+        self.wordlist_text = wordlist_text
+        self.connect_error = connect_error
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url, headers=None):
+        self.calls.append(("GET", url, headers))
+        req = httpx.Request("GET", url)
+        if self.connect_error:
+            raise httpx.ConnectError("connection refused", request=req)
+        return httpx.Response(self.health_status, text=self.health_text, request=req)
+
+    async def post(self, url, json=None, headers=None):
+        self.calls.append(("POST", url, json, headers))
+        req = httpx.Request("POST", url)
+        if url.endswith("/admin/persona"):
+            return httpx.Response(self.persona_status, text=self.persona_text, request=req)
+        if url.endswith("/admin/wordlist"):
+            return httpx.Response(self.wordlist_status, text=self.wordlist_text, request=req)
+        return httpx.Response(200, text="{}", request=req)
+
+
+def _patch_engine(client, monkeypatch, **fake_kwargs):
+    fake = _FakeEngineClient(**fake_kwargs)
+    monkeypatch.setattr("app.api.v1.live.httpx.AsyncClient", lambda *a, **k: fake)
+    return fake
+
+
+def _set_engine_config(client, project_id, cfg):
+    resp = client.patch(
+        f"/api/v1/live-projects/{project_id}",
+        json={"engine_config": cfg},
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    return resp.json()
+
+
+def test_engine_test_health_and_push_ok(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    _set_engine_config(
+        client,
+        project["id"],
+        {"base_url": "http://localhost:8010", "api_key": "sk-test", "enabled": True},
+    )
+    fake = _patch_engine(client, monkeypatch)
+
+    resp = client.post(
+        f"/api/v1/live-projects/{project['id']}/engine-test",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["health"]["ok"] is True
+    assert data["health"]["status_code"] == 200
+    assert data["persona_push"]["status"] == "ok"
+    assert data["wordlist_push"]["status"] == "ok"
+    assert data["last_health_check"]
+
+    urls = [c[1] for c in fake.calls]
+    assert urls[0].endswith("/health")
+    assert any(u.endswith("/admin/persona") for u in urls)
+    assert any(u.endswith("/admin/wordlist") for u in urls)
+    # 默认占位人设 + 内置词库
+    persona_call = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/admin/persona"))
+    wordlist_call = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/admin/wordlist"))
+    assert persona_call[2]["name"] == "门店主播"
+    assert isinstance(wordlist_call[2], list) and len(wordlist_call[2]) > 0
+    # api_key 以 Bearer 头发送
+    assert persona_call[3].get("Authorization") == "Bearer sk-test"
+
+
+def test_engine_test_updates_last_health_check_and_masks_key(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    _set_engine_config(client, project["id"], {"base_url": "http://localhost:8010", "api_key": "sk-x"})
+    _patch_engine(client, monkeypatch)
+
+    resp = client.post(
+        f"/api/v1/live-projects/{project['id']}/engine-test",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+
+    got = client.get(
+        f"/api/v1/live-projects/{project['id']}", headers=auth_headers(client)
+    ).json()
+    assert got["engine_config"]["last_health_check"]
+    assert got["engine_config"]["api_key_configured"] is True
+    assert "api_key" not in got["engine_config"]
+
+
+def test_engine_test_missing_base_url_400(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    resp = client.post(
+        f"/api/v1/live-projects/{project['id']}/engine-test",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 400
+    assert "base_url" in resp.json()["detail"]
+
+
+def test_engine_test_invalid_base_url_400(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    _set_engine_config(client, project["id"], {"base_url": "localhost:8010"})
+    resp = client.post(
+        f"/api/v1/live-projects/{project['id']}/engine-test",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 400
+    assert "http" in resp.json()["detail"]
+
+
+def test_engine_test_health_http_error_502(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    _set_engine_config(client, project["id"], {"base_url": "http://localhost:8010"})
+    _patch_engine(client, monkeypatch, health_status=500, health_text="boom")
+
+    resp = client.post(
+        f"/api/v1/live-projects/{project['id']}/engine-test",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 502
+    assert "健康检查" in resp.json()["detail"]
+    # 失败不更新 last_health_check
+    got = client.get(
+        f"/api/v1/live-projects/{project['id']}", headers=auth_headers(client)
+    ).json()
+    assert not got["engine_config"].get("last_health_check")
+
+
+def test_engine_test_connect_error_502(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    _set_engine_config(client, project["id"], {"base_url": "http://localhost:8010"})
+    _patch_engine(client, monkeypatch, connect_error=True)
+
+    resp = client.post(
+        f"/api/v1/live-projects/{project['id']}/engine-test",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 502
+    assert "无法连接" in resp.json()["detail"]
+
+
+def test_engine_test_push_404_skipped_not_fatal(client, monkeypatch):
+    """纯 LiveTalking 无 /admin API → 404 标记 skipped，健康检查通过仍整体成功。"""
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    _set_engine_config(client, project["id"], {"base_url": "http://localhost:8010"})
+    _patch_engine(client, monkeypatch, persona_status=404, wordlist_status=404)
+
+    resp = client.post(
+        f"/api/v1/live-projects/{project['id']}/engine-test",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["ok"] is True
+    assert data["persona_push"]["status"] == "skipped"
+    assert data["wordlist_push"]["status"] == "skipped"
+    assert data["last_health_check"]
+
+
+def test_engine_test_push_failed_502(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    _set_engine_config(client, project["id"], {"base_url": "http://localhost:8010"})
+    _patch_engine(client, monkeypatch, wordlist_status=500, wordlist_text="oops")
+
+    resp = client.post(
+        f"/api/v1/live-projects/{project['id']}/engine-test",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 502
+    assert "敏感词推送失败" in resp.json()["detail"]
+
+
+def test_engine_test_uses_danmaku_persona_and_wordlist(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    _set_engine_config(client, project["id"], {"base_url": "http://localhost:8010"})
+    put_resp = client.put(
+        f"/api/v1/live-projects/{project['id']}/danmaku-config",
+        json={
+            "persona": {
+                "name": "弹幕店长",
+                "personality": "活泼",
+                "style": "轻松",
+                "knowledge_scope": "本店信息",
+                "forbidden_topics": ["政治"],
+            },
+            "sensitive_words": ["加微信", "regex:广告\\d+"],
+        },
+        headers=auth_headers(client),
+    )
+    assert put_resp.status_code == 200, put_resp.text
+    fake = _patch_engine(client, monkeypatch)
+
+    resp = client.post(
+        f"/api/v1/live-projects/{project['id']}/engine-test",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    persona_call = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/admin/persona"))
+    wordlist_call = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/admin/wordlist"))
+    assert persona_call[2]["name"] == "弹幕店长"
+    assert wordlist_call[2] == ["加微信", "regex:广告\\d+"]
+
+
+def test_engine_test_override_payload(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    _set_engine_config(client, project["id"], {"base_url": "http://localhost:8010"})
+    fake = _patch_engine(client, monkeypatch)
+
+    resp = client.post(
+        f"/api/v1/live-projects/{project['id']}/engine-test",
+        json={
+            "persona_json": {"name": "覆盖主播", "personality": "沉稳"},
+            "wordlist": ["覆盖词"],
+        },
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    persona_call = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/admin/persona"))
+    wordlist_call = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/admin/wordlist"))
+    assert persona_call[2]["name"] == "覆盖主播"
+    assert wordlist_call[2] == ["覆盖词"]
+
+
+def test_engine_test_skip_pushes_flag(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    _set_engine_config(client, project["id"], {"base_url": "http://localhost:8010"})
+    fake = _patch_engine(client, monkeypatch)
+
+    resp = client.post(
+        f"/api/v1/live-projects/{project['id']}/engine-test",
+        json={"push_persona": False, "push_wordlist": False},
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    data = resp.json()
+    assert data["persona_push"] is None
+    assert data["wordlist_push"] is None
+    assert data["ok"] is True
+    assert not any(c[0] == "POST" for c in fake.calls)
+
+
+def test_engine_test_base_url_override(client, monkeypatch):
+    """请求体 base_url 覆盖：项目未存配置也能用表单地址测试。"""
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    fake = _patch_engine(client, monkeypatch)
+
+    resp = client.post(
+        f"/api/v1/live-projects/{project['id']}/engine-test",
+        json={
+            "base_url": "http://10.0.0.9:8010",
+            "push_persona": False,
+            "push_wordlist": False,
+        },
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["base_url"] == "http://10.0.0.9:8010"
+    assert fake.calls[0][1] == "http://10.0.0.9:8010/health"
+    # 项目 engine_config 仍为空（未保存）
+    got = client.get(
+        f"/api/v1/live-projects/{project['id']}", headers=auth_headers(client)
+    ).json()
+    assert got["engine_config"] is None
 

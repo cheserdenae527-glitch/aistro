@@ -14,8 +14,12 @@
 """
 from __future__ import annotations
 
+import time
 import uuid
+from datetime import datetime, timezone
 from typing import Any
+
+import httpx
 
 import openai
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -40,6 +44,9 @@ from app.models.merchant import Merchant
 from app.models.shop import Shop
 from app.models.user import User
 from app.schemas.live import (
+    EngineTestRequest,
+    EngineTestResult,
+
     ComplianceCheckRequest,
     ComplianceResult,
     DanmakuConfigUpdate,
@@ -74,6 +81,7 @@ _DEFAULT_PAGE_SIZE = 20
 _MAX_PAGE_SIZE = 100
 _DEFAULT_AI_LABEL = "本直播间由 AI 数字人出镜，真人运营团队值守"
 _ENGINE_SENSITIVE_KEYS = ("api_key", "secret")
+_ENGINE_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
 
 _PLATFORM_NAMES = {
     "douyin": "抖音",
@@ -385,6 +393,176 @@ async def delete_project(
     await db.flush()
     return {"ok": True}
 
+
+
+
+def _trim_engine_body(text: str, limit: int = 200) -> str:
+    """截断引擎响应正文，避免把超长 HTML 塞进报错/报告。"""
+    text = (text or "").strip()
+    if len(text) > limit:
+        return text[:limit] + "..."
+    return text or ""
+
+
+def _engine_exc_text(exc: httpx.HTTPError) -> str:
+    if isinstance(exc, httpx.TimeoutException):
+        return "连接超时（15s）"
+    if isinstance(exc, httpx.ConnectError):
+        return f"无法连接（{exc.__class__.__name__}）"
+    return f"{exc.__class__.__name__}: {exc}"
+
+
+async def _engine_push(
+    client: httpx.AsyncClient,
+    url: str,
+    payload: Any,
+    headers: dict[str, str],
+    label: str,
+) -> dict:
+    """POST JSON 到引擎管理后台 API。
+
+    - 2xx → ok
+    - 404 → skipped（纯 LiveTalking 无 /admin 管理后台，不阻断）
+    - 其他失败 → failed（调用方决定是否整体失败）
+    """
+    try:
+        resp = await client.post(url, json=payload, headers=headers)
+    except httpx.HTTPError as exc:
+        return {"status": "failed", "detail": f"请求失败：{_engine_exc_text(exc)}"}
+    if resp.status_code == 404:
+        return {
+            "status": "skipped",
+            "detail": f"引擎未提供 {label} 接口（HTTP 404），可能为纯 LiveTalking，已跳过配置推送",
+        }
+    if resp.status_code >= 400:
+        return {
+            "status": "failed",
+            "detail": f"HTTP {resp.status_code}：{_trim_engine_body(resp.text)}",
+        }
+    return {"status": "ok", "detail": _trim_engine_body(resp.text) or "ok"}
+
+
+@router.post(
+    "/live-projects/{project_id}/engine-test",
+    response_model=EngineTestResult,
+)
+async def test_engine_connection(
+    project_id: str,
+    body: EngineTestRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """本地引擎「连接测试」：GET {base_url}/health 健康检查 + 可选 persona/wordlist 配置推送。
+
+    - 未配置 base_url → 400
+    - 健康检查失败 / 配置推送失败（非 404）→ 502，且不更新 last_health_check
+    - 引擎未提供 /admin API（404）→ 推送标记 skipped，不阻断（纯 LiveTalking 场景）
+    - 通过后写回 engine_config.last_health_check（UTC ISO）
+    """
+    project = await _get_project(project_id, current_user, db)
+    cfg = dict(project.engine_config or {})
+    # 允许请求体覆盖 base_url（前端测试未保存的表单地址）
+    override_url = (body.base_url or "").strip().rstrip("/") if body and body.base_url else ""
+    base_url = override_url or str(cfg.get("base_url") or "").strip().rstrip("/")
+    if not base_url:
+        raise HTTPException(
+            status_code=400, detail="未配置本地引擎管理后台地址（engine_config.base_url）"
+        )
+    if not (base_url.startswith("http://") or base_url.startswith("https://")):
+        raise HTTPException(status_code=400, detail="引擎地址需以 http:// 或 https:// 开头")
+    headers = {}
+    if cfg.get("api_key"):
+        headers["Authorization"] = f"Bearer {cfg['api_key']}"
+
+    push_persona = body.push_persona if body is not None else True
+    push_wordlist = body.push_wordlist if body is not None else True
+
+    # 与开播包导出同款优先级解析 persona / wordlist
+    persona_json: dict | None = body.persona_json if body and body.persona_json else None
+    wordlist: list[str] | None = body.wordlist if body and body.wordlist else None
+    danmaku: LiveDanmakuConfig | None = None
+    if persona_json is None or wordlist is None:
+        danmaku = (
+            await db.execute(
+                select(LiveDanmakuConfig).where(
+                    LiveDanmakuConfig.project_id == project.id
+                )
+            )
+        ).scalar_one_or_none()
+    if persona_json is None:
+        if danmaku and danmaku.persona:
+            persona_json = dict(danmaku.persona)
+        else:
+            script = await _active_confirmed_script(project.id, db)
+            persona_json = (
+                dict(script.persona_snapshot) if script and script.persona_snapshot else dict(_DEFAULT_PERSONA)
+            )
+    if wordlist is None:
+        wordlist = (
+            list(danmaku.sensitive_words)
+            if danmaku and danmaku.sensitive_words
+            else default_wordlist()
+        )
+
+    health: dict | None = None
+    persona_push: dict | None = None
+    wordlist_push: dict | None = None
+    async with httpx.AsyncClient(timeout=_ENGINE_TIMEOUT) as client:
+        t0 = time.perf_counter()
+        try:
+            resp = await client.get(f"{base_url}/health", headers=headers)
+        except httpx.HTTPError as exc:
+            raise HTTPException(
+                status_code=502, detail=f"引擎健康检查失败：{_engine_exc_text(exc)}"
+            )
+        latency_ms = round((time.perf_counter() - t0) * 1000)
+        if resp.status_code >= 400:
+            raise HTTPException(
+                status_code=502,
+                detail=(
+                    f"引擎健康检查未通过（HTTP {resp.status_code}）："
+                    f"{_trim_engine_body(resp.text)}"
+                ),
+            )
+        health = {
+            "ok": True,
+            "status_code": resp.status_code,
+            "latency_ms": latency_ms,
+            "detail": _trim_engine_body(resp.text) or "ok",
+        }
+
+        if push_persona:
+            persona_push = await _engine_push(
+                client, f"{base_url}/admin/persona", persona_json, headers, "/admin/persona"
+            )
+            if persona_push["status"] == "failed":
+                raise HTTPException(
+                    status_code=502, detail=f"人设推送失败：{persona_push['detail']}"
+                )
+        if push_wordlist:
+            wordlist_push = await _engine_push(
+                client, f"{base_url}/admin/wordlist", wordlist, headers, "/admin/wordlist"
+            )
+            if wordlist_push["status"] == "failed":
+                raise HTTPException(
+                    status_code=502, detail=f"敏感词推送失败：{wordlist_push['detail']}"
+                )
+
+    now_iso = datetime.now(timezone.utc).isoformat()
+    # 仅当测试的是项目已保存的 base_url 才写回 last_health_check；
+    # override 地址未保存，不污染项目配置（返回值仍带本次检查时间）。
+    if not override_url:
+        cfg["last_health_check"] = now_iso
+        project.engine_config = cfg
+        await db.flush()
+    return EngineTestResult(
+        ok=True,
+        base_url=base_url,
+        health=health,
+        persona_push=persona_push,
+        wordlist_push=wordlist_push,
+        last_health_check=now_iso,
+    )
 
 # ============================================================
 # 数字人形象（org 维度，团队级共享）

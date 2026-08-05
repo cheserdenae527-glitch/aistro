@@ -436,3 +436,37 @@ class LiveExportBundle(BaseModel):
 
 class ComplianceCheckRequest(BaseModel):
     script_id: uuid.UUID | None = None
+
+
+class EngineTestRequest(BaseModel):
+    """本地引擎「连接测试」请求：健康检查 + 可选配置推送。
+
+    base_url 可覆盖项目已存配置（前端测试未保存的表单地址）；不传则用项目
+    engine_config.base_url。persona_json / wordlist 不传时自动按开播包导出同款
+    优先级解析（persona：弹幕配置 → 当前活跃定稿脚本快照 → 默认占位；
+    wordlist：弹幕配置 → 内置词库）。
+    """
+
+    base_url: str | None = None
+    push_persona: bool = True
+    push_wordlist: bool = True
+    persona_json: dict | None = None
+    wordlist: list[str] | None = None
+
+    @field_validator("persona_json", "wordlist")
+    @classmethod
+    def engine_test_text_blocked(cls, v):
+        if v is not None:
+            _check_text_tree(v, "引擎测试内容")
+        return v
+
+
+class EngineTestResult(BaseModel):
+    ok: bool
+    base_url: str
+    health: dict | None = None
+    persona_push: dict | None = None
+    wordlist_push: dict | None = None
+    last_health_check: datetime | None = None
+    error: str | None = None
+

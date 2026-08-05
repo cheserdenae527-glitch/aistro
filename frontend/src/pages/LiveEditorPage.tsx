@@ -16,13 +16,20 @@ import {
   Typography,
   message,
 } from "antd";
-import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined, SaveOutlined } from "@ant-design/icons";
+import {
+  ApiOutlined,
+  ArrowLeftOutlined,
+  DeleteOutlined,
+  PlusOutlined,
+  SaveOutlined,
+} from "@ant-design/icons";
 import AvatarsTab from "../components/live/AvatarsTab";
 import DanmakuTab from "../components/live/DanmakuTab";
 import ScriptTab from "../components/live/ScriptTab";
 import SessionsTab from "../components/live/SessionsTab";
 import {
   liveService,
+  type EngineTestResult,
   type LiveAvatar,
   type LivePlatform,
   type LiveProject,
@@ -34,6 +41,12 @@ import { activeScript, PLATFORM_LABELS } from "../utils/live";
 import { showApiError } from "../utils/errors";
 
 const { Text, Title } = Typography;
+
+function pushStatusLabel(push: { status: string; detail: string }) {
+  if (push.status === "ok") return "已推送";
+  if (push.status === "skipped") return "已跳过（纯 LiveTalking 无 /admin API）";
+  return `失败：${push.detail}`;
+}
 
 interface BasicForm {
   platform: LivePlatform;
@@ -60,7 +73,10 @@ export default function LiveEditorPage({ onReady }: Props) {
   const [scripts, setScripts] = useState<LiveScript[]>([]);
   const [avatars, setAvatars] = useState<LiveAvatar[]>([]);
   const [savingBasic, setSavingBasic] = useState(false);
+  const [testingEngine, setTestingEngine] = useState(false);
+  const [engineTestResult, setEngineTestResult] = useState<EngineTestResult | null>(null);
   const [basicForm] = Form.useForm<BasicForm>();
+  const watchedBaseUrl = Form.useWatch("base_url", basicForm);
   const [promoDraft, setPromoDraft] = useState<PromoItem[]>([]);
 
   const loadAll = useCallback(async () => {
@@ -112,7 +128,40 @@ export default function LiveEditorPage({ onReady }: Props) {
     }
   }, [id]);
 
+  const refreshProject = useCallback(async () => {
+    if (!id) return;
+    try {
+      const res = await liveService.getProject(id);
+      setProject(res.data);
+    } catch {
+      // 忽略（仅刷新引擎配置状态，失败不影响页面）
+    }
+  }, [id]);
+
   const active = activeScript(scripts);
+
+  const handleEngineTest = async () => {
+    if (!project) return;
+    const baseUrl = (basicForm.getFieldValue("base_url") as string | undefined)?.trim();
+    if (!baseUrl) {
+      message.warning("请先填写引擎管理后台地址（base_url）");
+      return;
+    }
+    setTestingEngine(true);
+    setEngineTestResult(null);
+    try {
+      const res = await liveService.engineTest(project.id, { base_url: baseUrl });
+      setEngineTestResult(res.data);
+      if (res.data.ok) {
+        message.success("连接测试通过：健康检查 + 配置推送成功");
+        await refreshProject();
+      }
+    } catch (e) {
+      showApiError(e);
+    } finally {
+      setTestingEngine(false);
+    }
+  };
 
   const handleSaveBasic = async () => {
     if (!project) return;
@@ -250,11 +299,11 @@ export default function LiveEditorPage({ onReady }: Props) {
                   </Button>
 
                   <Title level={5} style={{ marginTop: 20 }}>
-                    本地引擎连接配置（L1 仅存储，L3 联调）
+                    本地引擎连接配置（L3：连接测试 + 配置推送）
                   </Title>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                     <Form.Item name="base_url" label="引擎管理后台地址">
-                      <Input placeholder="http://localhost:xxxx" />
+                      <Input placeholder="http://localhost:8010" />
                     </Form.Item>
                     <Form.Item name="enabled" label="启用" valuePropName="checked">
                       <Switch checkedChildren="开" unCheckedChildren="关" />
@@ -267,6 +316,54 @@ export default function LiveEditorPage({ onReady }: Props) {
                     <Form.Item name="api_key" label="更新 API Key（留空保持不变）" style={{ marginBottom: 0 }}>
                       <Input.Password placeholder="留空则保留原值" style={{ width: 280 }} />
                     </Form.Item>
+                  </Space>
+                  <Space direction="vertical" style={{ marginBottom: 16 }}>
+                    <Button
+                      icon={<ApiOutlined />}
+                      loading={testingEngine}
+                      onClick={handleEngineTest}
+                      disabled={!project.engine_config?.base_url && !watchedBaseUrl}
+                    >
+                      连接测试
+                    </Button>
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      测试将对引擎执行 GET /health 健康检查，并推送 persona / wordlist（digital-human-livestream
+                      管理后台）；纯 LiveTalking 无 /admin API 时推送自动跳过。通过后记录最近检查时间。
+                    </Text>
+                    {engineTestResult && (
+                      <div
+                        style={{
+                          padding: "8px 12px",
+                          border: "1px solid #d9d9d9",
+                          borderRadius: 6,
+                          background: "#fafafa",
+                          fontSize: 12,
+                          maxWidth: 520,
+                        }}
+                      >
+                        {engineTestResult.health && (
+                          <Text style={{ display: "block" }}>
+                            健康检查：通过（HTTP {engineTestResult.health.status_code}，约{" "}
+                            {engineTestResult.health.latency_ms}ms）
+                          </Text>
+                        )}
+                        {engineTestResult.persona_push && (
+                          <Text style={{ display: "block" }}>
+                            人设推送：{pushStatusLabel(engineTestResult.persona_push)}
+                          </Text>
+                        )}
+                        {engineTestResult.wordlist_push && (
+                          <Text style={{ display: "block" }}>
+                            敏感词推送：{pushStatusLabel(engineTestResult.wordlist_push)}
+                          </Text>
+                        )}
+                        {engineTestResult.last_health_check && (
+                          <Text type="secondary" style={{ display: "block" }}>
+                            最近检查：{new Date(engineTestResult.last_health_check).toLocaleString()}
+                          </Text>
+                        )}
+                      </div>
+                    )}
                   </Space>
                   <div>
                     <Button type="primary" icon={<SaveOutlined />} loading={savingBasic} onClick={handleSaveBasic}>
