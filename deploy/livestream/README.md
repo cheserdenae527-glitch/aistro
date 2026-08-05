@@ -246,8 +246,12 @@ curl -X POST http://localhost:8010/admin/persona \
   -d '{"name":"店长小雅","personality":"亲切热情","style":"烟火气","knowledge_scope":"本店菜品","forbidden_topics":["政治","宗教"]}'
 curl -X POST http://localhost:8010/admin/wordlist \
   -H "Content-Type: application/json" \
-  -d '["加微信","regex:广告\\d+"]'
+  -d '{"content":"加微信\nregex:广告\\d+"}'
 ```
+
+> **以真实实现为准（2026-08-05 实测）**：仓库 README 的 wordlist 示例是 JSON 数组，但实际代码（`admin.py`）要求
+> `{"content": "<每行一词的文本>"}`；persona 四字段（name/personality/style/knowledge_scope）**必填且非空**，
+> 否则返回 `{"code":-1,"msg":"配置缺少必需字段..."}`。AiRestro engine-test 已按真实格式推送。
 
 ## 9. 合规提醒（必读）
 
@@ -269,9 +273,21 @@ curl -X POST http://localhost:8010/admin/wordlist \
 
 ## 附：L3 验证记录（2026-08-05）
 
-- 无本地 GPU 环境，采用 **mock 引擎**（本地起一个实现 `/health` + `/admin/persona` + `/admin/wordlist` 的 Python 服务）完成端到端验证：
+**第一阶段 · mock 引擎（无 GPU 语义验证）**
+- 本地起一个实现 `/health` + `/admin/persona` + `/admin/wordlist` 的 Python 服务完成端到端验证：
   - AiRestro `POST /live-projects/{id}/engine-test` → 健康检查 200 + persona/wordlist 推送成功
-  - 回读 `/admin/persona`、`/admin/wordlist` 确认热加载生效
-  - `engine_config.last_health_check` 落库
-- 有 GPU 环境（RTX 3060+）时，按 §3/§4 启动真实引擎后，用同一「连接测试」按钮完成健康检查 + 配置导入，即可进入推流（§6）。
+  - 回读 `/admin/persona`、`/admin/wordlist` 确认热加载生效；`engine_config.last_health_check` 落库
+
+**第二阶段 · 真实 GPU 环境（本机 RTX 4060 Laptop 8GB，Windows 11）**
+- **LiveTalking（c963ad4）真实渲染 + WebRTC 推流**：
+  - 模型：`shibing624/ai-avatar-wav2lip`（HF 镜像 hf-mirror.com）的 `wav2lip.pth`（214MB）+ `wav2lip_avatar_female_model` 形象（550 帧）
+  - Python 3.12 venv + torch 2.6.0+cu124；`python app.py --transport webrtc --model wav2lip --avatar_id wav2lip_avatar_female_model`
+  - 无头 Chromium（Playwright）打开 `/index.html` → WebRTC 会话建立 → 文本驱动（edge_tts → wav2lip）→ 视频 576×768 实际播放、两帧像素差 1280 万（画面在动）
+  - 帧率：`inferfps ≈ 44–50`（远超 25 实时阈值）；`finalfps ≈ 25`（首段含 TTS+预热略低 6.7，后续达标）
+- **digital-human-livestream（db728c7）真实管理后台 + AiRestro engine-test 全链路**：
+  - `/health` → `{"code":0,"data":{"status":"ok","gpu_available":true,"gpu_name":"NVIDIA GeForce RTX 4060 Laptop GPU","gpu_memory_free_mb":4846}}`
+  - AiRestro engine-test（默认 + 弹幕配置两轮）→ persona/wordlist 推送成功；回读确认**真实热加载**：`config/persona.json` 被改写为 L3弹幕主播、`config/wordlist.txt` 被改写为「加微信 / regex:广告\d+」，dhl 日志「人设配置已重载 / 敏感词词库已更新」
+  - `/admin/status` 显示 `persona_name: L3弹幕主播`；`/admin/render_backend` 返回 `wav2lip`
+  - 实测发现并修正：wordlist 推送需 `{"content": 文本}`（README 数组示例与实际实现不符）、persona 四字段必填非空 → 已同步修正 AiRestro engine-test 与本文档
+- **Docker GPU 直通**：`docker run --gpus all nvidia/cuda:12.4.0-base-ubuntu22.04 nvidia-smi` 容器内可见 RTX 4060（本机 Docker 可直通 GPU）
 - 详细记录见 `.planning/livestream/progress.md`。

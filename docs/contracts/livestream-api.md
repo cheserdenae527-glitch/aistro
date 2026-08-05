@@ -96,6 +96,10 @@ Body（全可选）：
 4. 引擎未提供 `/admin` API（HTTP 404，纯 LiveTalking 场景）→ 推送标记 `skipped`，不阻断
 5. 全部通过 → 200，写回 `engine_config.last_health_check`（UTC ISO）；`base_url` 为覆盖值时不写回（不污染项目配置）
 
+**推送格式（2026-08-05 对真实 digital-human-livestream 实测校准）**：
+- `persona`：以 `{name, personality, style, knowledge_scope, forbidden_topics}` 字典直接 POST；引擎四字段（name/personality/style/knowledge_scope）**必填非空**，缺失时 engine-test 自动兜底填充
+- `wordlist`：**`{"content": "每行一词\nregex:xxx"}`**（真实 `admin.py` 要求 content 文本字段；仓库 README 的 JSON 数组示例与实际实现不符，以实现为准）
+
 成功响应：
 ```json
 {

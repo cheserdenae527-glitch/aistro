@@ -305,20 +305,29 @@ def _normalize_persona_for_engine(persona: dict) -> dict:
 
     live_avatars.persona / 弹幕配置可能使用 avatar 风格字段
     {identity, tone, boundaries, forbidden_topics}，而引擎只认
-    {name, personality, style, knowledge_scope, forbidden_topics}。
-    若已含任一引擎字段则视为引擎格式原样返回；否则在保留原字段基础上
-    映射补充 name(identity)、style(tone)，保证开播包可直接导入引擎，
-    同时不丢原始信息（identity/tone/boundaries 仍保留）。
+    {name, personality, style, knowledge_scope, forbidden_topics} 且四者均必填非空。
+
+    策略：
+    1. 保留原字段不丢信息（identity/tone/boundaries 仍保留）；
+    2. 映射补充 name(identity)、style(tone)；
+    3. 补齐引擎四必填字段（缺 personality/knowledge_scope/name/style 时给合理兜底），
+       保证开播包与 engine-test 推送可直接被 digital-human-livestream 接受。
     """
     persona = dict(persona or {})
-    if any(
-        k in persona for k in ("name", "personality", "style", "knowledge_scope")
-    ):
-        return persona
     for src, dst in (("identity", "name"), ("tone", "style")):
         value = persona.get(src)
         if value and dst not in persona:
             persona[dst] = value
+    defaults = {
+        "name": "门店主播",
+        "personality": "亲切热情，自然大方",
+        "style": "烟火气，口语化",
+        "knowledge_scope": "本店菜品、优惠与营业信息",
+    }
+    for key, fallback in defaults.items():
+        value = persona.get(key)
+        if not isinstance(value, str) or not value.strip():
+            persona[key] = fallback
     return persona
 
 
@@ -563,8 +572,14 @@ async def test_engine_connection(
                     status_code=502, detail=f"人设推送失败：{persona_push['detail']}"
                 )
         if push_wordlist:
+            # digital-human-livestream 真实接口：POST /admin/wordlist 接受
+            # {"content": "每行一词\nregex:xxx"}（README 示例与实现不一致，以实现为准）
             wordlist_push = await _engine_push(
-                client, f"{base_url}/admin/wordlist", wordlist, headers, "/admin/wordlist"
+                client,
+                f"{base_url}/admin/wordlist",
+                {"content": "\n".join(wordlist)},
+                headers,
+                "/admin/wordlist",
             )
             if wordlist_push["status"] == "failed":
                 raise HTTPException(

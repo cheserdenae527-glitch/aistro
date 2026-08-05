@@ -44,3 +44,23 @@
 - 二.2 开播包下载：ExportBundleModal 新增「下载引擎文件」（persona.json / wordlist.txt / script.md / reply_rules.json / engine_guide.txt）与「下载开播包」（完整 JSON，livestream-bundle-YYYY-MM-DD.json），纯 Blob 无新依赖。新增前端测试 2 项（文件名 + 内容断言，FileReader 读取 jsdom Blob）
 - 二.3 最近检查展示：LiveEditorPage 基本信息引擎配置区块展示「最近健康检查」时间 + 引擎启用状态。新增前端测试 1 项
 - 验证：后端 test_live.py 55 项全绿；前端 85 项全绿；typecheck / eslint / build 通过
+
+
+## 2026-08-05 真实 GPU 环境推流验证（本机 RTX 4060 Laptop 8GB）
+- 环境：Windows 11 + NVIDIA RTX 4060 Laptop（8GB，驱动 610.47）+ Python 3.12 venv + torch 2.6.0+cu124；Docker Desktop GPU 直通可用
+- **LiveTalking（c963ad4）真实渲染 + WebRTC 推流**：
+  - 模型来自 HF 镜像 hf-mirror.com `shibing624/ai-avatar-wav2lip`：wav2lip.pth（214MB）+ wav2lip_avatar_female_model（550 帧，结构 full_imgs/face_imgs/coords.pkl 与 LiveTalking 完全兼容）
+  - 依赖安装：venv --system-site-packages 复用 torch；补 aiortc/aiohttp_cors/diffusers/accelerate/av 等；requirements.txt 在中文 Windows 有 GBK 解码问题 → 清洗为 ASCII 后安装
+  - 启动 `python app.py --transport webrtc --model wav2lip --avatar_id wav2lip_avatar_female_model`；GPU 占用 ~6GB
+  - Playwright 无头 Chromium 打开 /index.html → 填 offerAvatar → WebRTC 会话建立（SID）→ 文本驱动（edge_tts→wav2lip）→ 视频 576x768 实际播放（readyState=4, currentTime 前进）、两帧像素差 1280 万
+  - 帧率日志：inferfps ≈ 43.6/47.6/50.3（远超 25）；finalfps ≈ 6.7(首段)/24.8/25.1/25.0（首段含 TTS+预热偏低，后续达标）
+- **digital-human-livestream（db728c7）真实管理后台 + AiRestro engine-test 全链路**：
+  - 依赖：补 flask_sockets/bilibili-api-python/azure-cognitiveservices-speech；仓库缺 `wav2lip/models/`（from wav2lip.models import Wav2Lip）→ 从 LiveTalking engines/avatars/wav2lip/models 复制补齐
+  - /health → gpu_available:true, gpu_name:RTX 4060, gpu_memory_free_mb:4846
+  - AiRestro engine-test（默认 + 弹幕配置两轮）全通；回读确认真实热加载：config/persona.json 改写为 L3弹幕主播、config/wordlist.txt 改写为「加微信/regex:广告\d+」，dhl 日志「人设配置已重载/敏感词词库已更新」；/admin/status persona_name 可见；/admin/render_backend 返回 wav2lip
+- **实测发现并修正的契约偏差**（README 示例 vs 真实实现）：
+  1. POST /admin/wordlist 真实要求 `{"content": "<每行一词文本>"}`，README 数组示例会 500 → engine-test 改为 {"content": "\n".join(wordlist)}
+  2. persona 四字段（name/personality/style/knowledge_scope）必填非空 → _normalize_persona_for_engine 兜底填充
+  - 已同步修正 backend engine-test、mock 引擎、后端测试、deploy README §8、livestream-api.md
+- 验证脚本留档：`.planning/livestream/mock_engine.py`、`e2e_l3.py`、`engines/`（LiveTalking）、`dhl/`（digital-human-livestream）、`verify_webrtc.mjs`（Playwright，临时）、截图 frame_a/frame_b.png
+- 测试：后端 test_live.py 55 项全绿（engine-test + persona 相关 18 项单独跑过）；前端 85 项不受影响

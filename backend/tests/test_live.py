@@ -1467,7 +1467,9 @@ def test_engine_test_health_and_push_ok(client, monkeypatch):
     persona_call = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/admin/persona"))
     wordlist_call = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/admin/wordlist"))
     assert persona_call[2]["name"] == "门店主播"
-    assert isinstance(wordlist_call[2], list) and len(wordlist_call[2]) > 0
+    # 真实 digital-human-livestream：wordlist 需 {"content": "每行一词"}
+    assert isinstance(wordlist_call[2], dict) and "content" in wordlist_call[2]
+    assert len(wordlist_call[2]["content"].split("\n")) > 0
     # api_key 以 Bearer 头发送
     assert persona_call[3].get("Authorization") == "Bearer sk-test"
 
@@ -1610,7 +1612,7 @@ def test_engine_test_uses_danmaku_persona_and_wordlist(client, monkeypatch):
     persona_call = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/admin/persona"))
     wordlist_call = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/admin/wordlist"))
     assert persona_call[2]["name"] == "弹幕店长"
-    assert wordlist_call[2] == ["加微信", "regex:广告\\d+"]
+    assert wordlist_call[2] == {"content": "加微信\nregex:广告\\d+"}
 
 
 def test_engine_test_override_payload(client, monkeypatch):
@@ -1631,7 +1633,7 @@ def test_engine_test_override_payload(client, monkeypatch):
     persona_call = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/admin/persona"))
     wordlist_call = next(c for c in fake.calls if c[0] == "POST" and c[1].endswith("/admin/wordlist"))
     assert persona_call[2]["name"] == "覆盖主播"
-    assert wordlist_call[2] == ["覆盖词"]
+    assert wordlist_call[2] == {"content": "覆盖词"}
 
 
 def test_engine_test_skip_pushes_flag(client, monkeypatch):
@@ -1698,6 +1700,9 @@ def test_export_persona_normalized_to_engine_format(client, monkeypatch):
     assert persona["name"] == "店长小雅"
     assert persona["style"] == "亲切热情，懂美食"
     assert persona["forbidden_topics"] == ["政治", "宗教"]
+    # 引擎四必填字段非空（personality/knowledge_scope 兜底）
+    assert persona["personality"].strip()
+    assert persona["knowledge_scope"].strip()
 
 
 def test_export_persona_engine_format_passthrough(client, monkeypatch):
@@ -1755,4 +1760,6 @@ def test_engine_test_persona_normalized_to_engine_format(client, monkeypatch):
     assert pushed["identity"] == "弹幕店长"  # 原字段保留
     assert pushed["name"] == "弹幕店长"  # 映射补充
     assert pushed["style"] == "活泼"
+    assert pushed["personality"].strip()  # 四必填兜底
+    assert pushed["knowledge_scope"].strip()
 
