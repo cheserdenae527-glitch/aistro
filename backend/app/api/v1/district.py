@@ -7,17 +7,20 @@
 """
 from __future__ import annotations
 
+import asyncio
+import logging
 import uuid
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from sqlalchemy import func, select
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.rate_limit import peek_rate_limit, set_rate_limit
 from app.models.district_poi import DistrictPoi
+from app.models.district_poi_override import DistrictPoiOverride
 from app.models.district_snapshot import DistrictSnapshot
 from app.models.merchant import Merchant
 from app.models.shop import Shop
@@ -28,12 +31,17 @@ from app.schemas.district import (
     MapConfigResponse,
     PoisListResponse,
     PoiOut,
+    PoiOverrideListResponse,
+    PoiOverrideOut,
+    PoiOverrideUpsert,
     SnapshotDetailResponse,
     SnapshotListResponse,
     SnapshotSummaryResponse,
 )
-from app.services.amap_web import AmapWebError, geocode, place_around, proxy_security_config
-from app.services.district import compute_stats, map_competitor_types, parse_poi
+from app.services.amap_web import AmapWebError, forward_amap_service, geocode, place_around, place_detail
+from app.services.district import compute_stats, map_competitor_types, merge_competitor_detail, parse_poi
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["district"])
 
@@ -146,15 +154,56 @@ async def analyze_district(
         raise HTTPException(status_code=502, detail=exc.detail)
 
     # 4. 清洗 + 统计
-    mapping_full, competitor_types = map_competitor_types(shop.category)
+    mapping_full, competitor_mapping = map_competitor_types(shop.category)
     parsed: list[dict] = []
     seen_poi_ids: set[str] = set()
     for poi in raw_pois:
-        item = parse_poi(poi, shop.name, competitor_types)
+        item = parse_poi(poi, shop.name, competitor_mapping)
         if not item["poi_id"] or item["poi_id"] in seen_poi_ids:
             continue
         seen_poi_ids.add(item["poi_id"])
         parsed.append(item)
+
+    # 4.1 竞品深度数据：对 is_competitor 的 POI 并发拉 place/detail（评分/人均/营业时间/商圈）
+    #     最多 _DETAIL_MAX 家，失败只记日志不阻断分析（高德详情缺失是常态）
+    _DETAIL_MAX = 20
+    competitors = [p for p in parsed if p["is_competitor"] and not p["excluded_as_self"]]
+    details: dict[str, dict] = {}
+    async def _fetch_detail(poi_id: str) -> tuple[str, dict | None]:
+        try:
+            return poi_id, await place_detail(poi_id)
+        except AmapWebError:
+            return poi_id, None
+
+    if competitors:
+        for poi_id, detail in await asyncio.gather(
+            *(_fetch_detail(c["poi_id"]) for c in competitors[:_DETAIL_MAX])
+        ):
+            if detail:
+                details[poi_id] = detail
+        for p in parsed:
+            if p["poi_id"] in details:
+                merge_competitor_detail(p, details[p["poi_id"]])
+        if len(competitors) > _DETAIL_MAX:
+            logger.warning("竞品数 %d 超过详情上限 %d，超出的未拉取详情", len(competitors), _DETAIL_MAX)
+
+    # 4.2 人工标记（竞品/非竞品覆盖）优先于自动判定
+    if parsed:
+        override_rows = (
+            await db.execute(
+                select(DistrictPoiOverride).where(
+                    DistrictPoiOverride.shop_id == shop.id,
+                    DistrictPoiOverride.poi_id.in_([p["poi_id"] for p in parsed]),
+                )
+            )
+        ).scalars().all()
+        override_by_poi = {o.poi_id: o for o in override_rows}
+        for p in parsed:
+            ov = override_by_poi.get(p["poi_id"])
+            if ov:
+                p["is_competitor"] = ov.is_competitor
+                p["is_competitor_manual"] = True
+
     stats = compute_stats(parsed, _DEFAULT_RADIUS)
 
     # 5. Step B：单事务落库
@@ -347,13 +396,174 @@ async def list_competitors(
             poi_id=p.poi_id,
             name=p.name,
             category=p.category,
+            typecode=p.typecode,
             address=p.address,
+            tel=p.tel,
+            tag=p.tag,
+            business_area=p.business_area,
+            rating=float(p.rating) if p.rating is not None else None,
+            cost=float(p.cost) if p.cost is not None else None,
+            business_hours=p.business_hours,
             distance_m=p.distance_m,
             lng=float(p.lng) if p.lng is not None else None,
             lat=float(p.lat) if p.lat is not None else None,
+            is_competitor_manual=p.is_competitor_manual,
         )
         for p in result.scalars().all()
     ]
+
+
+# ============================================================
+# 人工标记（竞品/非竞品覆盖）
+# ============================================================
+
+async def _shop_snapshot_ids(shop_id, db):
+    """该门店全部快照 id（用于把人工标记物化到快照 POI 行）。"""
+    return (
+        await db.execute(
+            select(DistrictSnapshot.id).where(DistrictSnapshot.shop_id == shop_id)
+        )
+    ).scalars().all()
+
+
+@router.get(
+    "/shops/{shop_id}/district/poi-overrides",
+    response_model=PoiOverrideListResponse,
+)
+async def list_poi_overrides(
+    shop_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """列出该门店全部人工标记（含历史 poi，便于管理与导出）。"""
+    await _verify_shop_owner(shop_id, current_user, db)
+    rows = (
+        await db.execute(
+            select(DistrictPoiOverride)
+            .where(DistrictPoiOverride.shop_id == shop_id)
+            .order_by(DistrictPoiOverride.updated_at.desc())
+        )
+    ).scalars().all()
+    return PoiOverrideListResponse(
+        items=[PoiOverrideOut.model_validate(r) for r in rows],
+        total=len(rows),
+    )
+
+
+@router.put(
+    "/shops/{shop_id}/district/poi-overrides/{poi_id}",
+    response_model=PoiOverrideOut,
+)
+async def upsert_poi_override(
+    shop_id: str,
+    poi_id: str,
+    body: PoiOverrideUpsert,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """人工标记：设为竞品或非竞品（幂等，跨快照生效，重新分析后仍沿用）。"""
+    shop = await _verify_shop_owner(shop_id, current_user, db)
+
+    poi_name = body.poi_name
+    if not poi_name:
+        latest = (
+            await db.execute(
+                select(DistrictSnapshot)
+                .where(
+                    DistrictSnapshot.shop_id == shop.id,
+                    DistrictSnapshot.status == "analyzed",
+                )
+                .order_by(DistrictSnapshot.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        if latest:
+            poi_name = (
+                await db.execute(
+                    select(DistrictPoi.name)
+                    .where(
+                        DistrictPoi.snapshot_id == latest.id,
+                        DistrictPoi.poi_id == poi_id,
+                    )
+                    .limit(1)
+                )
+            ).scalar_one_or_none()
+
+    override = (
+        await db.execute(
+            select(DistrictPoiOverride).where(
+                DistrictPoiOverride.shop_id == shop.id,
+                DistrictPoiOverride.poi_id == poi_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if override:
+        override.is_competitor = body.is_competitor
+        override.note = body.note
+        if poi_name:
+            override.poi_name = poi_name
+    else:
+        override = DistrictPoiOverride(
+            shop_id=shop.id,
+            poi_id=poi_id,
+            poi_name=poi_name,
+            is_competitor=body.is_competitor,
+            note=body.note,
+        )
+        db.add(override)
+    await db.flush()
+
+    snapshot_ids = await _shop_snapshot_ids(shop.id, db)
+    if snapshot_ids:
+        await db.execute(
+            update(DistrictPoi)
+            .where(
+                DistrictPoi.poi_id == poi_id,
+                DistrictPoi.snapshot_id.in_(snapshot_ids),
+            )
+            .values(is_competitor=body.is_competitor, is_competitor_manual=True)
+        )
+    await db.commit()
+    return PoiOverrideOut.model_validate(override)
+
+
+@router.delete(
+    "/shops/{shop_id}/district/poi-overrides/{poi_id}",
+    status_code=204,
+)
+async def delete_poi_override(
+    shop_id: str,
+    poi_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """取消人工标记：删除覆盖，快照 POI 还原为自动判定。"""
+    shop = await _verify_shop_owner(shop_id, current_user, db)
+    override = (
+        await db.execute(
+            select(DistrictPoiOverride).where(
+                DistrictPoiOverride.shop_id == shop.id,
+                DistrictPoiOverride.poi_id == poi_id,
+            )
+        )
+    ).scalar_one_or_none()
+    if override:
+        await db.delete(override)
+    snapshot_ids = await _shop_snapshot_ids(shop.id, db)
+    if snapshot_ids:
+        await db.execute(
+            update(DistrictPoi)
+            .where(
+                DistrictPoi.poi_id == poi_id,
+                DistrictPoi.snapshot_id.in_(snapshot_ids),
+                DistrictPoi.is_competitor_manual.is_(True),
+            )
+            .values(
+                is_competitor=DistrictPoi.is_competitor_auto,
+                is_competitor_manual=False,
+            )
+        )
+    await db.commit()
 
 
 # ============================================================
@@ -372,12 +582,16 @@ async def get_map_config(
 
 
 @router.get("/district/_AMapService/{path:path}")
-async def amap_security_proxy(path: str):
-    """高德 JS API 安全密钥代理（无需 JWT，地图初始化请求不带 token）。"""
+async def amap_service_proxy(path: str, request: Request):
+    """高德 JS API 服务代理（无需 JWT，地图初始化请求不带 token）。
+
+    按官方模式把 SDK 请求按路径转发到高德对应服务，并附加 securityJsCode。
+    """
+    params = {k: v for k, v in request.query_params.items()}
     try:
-        resp = await proxy_security_config()
+        resp = await forward_amap_service(path, params)
     except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"高德安全配置代理失败: {exc}")
+        raise HTTPException(status_code=502, detail=f"高德服务代理失败: {exc}")
     return Response(
         content=resp.content,
         media_type=resp.headers.get("content-type", "application/json"),

@@ -21,10 +21,12 @@ logger = logging.getLogger(__name__)
 _AMAP_BASE = "https://restapi.amap.com/v3"
 _GEOCODE_URL = f"{_AMAP_BASE}/geocode/geo"
 _AROUND_URL = f"{_AMAP_BASE}/place/around"
+_DETAIL_URL = f"{_AMAP_BASE}/place/detail"
 _SECURITY_CONFIG_URL = "https://restapi.amap.com/securityConfig"
 
 # 地理编码精度白名单（白名单放行，其余一律拒绝）
-_GEOCODE_LEVEL_ALLOWED = {"门牌号", "道路", "兴趣点", "地名"}
+# 注意：高德实际返回的门牌级 level 是「门址」（部分账号返回「门牌号」），两者都放行
+_GEOCODE_LEVEL_ALLOWED = {"门牌号", "门址", "道路", "兴趣点", "地名"}
 
 # 餐饮服务类型
 _TYPES_FOOD = "050000"
@@ -151,6 +153,7 @@ async def place_around(
                 "types": types,
                 "offset": _PAGE_SIZE,
                 "page": page,
+                "extensions": "all",
                 "output": "JSON",
             }
             data = await _get_json(client, _AROUND_URL, params, retry=True)
@@ -165,16 +168,63 @@ async def place_around(
     return pois
 
 
-async def proxy_security_config() -> httpx.Response:
-    """高德 JS API 安全密钥代理：前端不暴露 securityJsCode。
+async def place_detail(poi_id: str) -> dict[str, Any]:
+    """POI 详情（单店，竞品深度数据）：评分/人均/营业时间/商圈/电话/标签。
 
-    前端设置 _AMapSecurityConfig.serviceHost 指向本服务，请求转发到
-    https://restapi.amap.com/securityConfig 并附带 key + jscode。
+    失败抛 AmapWebError（调用方按需容错）。place/detail 单次调用计入日配额。
     """
-    params = {
-        "key": settings.AMAP_JS_KEY,
-        "jscode": settings.AMAP_SECURITY_JS_CODE,
+    params: dict[str, Any] = {
+        "key": settings.AMAP_WEB_API_KEY,
+        "id": poi_id,
+        "output": "JSON",
     }
     async with httpx.AsyncClient(timeout=10.0) as client:
-        return await client.get(_SECURITY_CONFIG_URL, params=params)
+        data = await _get_json(client, _DETAIL_URL, params, retry=False)
+    if data.get("status") != "1" or not data.get("pois"):
+        raise AmapWebError(502, f"高德 POI 详情失败: {data.get('info') or data.get('infocode') or ''}")
+    poi = data["pois"][0]
+    biz_ext = poi.get("biz_ext") or {}
+    return {
+        "typecode": str(poi.get("typecode") or ""),
+        "tel": str(poi.get("tel") or "") or None,
+        "tag": str(poi.get("tag") or "") or None,
+        "business_area": str(poi.get("business_area") or "") or None,
+        "rating": _to_float(biz_ext.get("rating")),
+        "cost": _to_float(biz_ext.get("cost")),
+        "business_hours": str(biz_ext.get("opentime2") or biz_ext.get("open_time") or "") or None,
+    }
+
+
+def _to_float(value: Any) -> float | None:
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+async def forward_amap_service(path: str, params: dict[str, Any]) -> httpx.Response:
+    """高德 JS API 服务代理：前端不暴露 securityJsCode。
+
+    前端设置 window._AMapSecurityConfig = { serviceHost: "/api/v1/district/_AMapService" }，
+    AMap SDK 会把地图样式/瓦片/Web 服务请求发到本代理，这里按官方模式转发并附加 jscode：
+      v4/map/styles -> https://webapi.amap.com/v4/map/styles
+      v3/vectormap  -> https://fmap01.amap.com/v3/vectormap
+      其他          -> https://restapi.amap.com/{path}
+    """
+    forwarded = dict(params)
+    if settings.AMAP_SECURITY_JS_CODE:
+        forwarded["jscode"] = settings.AMAP_SECURITY_JS_CODE
+    if "key" not in forwarded:
+        forwarded["key"] = settings.AMAP_JS_KEY
+
+    if path.startswith("v4/map/styles"):
+        url = f"https://webapi.amap.com/{path}"
+    elif path.startswith("v3/vectormap"):
+        url = f"https://fmap01.amap.com/{path}"
+    elif path:
+        url = f"https://restapi.amap.com/{path}"
+    else:
+        url = _SECURITY_CONFIG_URL
+    async with httpx.AsyncClient(timeout=10.0) as client:
+        return await client.get(url, params=forwarded)
 

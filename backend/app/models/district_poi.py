@@ -29,11 +29,24 @@ class DistrictPoi(Base):
     poi_id: Mapped[str] = mapped_column(String(50), nullable=False)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     category: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    typecode: Mapped[str | None] = mapped_column(String(50), nullable=True)
     address: Mapped[str | None] = mapped_column(Text, nullable=True)
+    tel: Mapped[str | None] = mapped_column(String(40), nullable=True)
+    tag: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    business_area: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    rating: Mapped[float | None] = mapped_column(Numeric(3, 1), nullable=True)
+    cost: Mapped[float | None] = mapped_column(Numeric(8, 2), nullable=True)
+    business_hours: Mapped[str | None] = mapped_column(String(255), nullable=True)
     lng: Mapped[float | None] = mapped_column(Numeric(10, 6), nullable=True)
     lat: Mapped[float | None] = mapped_column(Numeric(10, 6), nullable=True)
     distance_m: Mapped[int] = mapped_column(Integer, nullable=False, server_default="0")
     is_competitor: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa.text("false")
+    )
+    is_competitor_auto: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, server_default=sa.text("false")
+    )
+    is_competitor_manual: Mapped[bool] = mapped_column(
         Boolean, nullable=False, server_default=sa.text("false")
     )
     excluded_as_self: Mapped[bool] = mapped_column(

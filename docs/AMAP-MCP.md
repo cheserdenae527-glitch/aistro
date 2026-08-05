@@ -163,6 +163,23 @@ Content-Type: application/json
 > 说明：实际线上 MCP Server 共暴露 **15 个工具**（含上表 12 个查询类 + 3 个 `maps_schema_*` 场景类）。
 > 骑行工具名以 `maps_direction_bicycling` 为准。以 `GET /api/v1/maps/tools` 实时返回为准。
 
+### 5.1 单个店铺的具体分类：`typecode`
+
+MCP 的 POI 搜索（`maps_around_search` / `maps_text_search`）返回的每个店铺带 **`typecode`** 字段，即高德对该店铺的具体三级分类码，例如（武汉实测 2026-08）：
+
+| 店铺 | typecode | 含义 |
+|---|---|---|
+| 某火锅店 | `050117` | 餐饮服务 → 中餐厅 → 火锅店 |
+| 某烧烤店 | `050118` | 餐饮服务 → 中餐厅 → 特色/地方风味餐厅 |
+| 某咖啡厅 | `050500` | 餐饮服务 → 咖啡厅 → 咖啡厅 |
+| 麦当劳 | `050302` | 餐饮服务 → 快餐厅 → 麦当劳 |
+
+要点：
+- `typecode` 可能是多值，以 `|` 分隔（如 `050302|050900`），需拆分后逐个判断；
+- MCP 返回的 POI 字段较精简（`id/name/address/typecode/photo`），**不含** Web API 的 `type` 文本字段；
+- `maps_search_detail`（Web API 为 `/v3/place/detail`）可拿到更深的单店数据：`rating`（评分）、`cost`（人均）、`open_time/opentime2`（营业时间）、`business_area`（商圈名）；商圈分析已据此给竞品补深度数据（详见 SPEC-DISTRICT 2.4）；
+- 商圈分析产品链路走 Web API（同时拿到 `type` + `typecode`），竞品判定即「type 文本子串 OR typecode 精确命中」，详见 [SPEC-DISTRICT.md](./SPEC-DISTRICT.md) 3.1。
+
 ---
 
 ## 6. 使用示例

@@ -19,6 +19,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.ai.deal_agent import DealAgentError
+from app.ai.deal_copy_agent import build_system_prompt
 
 
 def _make_png(size=(64, 64), color=(210, 110, 50)) -> bytes:
@@ -965,3 +966,24 @@ def test_copy_patch_updates_only_that_platform(client, monkeypatch):
         headers=headers,
     )
     assert resp.status_code == 422
+
+
+# ============================================================
+# copy agent 系统提示词（回归：.format 撞 JSON 大括号 500）
+# ============================================================
+
+
+def test_copy_system_prompt_builds_without_error():
+    # 此前 _SYSTEM_PROMPT.format(...) 会把 JSON 示例的大括号当占位符 → KeyError 500
+    for platform in ("douyin", "meituan", "xiaohongshu"):
+        prompt = build_system_prompt(platform)
+        assert "平台策略：" in prompt
+        # JSON 结构示例的大括号必须保留
+        assert '"title"' in prompt
+        assert '"selling_points"' in prompt
+        assert '"cover_prompt"' in prompt
+    # 平台差异化文案确实注入
+    assert "数字+场景+情绪" in build_system_prompt("douyin")
+    assert "品类关键词前置" in build_system_prompt("meituan")
+    assert "3:4 种草风" in build_system_prompt("xiaohongshu")
+

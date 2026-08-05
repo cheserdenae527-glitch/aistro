@@ -29,11 +29,20 @@ class PoiOut(BaseModel):
     poi_id: str
     name: str
     category: str | None = None
+    typecode: str | None = None
     address: str | None = None
+    tel: str | None = None
+    tag: str | None = None
+    business_area: str | None = None
+    rating: float | None = None
+    cost: float | None = None
+    business_hours: str | None = None
     lng: float | None = None
     lat: float | None = None
     distance_m: int
     is_competitor: bool
+    is_competitor_auto: bool = False
+    is_competitor_manual: bool = False
     excluded_as_self: bool
 
 
@@ -79,10 +88,39 @@ class CompetitorOut(BaseModel):
     poi_id: str
     name: str
     category: str | None = None
+    typecode: str | None = None
     address: str | None = None
+    tel: str | None = None
+    tag: str | None = None
+    business_area: str | None = None
+    rating: float | None = None
+    cost: float | None = None
+    business_hours: str | None = None
     distance_m: int
     lng: float | None = None
     lat: float | None = None
+    is_competitor_manual: bool = False
+
+
+class PoiOverrideUpsert(BaseModel):
+    is_competitor: bool
+    note: str | None = None
+    poi_name: str | None = None
+
+
+class PoiOverrideOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    poi_id: str
+    poi_name: str | None = None
+    is_competitor: bool
+    note: str | None = None
+    updated_at: datetime
+
+
+class PoiOverrideListResponse(BaseModel):
+    items: list[PoiOverrideOut]
+    total: int
 
 
 class MapConfigResponse(BaseModel):

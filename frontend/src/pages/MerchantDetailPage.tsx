@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useParams, useNavigate } from "react-router-dom";
-import { Button, Card, Descriptions, Form, Input, message, Modal, Popconfirm, Space, Table, Tag, Typography } from "antd";
+import { Button, Card, Descriptions, Form, Input, message, Modal, Popconfirm, Select, Space, Table, Tag, Typography } from "antd";
 import { ArrowLeftOutlined, PlusOutlined } from "@ant-design/icons";
 import { merchantService, type Merchant } from "../services/merchants";
 import { shopService, type Shop } from "../services/shops";
@@ -159,8 +159,21 @@ export default function MerchantDetailPage() {
           <Form.Item label="电话" name="phone">
             <Input />
           </Form.Item>
-          <Form.Item label="品类" name="category">
-            <Input placeholder="如: 火锅、咖啡、快餐" />
+          <Form.Item label="品类" name="category" extra="商圈分析按品类映射高德类型，请选择下列选项之一">
+            <Select
+              allowClear
+              placeholder="选择品类"
+              options={[
+                { value: "火锅", label: "火锅" },
+                { value: "烧烤", label: "烧烤" },
+                { value: "快餐", label: "快餐" },
+                { value: "咖啡", label: "咖啡" },
+                { value: "甜品/烘焙", label: "甜品/烘焙" },
+                { value: "日料", label: "日料" },
+                { value: "西餐", label: "西餐" },
+                { value: "私房菜", label: "私房菜" },
+              ]}
+            />
           </Form.Item>
           {editingShop && (
             <Form.Item label="状态" name="status">

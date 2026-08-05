@@ -86,19 +86,55 @@
 
 ### GET /shops/{shop_id}/district/snapshots/{snapshot_id}/competitors
 
-`is_competitor=true` 的 POI，按距离升序：
+`is_competitor=true` 的 POI，按距离升序。
+
+**竞品判定口径**（详见 SPEC-DISTRICT 3.1）：POI `type` 文本包含映射关键词 **或** `typecode` 精确命中映射码（多值 `|` 拆分后比对）即判竞品；被自身排除的 POI 不参与。
+
+**竞品深度数据**（详见 SPEC-DISTRICT 2.4）：分析时对竞品并发拉取高德 `place/detail`（≤20 家/次），补充 `rating / cost / business_hours / business_area / tel / tag`，缺失字段为 `null`。
 ```json
 [
   {
     "poi_id": "B000A7XXXX",
     "name": "隔壁火锅",
     "category": "火锅店",
+    "typecode": "050117",
     "address": "春熙路100号",
+    "tel": "028-12345678",
+    "tag": "火锅",
+    "business_area": "春熙路",
+    "rating": 4.6,
+    "cost": 88.0,
+    "business_hours": "周一至周日 11:00-22:00",
     "distance_m": 300,
     "lng": 104.091,
     "lat": 30.655
   }
 ]
+```
+
+### PUT /shops/{shop_id}/district/poi-overrides/{poi_id}
+
+人工标记某 POI 为竞品/非竞品（幂等；**跨快照生效**，重新分析后仍沿用；同时物化到该门店全部历史快照的对应 POI 行）。
+
+请求体：
+```json
+{ "is_competitor": true, "note": "网红店，实际是竞品", "poi_name": "隔壁火锅" }
+```
+
+`poi_name` 可选（不传则从最新快照 POI 行取）。成功 `200`：
+```json
+{ "poi_id": "B000A7XXXX", "poi_name": "隔壁火锅", "is_competitor": true, "note": null, "updated_at": "2026-08-05T09:00:00Z" }
+```
+
+### DELETE /shops/{shop_id}/district/poi-overrides/{poi_id}
+
+取消人工标记：删除覆盖，快照 POI 行还原为自动判定（`is_competitor = is_competitor_auto`）。成功 `204`。
+
+### GET /shops/{shop_id}/district/poi-overrides
+
+列出该门店全部人工标记（按更新时间倒序）：
+```json
+{ "items": [ { "poi_id": "B000A7XXXX", "poi_name": "隔壁火锅", "is_competitor": true, "note": null, "updated_at": "..." } ], "total": 1 }
 ```
 
 ---

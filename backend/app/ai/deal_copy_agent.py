@@ -48,6 +48,15 @@ class DealCopyAgentError(Exception):
     """DealCopyAgent 调用或解析失败。"""
 
 
+def build_system_prompt(platform: str) -> str:
+    """构造平台差异化系统提示词。
+
+    注意：prompt 内含 JSON 大括号，不能用 str.format（会把 {..} 当占位符），用 replace。
+    """
+    guide = _PLATFORM_GUIDES.get(platform, _PLATFORM_GUIDES["douyin"])
+    return _SYSTEM_PROMPT.replace("{platform_guide}", guide)
+
+
 def _parse_json(raw: str) -> dict:
     clean = _JSON_FENCE_RE.sub("", raw or "").strip()
     try:
@@ -88,8 +97,7 @@ class DealCopyAgent:
         shop_category: str | None,
         scheme: dict[str, Any],
     ) -> dict[str, Any]:
-        guide = _PLATFORM_GUIDES.get(platform, _PLATFORM_GUIDES["douyin"])
-        system_prompt = _SYSTEM_PROMPT.format(platform_guide=guide)
+        system_prompt = build_system_prompt(platform)
 
         items_text = "\n".join(
             "- {name} × {qty}（售价 {sale}，成本 {cost}）".format(
@@ -150,3 +158,5 @@ class DealCopyAgent:
             "rules": rules[:2000] or None,
             "cover_prompt": cover_prompt[:2000],
         }
+
+

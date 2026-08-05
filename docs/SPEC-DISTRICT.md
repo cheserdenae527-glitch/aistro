@@ -1,8 +1,8 @@
 # AiRestro — 商圈分析板块 设计规约
 
-> 版本：v0.5 · 2026-08-04
+> 版本：v0.8 · 2026-08-05
 > 状态：定稿 · 自成一类模块
-> 变更：v0.4 → v0.5 修正 poi_total 口径回归（排除自身后计数）、geocode 重试补齐、频控种下时机明确
+> 变更：v0.6 → v0.7 竞品深度数据（place/around extensions=all + place/detail 补评分/人均/营业时间/商圈/电话），district_pois 新增 7 个字段；新增正式品类「私房菜」
 
 ---
 
@@ -33,13 +33,14 @@ MVP 覆盖高德能提供的数据：POI 聚合、品类分布、竞品列表、
 
 高德 geocode 返回 `level` 字段。**采用白名单放行，其余一律拒绝**，不枚举不可用值：
 
-- 白名单：门牌号 / 道路 / 兴趣点 / 地名
+- 白名单：门牌号 / 门址 / 道路 / 兴趣点 / 地名（高德对门牌地址实际返回 level=「门址」，需一并放行）
 - 不在白名单（含未来新增的未知 level）→ 400，提示"门店地址过于模糊，请补充门牌号或详细地址"
 - **瞬时错误重试**：geocode 调用 502/超时重试 1 次，退避 200ms（与 2.2 周边搜索一致）；仍失败才报错、不建记录
 
 ### 2.2 周边搜索
 
-- `location=lng,lat radius=3000 types=050000`
+- `location=lng,lat radius=3000 types=050000 extensions=all`
+- `extensions=all` 使批量 POI 直接带回 `typecode / tel / tag / groupbuy_num / discount_num / photos`（base 模式不带）
 - 分页：每页 25，最多 4 页（100 条）
 - **分页早停**：某页返回为空或不足 25 条时提前终止，节省高德配额
 - **瞬时错误重试**：单页 502/超时重试 1 次，指数退避 200ms → 500ms；仍失败才真正报错
@@ -55,19 +56,46 @@ MVP 覆盖高德能提供的数据：POI 聚合、品类分布、竞品列表、
 
 ---
 
-## 3. 竞品判定
+### 2.4 竞品深度数据（place/detail）
 
-### 3.1 映射表
+周边搜索只能带回基础字段；**评分 / 人均 / 营业时间 / 商圈名** 只有单店 `place/detail` 才有（`biz_ext` 内）。
 
-| shops.category | 竞品高德类型 |
-|---|---|
-| 火锅 | 火锅店 |
-| 烧烤 | 烧烤 |
-| 快餐 | 快餐厅 / 小吃快餐店 |
-| 咖啡 | 咖啡厅 |
-| 甜品/烘焙 | 甜品饮品 |
-| 日料 | 日本料理 |
-| 西餐 | 西餐厅 |
+- 分析流程对 `is_competitor=true` 的 POI **并发**拉取 `place/detail`，并入落库
+- 上限 **20 家/次分析**，超出部分不拉详情（记日志）；单店失败只跳过、不影响分析结果
+- 字段映射：`rating`→评分、`biz_ext.cost`→人均、`biz_ext.opentime2`→营业时间、`business_area`→商圈名、`tel`→电话、`tag`→标签
+- 配额：每次分析额外消耗 ≤20 次 place/detail（计入 `AMAP_DAILY_QUOTA_LIMIT`）
+
+---
+
+### 3.1 映射表（双信号：type 文本子串 OR typecode 精确命中）
+
+竞品判定使用两路信号，**任一命中即判竞品**（自身排除优先，见 3.3）：
+
+1. **type 文本子串**：POI `type` 字段（如 `餐饮服务;中餐厅;火锅店`）包含映射关键词
+2. **typecode 精确命中**：POI `typecode` 字段精确等于映射码；多值 typecode（`|` 分隔，如 `050302|050900`）按段拆分后逐个比对
+
+| shops.category | type 关键词 | typecode（精确） |
+|---|---|---|
+| 火锅 | 火锅店 | 050117（火锅店） |
+| 烧烤 | 烧烤 | 050118（特色/地方风味餐厅） |
+| 快餐 | 快餐厅 / 小吃快餐店 | 050300（快餐厅）/ 050301（肯德基）/ 050302（麦当劳）/ 050303（必胜客） |
+| 咖啡 | 咖啡厅 | 050500（咖啡厅） |
+| 甜品/烘焙 | 甜品 / 糕饼 | 050900（甜品店）/ 050800（糕饼店·烘焙） |
+| 日料 | 日本料理 | 050202（日本料理） |
+| 西餐 | 西餐厅 | 050201（西餐厅·综合风味） |
+| 私房菜 | 私房菜 | 050118（特色/地方风味餐厅，与烧烤同码） |
+
+**码值来源**：武汉实测高德 Web API / MCP 返回（2026-08）+ 官方 POI 分类码表。
+
+**已知精度取舍**：
+- 高德对「烧烤」「私房菜」均无独立小类码，当前都落 `050118`（特色/地方风味餐厅），同码会一并纳入农家菜/沙县小吃等，属高德数据口径，无法更细（烧烤与私房菜互相同码误纳，属已确认的精度取舍）；
+- `050600` 是「茶艺馆」**不是**甜品码，甜品用 `050900`（甜品店）、烘焙用 `050800`（糕饼店）；
+- 冷饮店（`050700`，蜜雪冰城/茶百道等）未纳入甜品/烘焙竞品（品类不同，后续可按需扩展）；
+- 官方码表 `050112`=小吃快餐店，但 2026 实测高德对湖北菜馆（鄂菜）也发此码，误纳风险高，故快餐 typecodes 不列入 `050112`（type 关键词「小吃快餐店」仍保留兜底）。
+
+**门店品类来源**：前端门店表单为固定下拉（火锅/烧烤/快餐/咖啡/甜品/烘焙/日料/西餐/私房菜），避免自由文本脏输入。
+
+**品类别名归一化**：后端对常见历史/API 脏写法兜底归一（如 火锅店→火锅、咖啡厅→咖啡、甜品店→甜品/烘焙、日本料理→日料），无干净对应类的（饮品/奶茶等）保持 `none`，不硬映射。
 
 **K1 必须核对 `shops.category` 实际枚举值**，按实际存储值对齐映射表。
 
@@ -96,6 +124,17 @@ MVP 覆盖高德能提供的数据：POI 聚合、品类分布、竞品列表、
 - 长度 ≥3：互相包含 或 difflib 相似度 ≥0.85 视为相似
 
 连锁品牌分店（如"海底捞·XX店"）距离通常 >10m 且 poi_id 不同，不会被误排除。
+
+### 3.4 人工标记（竞品/非竞品覆盖，跨快照生效）
+
+自动判定之外，用户可在 POI 明细中**手动把任意周边门店标记为竞品或非竞品**：
+
+- 标记按「门店 + 高德 poi_id」持久在 `district_poi_overrides` 表，**跨快照生效**：
+  重新分析生成的新快照会沿用人工标记（`is_competitor_manual=true`）
+- 标记会物化到该门店**全部历史快照**的对应 POI 行（`is_competitor` + `is_competitor_manual`）
+- 取消标记：删除覆盖，快照 POI 行还原为 `is_competitor_auto`（自动判定）
+- 判定优先级：**人工标记 > 自动判定**；`competitor_count` 统计以物化后的 `is_competitor` 为准
+- 明细保留：`district_pois.is_competitor_auto` 始终保存自动判定结果，便于追溯"改了什么"
 
 ---
 
@@ -132,14 +171,37 @@ MVP 覆盖高德能提供的数据：POI 聚合、品类分布、竞品列表、
 | poi_id | varchar(50) | 高德 POI ID |
 | name | varchar(200) | |
 | category | varchar(100) | 高德类型名 |
+| typecode | varchar(50) | 高德三级分类码（精确匹配依据） |
 | address | text | |
+| tel | varchar(40) | 电话（place/detail 补充） |
+| tag | varchar(255) | 高德标签 |
+| business_area | varchar(100) | 商圈名（place/detail 补充） |
+| rating | numeric(3,1) | 评分（place/detail 补充） |
+| cost | numeric(8,2) | 人均（place/detail 补充） |
+| business_hours | varchar(255) | 营业时间（place/detail 补充） |
 | lng / lat | numeric | |
 | distance_m | int | 距门店距离 |
-| is_competitor | boolean | 竞品标记（被排除自身为 false） |
+| is_competitor | boolean | 竞品标记（物化值：人工标记优先，否则等于 auto） |
+| is_competitor_auto | boolean | 自动判定结果（分析时写入，永不因人工标记改变） |
+| is_competitor_manual | boolean | 是否人工标记（true 表示 is_competitor 来自人工覆盖） |
 | excluded_as_self | boolean | 是否被判定为门店自身（默认 false） |
 | created_at | timestamptz | |
 
 唯一索引：`(snapshot_id, poi_id)`。
+
+### district_poi_overrides（人工标记）
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | UUID PK | |
+| shop_id | UUID FK → shops | 门店 |
+| poi_id | varchar(50) | 高德 POI ID |
+| poi_name | varchar(200) | POI 名称快照（展示用） |
+| is_competitor | boolean | 人工判定：竞品 / 非竞品 |
+| note | varchar(255) | 可选备注 |
+| created_at / updated_at | timestamptz | |
+
+唯一索引：`(shop_id, poi_id)`。
 
 ---
 
@@ -158,7 +220,8 @@ Step A（无 DB 事务）：高德调用
      · 任一页最终失败（重试后仍失败）→ 建 status=failed 快照
        （已发起高德搜索，属于分析中途失败，需留痕）
      · 配额熔断 → 429，不建记录（未发起本次搜索）
-  5. 清洗：自身排除（写 excluded_as_self）+ 竞品映射
+  5. 清洗：自身排除（写 excluded_as_self）+ 竞品映射 + 竞品深度数据（place/detail）
+  5.1 人工标记覆盖：命中 district_poi_overrides 的 POI 以人工值为准（is_competitor_manual=true）
 
 Step B（DB 事务，仅 A 成功才执行）：
   6. 单事务内创建 snapshot(status=analyzed) + 批量写入全部 POI（含 excluded_as_self 的记录）
