@@ -123,3 +123,14 @@
 - 测试：后端 +6（创建成功/缺视频 400/缺引擎地址 400/引擎错误 502/status completed/idle）→ test_live.py 72 项全绿；前端 86 项全绿；typecheck/eslint/build 通过
 - 迁移已应用到 dev 库（alembic upgrade head）；dev 后端重启（PID 41256）
 - 前提说明：/api/avatar/task 为 LiveTalking 新版 API；当前 dhl 无该路由，生成形象需用 LiveTalking 引擎（README §7.5 已注明）
+
+## 2026-08-05 主播视频一键生成引擎形象 · 全链路实测通过（LiveTalking）
+- 引擎切换：停 dhl（无 /api/avatar/task）→ 启动 LiveTalking（engines/，c963ad4）于 8010
+- 测试视频：用 wav2lip_avatar_female_model 的 550 帧合成 MP4（OpenCV，25fps，576x768，22s，5MB）
+- AiRestro 实测（e2e_avatar_gen.py 留档）：
+  - 上传视频（upload-video → MinIO URL）→ 建形象（video_url + engine_base_url）→ POST engine-avatar 创建任务
+  - 轮询：running 20%→40%→...→ 93s **completed 100%**
+  - 引擎 data/avatars 新增 **airestro_14d264977459**（550 full + 550 face + coords.pkl）
+- 新形象渲染实测（Playwright）：index.html 填 offerAvatar=airestro_14d264977459 → 会话建立 8s → 视频 576x768 播放、两帧差 635 万像素
+- 结论：AiRestro 上传主播视频 → 一键生成引擎形象 → 引擎 --avatar_id 渲染 全链路闭环
+- 注意：当前 8010 为 LiveTalking（无 /health、/admin），AiRestro 连接测试对纯 LiveTalking 会显示健康检查失败（预期，推送标记跳过）；形象生成/渲染/RTMP 推流均可用
