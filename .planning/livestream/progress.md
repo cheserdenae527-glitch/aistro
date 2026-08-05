@@ -154,3 +154,13 @@
 - 引擎 --avatar_id ai_avatar_v4 启动成功；Playwright 实测：会话 5s 建立，视频 currentTime 前进，两帧 5354 像素变化（嘴型实时驱动）
 - 效果：静态 AI 形象 + 实时嘴型；后续可加动作编排（不说话播放轻微动作视频）
 - 素材留档：.planning/livestream/ai_avatar_v{1..4}.jpg、ai_avatar_v4_static.mp4、engines/data/avatars/ai_avatar_v4/
+
+## 2026-08-05 动作编排（路线1 增强）验证通过
+- 机制：customvideo_config JSON = [{audiotype, imgpath, audiopath?}]；/set_audiotype 切换不说话时的动作画面；说话时 flush_talk 重置 audiotype=0
+- 实现：
+  - 基于 v4 图生成 60 帧「呼吸感」动作序列（轻微缩放 0.985~1.015 + 上下 2px + 左右 1px，2.4s 循环）→ engines/data/avatars/ai_avatar_v4_action/
+  - customvideo_config.json：audiotype=2 → ./data/avatars/ai_avatar_v4_action
+  - 引擎 --customvideo_config customvideo_config.json 启动
+- 实测：set_audiotype(2) → code 0；动作1 vs 动作2 帧差 321 万（动作在循环）；切回 0 → 恢复主形象
+- 注意：set_audiotype 的 sessionid 传 UUID 字符串（转数字会 session not found）
+- 后续：可用「图生视频」生成更自然动作（微笑/点头/挥手）替换动作序列；多动作 audiotype 3/4；说话→动作自动轮换需改引擎/AiRestro 侧
