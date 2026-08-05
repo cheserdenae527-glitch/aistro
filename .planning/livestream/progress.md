@@ -143,3 +143,14 @@
   - 前端全局并发保护：一次只允许一个「生成引擎形象」任务（其它按钮禁用 + 提示等待）；生成提示「期间勿在引擎页面开直播/录制」
 - 测试：前端 86 项全绿；typecheck/eslint 通过
 - 建议：一次生成一个形象；视频需正面/清晰/单人；生成期间勿开引擎会话
+
+## 2026-08-05 AI 虚拟主播形象路线（路线1：图片形象 + wav2lip 实时驱动）
+- 用豆包 Seedream 5.0 生成 4 张虚拟主播形象图（2048x2048），用户选 v4
+- 静态形象制作（手动，避免 s3fd 对静态图检测过慢）：
+  - v4 图 → 720x960 竖版 3:4 → 300 帧静态 full_imgs
+  - opencv haar 检测人脸框（204,223,509,528）→ 裁剪 face_imgs
+  - coords.pkl = 300 帧相同 (y1,y2,x1,x2)
+  - **坑：face_imgs 必须 256x256**（wav2lip256 模型要求；96x96 导致 conv kernel 4x4 > 输入 2x2 崩溃）
+- 引擎 --avatar_id ai_avatar_v4 启动成功；Playwright 实测：会话 5s 建立，视频 currentTime 前进，两帧 5354 像素变化（嘴型实时驱动）
+- 效果：静态 AI 形象 + 实时嘴型；后续可加动作编排（不说话播放轻微动作视频）
+- 素材留档：.planning/livestream/ai_avatar_v{1..4}.jpg、ai_avatar_v4_static.mp4、engines/data/avatars/ai_avatar_v4/
