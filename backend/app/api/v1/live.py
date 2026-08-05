@@ -300,6 +300,28 @@ def _build_engine_guide(project: LiveProject, ai_label_text: str) -> str:
     return "\n".join(lines)
 
 
+def _normalize_persona_for_engine(persona: dict) -> dict:
+    """将人设补充为引擎可读格式（digital-human-livestream config/persona.json）。
+
+    live_avatars.persona / 弹幕配置可能使用 avatar 风格字段
+    {identity, tone, boundaries, forbidden_topics}，而引擎只认
+    {name, personality, style, knowledge_scope, forbidden_topics}。
+    若已含任一引擎字段则视为引擎格式原样返回；否则在保留原字段基础上
+    映射补充 name(identity)、style(tone)，保证开播包可直接导入引擎，
+    同时不丢原始信息（identity/tone/boundaries 仍保留）。
+    """
+    persona = dict(persona or {})
+    if any(
+        k in persona for k in ("name", "personality", "style", "knowledge_scope")
+    ):
+        return persona
+    for src, dst in (("identity", "name"), ("tone", "style")):
+        value = persona.get(src)
+        if value and dst not in persona:
+            persona[dst] = value
+    return persona
+
+
 # ============================================================
 # 直播项目
 # ============================================================
@@ -503,6 +525,7 @@ async def test_engine_connection(
             if danmaku and danmaku.sensitive_words
             else default_wordlist()
         )
+    persona_json = _normalize_persona_for_engine(persona_json)
 
     health: dict | None = None
     persona_push: dict | None = None
@@ -903,6 +926,8 @@ async def export_script(
                 "detail": "未配置人设，导出包使用默认占位人设，请按实际形象调整",
             }
         )
+
+    persona_json = _normalize_persona_for_engine(persona_json)
 
     # 弹幕规则
     if danmaku is None:

@@ -37,3 +37,10 @@
   - 开播包 JSON Schema 校验通过；cleanup 删除测试项目
   - 脚本：`.planning/livestream/mock_engine.py`、`.planning/livestream/e2e_l3.py`（本地留档，不入库）
 - 合规终审：deploy/docs 全文检索「无人直播/24小时无人直播」仅出现在「不宣传」负面合规表述；`_build_engine_guide` 已含 LiveTalking 水印提醒 + AI 标识文案（test_live.py:823 断言 "LiveTalking" in engine_guide）
+
+
+## 2026-08-05 二.1~二.3 补齐（质量缺口）
+- 二.1 persona 字段归一化（`_normalize_persona_for_engine`）：导出开播包与 engine-test 推送前，把形象风格人设（identity/tone/boundaries）映射补充引擎字段（name←identity、style←tone），保留原字段不丢信息；已是引擎格式（含 name/personality/style/knowledge_scope 任一）原样返回。新增后端测试 3 项（export 归一化 / 引擎格式透传 / engine-test 归一化）
+- 二.2 开播包下载：ExportBundleModal 新增「下载引擎文件」（persona.json / wordlist.txt / script.md / reply_rules.json / engine_guide.txt）与「下载开播包」（完整 JSON，livestream-bundle-YYYY-MM-DD.json），纯 Blob 无新依赖。新增前端测试 2 项（文件名 + 内容断言，FileReader 读取 jsdom Blob）
+- 二.3 最近检查展示：LiveEditorPage 基本信息引擎配置区块展示「最近健康检查」时间 + 引擎启用状态。新增前端测试 1 项
+- 验证：后端 test_live.py 55 项全绿；前端 85 项全绿；typecheck / eslint / build 通过

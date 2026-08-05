@@ -2,6 +2,7 @@ import { Button, Collapse, Modal, Space, Tag, Typography, message } from "antd";
 import {
   CheckCircleOutlined,
   CopyOutlined,
+  DownloadOutlined,
   ExclamationCircleOutlined,
 } from "@ant-design/icons";
 import type { LiveExportBundle } from "../../services/live";
@@ -14,6 +15,36 @@ function copyText(text: string, label: string) {
     ?.writeText(text)
     .then(() => message.success(`${label}已复制`))
     .catch(() => message.error("复制失败，请手动选择复制"));
+}
+
+function downloadText(filename: string, text: string, mime = "text/plain;charset=utf-8") {
+  const blob = new Blob([text], { type: mime });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+function downloadBundle(bundle: LiveExportBundle) {
+  const date = new Date().toISOString().slice(0, 10);
+  downloadText(
+    `livestream-bundle-${date}.json`,
+    JSON.stringify(bundle, null, 2),
+    "application/json;charset=utf-8"
+  );
+}
+
+function downloadEngineFiles(bundle: LiveExportBundle) {
+  // digital-human-livestream 可直接读取的文件：persona.json / wordlist.txt
+  downloadText("persona.json", JSON.stringify(bundle.persona_json, null, 2), "application/json;charset=utf-8");
+  downloadText("wordlist.txt", bundle.wordlist.join("\n"));
+  downloadText("script.md", bundle.script_markdown);
+  downloadText("reply_rules.json", JSON.stringify(bundle.reply_rules, null, 2), "application/json;charset=utf-8");
+  downloadText("engine_guide.txt", bundle.engine_guide);
 }
 
 const CODE_STYLE: React.CSSProperties = {
@@ -40,9 +71,17 @@ export default function ExportBundleModal({ open, bundle, onClose }: Props) {
       open={open}
       onCancel={onClose}
       footer={
-        <Button type="primary" onClick={onClose}>
-          关闭
-        </Button>
+        <Space>
+          <Button icon={<DownloadOutlined />} onClick={() => downloadEngineFiles(bundle)}>
+            下载引擎文件
+          </Button>
+          <Button icon={<DownloadOutlined />} onClick={() => downloadBundle(bundle)}>
+            下载开播包
+          </Button>
+          <Button type="primary" onClick={onClose}>
+            关闭
+          </Button>
+        </Space>
       }
       width={820}
     >

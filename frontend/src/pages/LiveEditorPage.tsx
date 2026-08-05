@@ -309,10 +309,19 @@ export default function LiveEditorPage({ onReady }: Props) {
                       <Switch checkedChildren="开" unCheckedChildren="关" />
                     </Form.Item>
                   </div>
-                  <Space style={{ marginBottom: 16 }}>
+                  <Space style={{ marginBottom: 8 }}>
                     <Text type="secondary">
                       API Key：{project.engine_config?.api_key_configured ? "已配置（不回传明文）" : "未配置"}
                     </Text>
+                    <Text type="secondary">
+                      {project.engine_config?.enabled ? "引擎启用" : "引擎未启用"}
+                    </Text>
+                    {project.engine_config?.last_health_check && (
+                      <Text type="secondary">
+                        最近健康检查：
+                        {new Date(project.engine_config.last_health_check).toLocaleString()}
+                      </Text>
+                    )}
                     <Form.Item name="api_key" label="更新 API Key（留空保持不变）" style={{ marginBottom: 0 }}>
                       <Input.Password placeholder="留空则保留原值" style={{ width: 280 }} />
                     </Form.Item>

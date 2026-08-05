@@ -310,6 +310,25 @@ describe("LiveEditorPage · 本地引擎连接测试", () => {
     expect(liveService.engineTest).not.toHaveBeenCalled();
   });
 
+  it("已有最近健康检查时间时在基本信息展示", async () => {
+    (liveService.listScripts as ReturnType<typeof vi.fn>).mockResolvedValue({ data: [] });
+    (liveService.getProject as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        ...project,
+        engine_config: {
+          base_url: "http://localhost:8010",
+          enabled: true,
+          api_key_configured: true,
+          last_health_check: "2026-08-05T04:00:00+00:00",
+        },
+      },
+    });
+    await renderPage();
+    await screen.findByText("火锅直播间");
+    expect(screen.getByText(/最近健康检查/)).toBeInTheDocument();
+    expect(screen.getByText(/引擎启用/)).toBeInTheDocument();
+  });
+
   it("清空已保存 base_url 后点击 → 不调用接口", async () => {
     (liveService.listScripts as ReturnType<typeof vi.fn>).mockResolvedValue({ data: [] });
     (liveService.getProject as ReturnType<typeof vi.fn>).mockResolvedValue({

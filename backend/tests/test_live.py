@@ -1677,3 +1677,82 @@ def test_engine_test_base_url_override(client, monkeypatch):
     ).json()
     assert got["engine_config"] is None
 
+
+def test_export_persona_normalized_to_engine_format(client, monkeypatch):
+    """avatar 风格快照（identity/tone）导出时映射补充引擎字段 name/style，原字段保留。"""
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    avatar = _create_avatar(client, persona=_PERSONA)
+    script = _generate(client, project["id"], avatar_id=avatar["id"])
+    _confirm(client, project["id"], script["id"])
+
+    bundle = client.post(
+        f"/api/v1/live-projects/{project['id']}/scripts/{script['id']}/export",
+        headers=auth_headers(client),
+    ).json()
+    persona = bundle["persona_json"]
+    # 原字段保留（既有契约不变）
+    assert persona["identity"] == "店长小雅"
+    assert persona["tone"] == "亲切热情，懂美食"
+    # 引擎字段映射补充（digital-human-livestream 可读）
+    assert persona["name"] == "店长小雅"
+    assert persona["style"] == "亲切热情，懂美食"
+    assert persona["forbidden_topics"] == ["政治", "宗教"]
+
+
+def test_export_persona_engine_format_passthrough(client, monkeypatch):
+    """已是引擎格式（name/personality/style/knowledge_scope）时不重复映射。"""
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    avatar = _create_avatar(
+        client,
+        persona={
+            "name": "店长小雅",
+            "personality": "亲切热情",
+            "style": "烟火气",
+            "knowledge_scope": "本店菜品",
+            "forbidden_topics": ["政治"],
+        },
+    )
+    script = _generate(client, project["id"], avatar_id=avatar["id"])
+    _confirm(client, project["id"], script["id"])
+
+    bundle = client.post(
+        f"/api/v1/live-projects/{project['id']}/scripts/{script['id']}/export",
+        headers=auth_headers(client),
+    ).json()
+    persona = bundle["persona_json"]
+    assert persona["name"] == "店长小雅"
+    assert persona["personality"] == "亲切热情"
+    assert "identity" not in persona
+
+
+def test_engine_test_persona_normalized_to_engine_format(client, monkeypatch):
+    """弹幕配置为 avatar 风格人设时，推送引擎前映射补充 name/style。"""
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    _set_engine_config(client, project["id"], {"base_url": "http://localhost:8010"})
+    put_resp = client.put(
+        f"/api/v1/live-projects/{project['id']}/danmaku-config",
+        json={
+            "persona": {"identity": "弹幕店长", "tone": "活泼", "boundaries": "不承诺疗效"},
+            "sensitive_words": ["加微信"],
+        },
+        headers=auth_headers(client),
+    )
+    assert put_resp.status_code == 200, put_resp.text
+    fake = _patch_engine(client, monkeypatch)
+
+    resp = client.post(
+        f"/api/v1/live-projects/{project['id']}/engine-test",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    persona_call = next(
+        c for c in fake.calls if c[0] == "POST" and c[1].endswith("/admin/persona")
+    )
+    pushed = persona_call[2]
+    assert pushed["identity"] == "弹幕店长"  # 原字段保留
+    assert pushed["name"] == "弹幕店长"  # 映射补充
+    assert pushed["style"] == "活泼"
+

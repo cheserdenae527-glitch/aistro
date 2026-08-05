@@ -86,7 +86,7 @@ Body（全可选）：
 - `base_url`：可覆盖项目已存 `engine_config.base_url`（前端测试未保存的表单地址）；不传则用项目配置。均需以 `http://` / `https://` 开头，否则 400
 - `push_persona` / `push_wordlist`：默认 true；为 false 时跳过对应推送
 - `persona_json` / `wordlist`：显式覆盖推送内容；不传时按开播包导出同款优先级解析
-  - persona：`live_danmaku_configs.persona` → 当前活跃批次 confirmed 脚本 `persona_snapshot` → 默认占位人设
+  - persona：`live_danmaku_configs.persona` → 当前活跃批次 confirmed 脚本 `persona_snapshot` → 默认占位人设；推送前做引擎字段归一化（同导出，见 §7）
   - wordlist：`danmaku.sensitive_words` → 内置词库（红线话术 + 站外交易引导词）
 
 执行流程（超时 15s）：
@@ -289,7 +289,9 @@ Body：`{ "metrics": { viewers, peak_viewers, avg_watch_sec, interaction_count, 
 ```
 
 - `wordlist` / `persona_json` 与 digital-human-livestream `config/` 结构对齐，可直接导入管理后台
+- `persona_json` 字段归一化：来源人设若为形象风格字段（`identity/tone/boundaries`），导出时映射补充引擎字段（`name`←`identity`、`style`←`tone`）并**保留原字段**，保证引擎可读且不丢原始信息；已是引擎格式（含 `name/personality/style/knowledge_scope` 任一）则原样返回
 - `wordlist`：已配置弹幕规则 → `danmaku.sensitive_words`；未配置 → 内置词库 + 红线话术 + 站外交易引导词
+- 前端导出弹窗支持「下载引擎文件」（persona.json / wordlist.txt / script.md / reply_rules.json / engine_guide.txt）与「下载开播包」（完整 JSON），可直接灌入引擎
 - `engine_guide` 固定包含：LiveTalking 启动/RTMP 推流指引、persona/wordlist 导入路径、**LiveTalking 水印提醒**、**AI 标识文案提醒**、平台规则以最新公告为准
 
 ---
