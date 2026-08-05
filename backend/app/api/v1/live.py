@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import io
 import time
 import uuid
 from datetime import datetime, timezone
@@ -22,7 +23,8 @@ from typing import Any
 import httpx
 
 import openai
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from PIL import Image
 from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -34,6 +36,7 @@ from app.ai.live_script_agent import LiveScriptAgent, LiveScriptAgentError
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.rate_limit import peek_rate_limit, set_rate_limit
+from app.services.storage import get_presigned_url, upload_bytes
 from app.models.live_avatar import LiveAvatar
 from app.models.live_danmaku_config import LiveDanmakuConfig
 from app.models.live_project import LiveProject
@@ -605,6 +608,37 @@ async def test_engine_connection(
 # ============================================================
 # 数字人形象（org 维度，团队级共享）
 # ============================================================
+
+
+_AVATAR_IMAGE_MAX_BYTES = 10 * 1024 * 1024  # 10MB
+_AVATAR_IMAGE_MIME = ("image/png", "image/jpeg", "image/webp")
+
+
+@router.post("/live-avatars/upload-image")
+async def upload_avatar_image(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """上传形象图到 MinIO，返回可访问 URL（形象表单 image_url 使用）。
+
+    与 live-avatars 一致为登录用户维度；图片 ≤10MB 且为 PNG/JPEG/WebP。
+    返回的 url 为带签名链接（7 天），object_name 为 MinIO 对象路径。
+    """
+    data = await file.read()
+    if len(data) > _AVATAR_IMAGE_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="形象图超过 10MB")
+    mime = (file.content_type or "").lower()
+    if mime not in _AVATAR_IMAGE_MIME:
+        raise HTTPException(status_code=400, detail="仅支持 PNG/JPEG/WebP 图片")
+    try:
+        Image.open(io.BytesIO(data)).verify()
+    except Exception:
+        raise HTTPException(status_code=400, detail="无法识别的图片格式")
+    object_name = upload_bytes(data, mime, folder="live_avatars")
+    return {
+        "url": get_presigned_url(object_name, expires=7 * 24 * 3600),
+        "object_name": object_name,
+    }
 
 
 @router.post("/live-avatars", response_model=LiveAvatarOut)

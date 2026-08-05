@@ -321,6 +321,15 @@ export const liveService = {
   updateAvatar: (id: string, data: LiveAvatarUpdate) =>
     api.patch<LiveAvatar>(`/live-avatars/${id}`, data),
   deleteAvatar: (id: string) => api.delete<{ ok: boolean }>(`/live-avatars/${id}`),
+  uploadAvatarImage: (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return api.post<{ url: string; object_name: string }>(
+      "/live-avatars/upload-image",
+      fd,
+      { timeout: 60_000 }
+    );
+  },
 
   // ---- 直播脚本 ----
   generateScript: (projectId: string, data: ScriptGenerateRequest) =>

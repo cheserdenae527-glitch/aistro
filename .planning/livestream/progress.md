@@ -69,3 +69,10 @@
 - 交付 `deploy/livestream/OPERATOR-SOP.md`：面向运营/值守人（非部署工程师）的操作手册
 - 内容：开播前三件套自检（AI 标识 + LiveTalking 水印 + 真人值守）、导出开播包、引擎连接测试/手动导入（wordlist 用 {"content": 文本} 格式、persona 四必填）、三条推流链路（B站 RTMP 直推 / 抖音/视频号/小红书 OBS+虚拟摄像头）、开播流程（planned→live 前置确认）、开播中互动与巡检、复盘录入 + AI 复盘、故障对照表、合规红线
 - 合规终审：全文「无人直播/24小时」仅出现在「不宣传」负面表述
+
+## 2026-08-05 形象图上传能力（用户实操反馈补齐）
+- 背景：连接测试通过后实操，发现形象表单只有 image_url 手填框、无文件上传
+- 后端 `POST /live-avatars/upload-image`：登录用户维度，图片 ≤10MB（PNG/JPEG/WebP，PIL 校验），MinIO `live_avatars/` 目录存储，返回 `{url: presigned(7天), object_name}`；复用 app.services.storage
+- 前端 live.ts 加 uploadAvatarImage；AvatarsTab 形象图字段改为「上传按钮 + 直链输入」（Space.Compact + Upload beforeUpload → setFieldsValue image_url）
+- 测试：后端 +4（成功/非图片 400/超大 400/未登录 401）→ test_live.py 59 项全绿；前端 85 项全绿；typecheck/eslint 通过
+- dev 后端已重启（PID 16596）使新端点生效，.service-pids.json 已更新

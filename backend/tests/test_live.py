@@ -9,9 +9,11 @@ AI Agent 与频控全部 monkeypatch，不调用真实 LLM / Redis。
 """
 from __future__ import annotations
 
+import io
 
 import httpx
 import pytest
+from PIL import Image
 
 from app.ai.live_compliance import LiveCompliance
 from app.ai.live_danmaku_agent import LiveDanmakuAgentError
@@ -1762,4 +1764,70 @@ def test_engine_test_persona_normalized_to_engine_format(client, monkeypatch):
     assert pushed["style"] == "活泼"
     assert pushed["personality"].strip()  # 四必填兜底
     assert pushed["knowledge_scope"].strip()
+
+
+# ============================================================
+# 形象图上传（L3 补充：MinIO 上传 → image_url）
+# ============================================================
+
+
+def _make_png_bytes() -> bytes:
+    buf = io.BytesIO()
+    Image.new("RGB", (4, 4), (255, 0, 0)).save(buf, format="PNG")
+    return buf.getvalue()
+
+
+def _stub_storage(monkeypatch, object_name="live_avatars/abc"):
+    monkeypatch.setattr(
+        "app.api.v1.live.upload_bytes",
+        lambda data, mime, folder="live_avatars": object_name,
+    )
+    monkeypatch.setattr(
+        "app.api.v1.live.get_presigned_url",
+        lambda name, expires=3600: f"http://minio.local/{name}",
+    )
+
+
+def test_avatar_upload_image_ok(client, monkeypatch):
+    _stub_storage(monkeypatch)
+    resp = client.post(
+        "/api/v1/live-avatars/upload-image",
+        files={"file": ("avatar.png", _make_png_bytes(), "image/png")},
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["object_name"] == "live_avatars/abc"
+    assert body["url"].startswith("http://minio.local/live_avatars/")
+
+
+def test_avatar_upload_image_rejects_non_image(client, monkeypatch):
+    _stub_storage(monkeypatch)
+    resp = client.post(
+        "/api/v1/live-avatars/upload-image",
+        files={"file": ("a.txt", b"hello", "text/plain")},
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 400
+    assert "PNG/JPEG/WebP" in resp.json()["detail"]
+
+
+def test_avatar_upload_image_too_large(client, monkeypatch):
+    monkeypatch.setattr("app.api.v1.live._AVATAR_IMAGE_MAX_BYTES", 10)
+    _stub_storage(monkeypatch)
+    resp = client.post(
+        "/api/v1/live-avatars/upload-image",
+        files={"file": ("a.png", _make_png_bytes(), "image/png")},
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 400
+    assert "10MB" in resp.json()["detail"]
+
+
+def test_avatar_upload_image_requires_auth(client):
+    resp = client.post(
+        "/api/v1/live-avatars/upload-image",
+        files={"file": ("a.png", _make_png_bytes(), "image/png")},
+    )
+    assert resp.status_code == 401
 

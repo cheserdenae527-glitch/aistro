@@ -14,9 +14,15 @@ import {
   Spin,
   Tag,
   Typography,
+  Upload,
   message,
 } from "antd";
-import { DeleteOutlined, EditOutlined, PlusOutlined } from "@ant-design/icons";
+import {
+  DeleteOutlined,
+  EditOutlined,
+  PlusOutlined,
+  UploadOutlined,
+} from "@ant-design/icons";
 import {
   liveService,
   type AvatarStatus,
@@ -68,6 +74,7 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
   const [editing, setEditing] = useState<LiveAvatar | null>(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [uploadingImage, setUploadingImage] = useState(false);
   const [form] = Form.useForm<AvatarFormValues>();
 
   const load = useCallback(async () => {
@@ -114,6 +121,20 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
       status: avatar.status,
     });
     setModalOpen(true);
+  };
+
+  const handleUploadImage = async (file: File) => {
+    setUploadingImage(true);
+    try {
+      const res = await liveService.uploadAvatarImage(file);
+      form.setFieldValue("image_url", res.data.url);
+      message.success("形象图已上传，保存后生效");
+    } catch (e) {
+      showApiError(e);
+    } finally {
+      setUploadingImage(false);
+    }
+    return false; // 阻止 antd 默认上传
   };
 
   const handleSubmit = async () => {
@@ -266,8 +287,19 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
           <Form.Item name="avatar_type" label="驱动类型">
             <Select options={TYPE_OPTIONS} />
           </Form.Item>
-          <Form.Item name="image_url" label="形象图 URL（MinIO/直链，可选）">
-            <Input placeholder="https://..." />
+          <Form.Item name="image_url" label="形象图（可上传图片或填直链 URL）">
+            <Space.Compact style={{ width: "100%" }}>
+              <Input placeholder="https://... 或点右侧上传" />
+              <Upload
+                accept="image/png,image/jpeg,image/webp"
+                showUploadList={false}
+                beforeUpload={handleUploadImage}
+              >
+                <Button icon={<UploadOutlined />} loading={uploadingImage}>
+                  上传
+                </Button>
+              </Upload>
+            </Space.Compact>
           </Form.Item>
           <Form.Item name="video_url" label="驱动视频 URL（可选）">
             <Input placeholder="https://..." />
