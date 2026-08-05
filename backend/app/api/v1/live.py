@@ -854,6 +854,85 @@ def _build_static_avatar(img_bytes: bytes, workdir: str, avatar_id: str) -> str:
     return base
 
 
+def _build_dynamic_avatar(video_bytes: bytes, workdir: str, avatar_id: str) -> str:
+    """把驱动视频生成为 wav2lip 动态形象（每帧抽帧 + 每帧人脸坐标）。
+
+    目标 720x960（3:4 竖版）：视频帧按中心裁剪到 3:4 再缩放；逐帧 haar 检测人脸，
+    检测不到时沿用上一帧坐标保持稳定。最多 300 帧。
+    """
+    import cv2
+    import numpy as np
+
+    def _to_vertical(frame):
+        h, w = frame.shape[:2]
+        if w / h > 3 / 4:
+            tw = int(h * 3 / 4)
+            x0 = (w - tw) // 2
+            frame = frame[:, x0 : x0 + tw]
+        else:
+            th = int(w * 4 / 3)
+            y0 = int((h - th) * 0.35)  # 偏上取景，保脸
+            y0 = max(0, min(y0, h - th))
+            frame = frame[y0 : y0 + th, :]
+        return cv2.resize(frame, (720, 960))
+
+    import tempfile
+
+    tmp = os.path.join(tempfile.gettempdir(), f"{avatar_id}.mp4")
+    with open(tmp, "wb") as f:
+        f.write(video_bytes)
+    cap = cv2.VideoCapture(tmp)
+    if not cap.isOpened():
+        raise ValueError("无法解析驱动视频")
+    frames = []
+    while True:
+        ok, frame = cap.read()
+        if not ok:
+            break
+        frames.append(frame)
+        if len(frames) >= 300:
+            break
+    cap.release()
+    if len(frames) < 10:
+        raise ValueError("驱动视频帧数过少（需 ≥10 帧）")
+    try:
+        os.remove(tmp)
+    except Exception:
+        pass
+
+    cascade = cv2.CascadeClassifier(
+        cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    )
+    base = os.path.join(workdir, "data", "avatars", avatar_id)
+    os.makedirs(os.path.join(base, "full_imgs"), exist_ok=True)
+    os.makedirs(os.path.join(base, "face_imgs"), exist_ok=True)
+    coords = []
+    last_box = None
+    for i, frame in enumerate(frames):
+        img = _to_vertical(frame)
+        gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
+        faces = cascade.detectMultiScale(gray, 1.1, 5, minSize=(60, 60))
+        if len(faces):
+            fx, fy, fw, fh = max(faces, key=lambda f: f[2] * f[3])
+            last_box = (fx, fy, fw, fh)
+        if last_box is None:
+            fw = int(img.shape[1] * 0.6)
+            fh = int(fw * 1.15)
+            fx = (img.shape[1] - fw) // 2
+            fy = int(img.shape[0] * 0.18)
+        else:
+            fx, fy, fw, fh = last_box
+        x1, y1 = fx, fy
+        x2, y2 = min(img.shape[1], fx + fw), min(img.shape[0], fy + fh + 10)
+        face256 = cv2.resize(img[y1:y2, x1:x2], (256, 256))
+        cv2.imwrite(f"{base}/full_imgs/{i:08d}.png", img)
+        cv2.imwrite(f"{base}/face_imgs/{i:08d}.png", face256)
+        coords.append((int(y1), int(y2), int(x1), int(x2)))
+    with open(os.path.join(base, "coords.pkl"), "wb") as f:
+        pickle.dump(coords, f)
+    return base
+
+
 def _restart_live_engine(avatar_id: str) -> bool:
     """重启本机 LiveTalking 引擎（--avatar_id <新形象>）。配置缺失或失败返回 False。"""
     workdir = settings.LIVE_ENGINE_WORKDIR
@@ -913,25 +992,32 @@ async def sync_avatar_to_engine_static(
     （--avatar_id <airestro_xxx>）→ 引擎画面预览即显示该新形象。
     """
     avatar = await _get_avatar(avatar_id, current_user, db)
+    video_url = (avatar.video_url or "").strip()
     image_url = (avatar.image_url or "").strip()
-    if not image_url:
+    if not video_url and not image_url:
         raise HTTPException(
-            status_code=400, detail="该形象还没有形象图，请先上传或 AI 生成形象图"
+            status_code=400, detail="该形象还没有驱动视频或形象图，请先上传 / AI 生成后保存"
         )
-    try:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(60.0, connect=10.0)) as client:
-            r = await client.get(image_url)
-            r.raise_for_status()
-            img_bytes = r.content
-    except httpx.HTTPError as exc:
-        raise HTTPException(status_code=502, detail=f"下载形象图失败：{_engine_exc_text(exc)}")
     if not settings.LIVE_ENGINE_WORKDIR or not os.path.isdir(settings.LIVE_ENGINE_WORKDIR):
         raise HTTPException(
             status_code=400, detail="未配置引擎目录（LIVE_ENGINE_WORKDIR），无法同步到引擎"
         )
     engine_aid = f"airestro_{uuid.uuid4().hex[:12]}"
     try:
-        avatar_dir = _build_static_avatar(img_bytes, settings.LIVE_ENGINE_WORKDIR, engine_aid)
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
+            source_url = video_url or image_url
+            r = await client.get(source_url)
+            r.raise_for_status()
+            source_bytes = r.content
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"下载形象素材失败：{_engine_exc_text(exc)}")
+    try:
+        if video_url:
+            avatar_dir = _build_dynamic_avatar(source_bytes, settings.LIVE_ENGINE_WORKDIR, engine_aid)
+            kind = "dynamic"
+        else:
+            avatar_dir = _build_static_avatar(source_bytes, settings.LIVE_ENGINE_WORKDIR, engine_aid)
+            kind = "static"
     except Exception as exc:
         raise HTTPException(status_code=400, detail=f"生成引擎形象失败：{exc}")
     avatar.engine_avatar_id = engine_aid
@@ -941,6 +1027,7 @@ async def sync_avatar_to_engine_static(
         "engine_avatar_id": engine_aid,
         "restarted": restarted,
         "dir": avatar_dir,
+        "kind": kind,
     }
 
 

@@ -212,10 +212,11 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
     setSyncingId(avatar.id);
     try {
       const res = await liveService.syncEngineStatic(avatar.id);
+      const kindLabel = res.data.kind === "dynamic" ? "动态形象" : "静态形象";
       if (res.data.restarted) {
-        message.success(`已同步并重启引擎，当前引擎形象：${res.data.engine_avatar_id}（刷新预览即可看到）`);
+        message.success(`已同步${kindLabel}并重启引擎：${res.data.engine_avatar_id}（刷新预览即可看到）`);
       } else {
-        message.success(`已同步：${res.data.engine_avatar_id}（引擎未自动重启，请用 --avatar_id ${res.data.engine_avatar_id} 启动）`);
+        message.success(`已同步${kindLabel}：${res.data.engine_avatar_id}（引擎未自动重启，请用 --avatar_id ${res.data.engine_avatar_id} 启动）`);
       }
       await load();
     } catch (e) {
@@ -409,6 +410,21 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
                   </Space>
                 }
               >
+                {avatar.image_url && (
+                  <div style={{ textAlign: "center", marginBottom: 8 }}>
+                    <img
+                      src={avatar.image_url}
+                      alt={avatar.name}
+                      style={{
+                        width: "100%",
+                        maxHeight: 220,
+                        objectFit: "cover",
+                        borderRadius: 8,
+                        border: "1px solid #f0f0f0",
+                      }}
+                    />
+                  </div>
+                )}
                 <div style={{ marginBottom: 8 }}>
                   <Tag color="geekblue">
                     {avatar.avatar_type === "image" ? "图片形象" : "视频驱动"}

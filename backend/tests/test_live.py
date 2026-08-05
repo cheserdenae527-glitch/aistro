@@ -2218,3 +2218,42 @@ def test_sync_engine_static_requires_auth(client):
     )
     assert resp.status_code == 401
 
+
+def test_sync_engine_dynamic_video(client, monkeypatch, tmp_path):
+    """有驱动视频时同步为动态形象（视频抽帧 + 每帧坐标）。"""
+    import cv2
+    import numpy as np
+
+    _patch_agents(monkeypatch)
+    avatar = _create_avatar(
+        client, persona=_PERSONA,
+        image_url="http://minio.local/a.png", video_url="http://minio.local/v.mp4",
+    )
+    monkeypatch.setattr("app.api.v1.live.settings.LIVE_ENGINE_WORKDIR", str(tmp_path))
+    monkeypatch.setattr("app.api.v1.live._restart_live_engine", lambda aid: True)
+    tmpvid = os.path.join(str(tmp_path), "t.mp4")
+    vw = cv2.VideoWriter(tmpvid, cv2.VideoWriter_fourcc(*"mp4v"), 25, (640, 480))
+    for _ in range(20):
+        img = np.zeros((480, 640, 3), np.uint8)
+        cv2.circle(img, (320, 240), 60, (200, 200, 200), -1)
+        vw.write(img)
+    vw.release()
+    with open(tmpvid, "rb") as f:
+        video_bytes = f.read()
+    monkeypatch.setattr(
+        "app.api.v1.live.httpx.AsyncClient",
+        lambda *a, **k: _FakeDownloadClient(video_bytes, "video/mp4"),
+    )
+
+    resp = client.post(
+        f"/api/v1/live-avatars/{avatar['id']}/sync-engine-static",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["kind"] == "dynamic"
+    d = os.path.join(str(tmp_path), "data", "avatars", body["engine_avatar_id"])
+    assert os.path.exists(os.path.join(d, "coords.pkl"))
+    assert len(os.listdir(os.path.join(d, "full_imgs"))) == 20
+    assert len(os.listdir(os.path.join(d, "face_imgs"))) == 20
+

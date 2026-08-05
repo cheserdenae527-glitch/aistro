@@ -357,7 +357,7 @@ export const liveService = {
       { timeout: 180_000 }
     ),
   syncEngineStatic: (id: string) =>
-    api.post<{ engine_avatar_id: string; restarted: boolean; dir: string }>(
+    api.post<{ engine_avatar_id: string; restarted: boolean; dir: string; kind: "dynamic" | "static" }>(
       `/live-avatars/${id}/sync-engine-static`,
       {},
       { timeout: 120_000 }
