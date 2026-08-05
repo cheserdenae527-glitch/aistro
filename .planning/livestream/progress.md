@@ -164,3 +164,9 @@
 - 实测：set_audiotype(2) → code 0；动作1 vs 动作2 帧差 321 万（动作在循环）；切回 0 → 恢复主形象
 - 注意：set_audiotype 的 sessionid 传 UUID 字符串（转数字会 session not found）
 - 后续：可用「图生视频」生成更自然动作（微笑/点头/挥手）替换动作序列；多动作 audiotype 3/4；说话→动作自动轮换需改引擎/AiRestro 侧
+
+## 2026-08-05 动作编排自动化（不说话自动呼吸感）
+- 背景：用户反馈"不说话时没有动作和呼吸感"——之前动作配在 audiotype=2，需手动 set_audiotype 切换
+- 机制：base_asr.get_audio_frame 静音时 type=1（1=silence）；process_frames 静音时按 audio_frames[0].type 找 custom_img_cycle
+- 修复：customvideo_config.json 的 audiotype 由 2 改为 **1** → 静音时自动播放动作序列，无需手动切换
+- 实测：连接后不手动切换，静音两帧 diff 1810 万（动作自动循环）；说话（type=0）自动走嘴型，说完自动回静音动作
