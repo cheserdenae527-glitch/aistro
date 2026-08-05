@@ -225,6 +225,10 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
   };
 
   const handleGenerateEngineAvatar = async (avatar: LiveAvatar) => {
+    if (generatingAvatarId) {
+      message.warning("已有形象生成中，请等待完成后再生成下一个");
+      return;
+    }
     if (!avatar.video_url) {
       message.warning("该形象还没有驱动视频，请先上传/填写驱动视频并保存");
       return;
@@ -237,7 +241,7 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
     setAvatarProgress(0);
     try {
       const res = await liveService.generateEngineAvatar(avatar.id, avatar.engine_base_url);
-      message.success("已在引擎创建形象生成任务，正在处理（1-3 分钟）…");
+      message.success("已在引擎创建形象生成任务（1-3 分钟）。生成期间请勿同时在引擎页面开直播/录制，避免显存不足");
       for (let i = 0; i < 150; i++) {
         await new Promise((r) => setTimeout(r, 2000));
         const st = await liveService.getEngineAvatarStatus(avatar.id);
@@ -321,6 +325,7 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
                       size="small"
                       icon={<RobotOutlined />}
                       loading={generatingAvatarId === avatar.id}
+                      disabled={generatingAvatarId !== null && generatingAvatarId !== avatar.id}
                       onClick={() => handleGenerateEngineAvatar(avatar)}
                     >
                       {generatingAvatarId === avatar.id ? `${avatarProgress}%` : "生成引擎形象"}

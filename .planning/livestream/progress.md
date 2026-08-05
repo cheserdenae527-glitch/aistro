@@ -134,3 +134,12 @@
 - 新形象渲染实测（Playwright）：index.html 填 offerAvatar=airestro_14d264977459 → 会话建立 8s → 视频 576x768 播放、两帧差 635 万像素
 - 结论：AiRestro 上传主播视频 → 一键生成引擎形象 → 引擎 --avatar_id 渲染 全链路闭环
 - 注意：当前 8010 为 LiveTalking（无 /health、/admin），AiRestro 连接测试对纯 LiveTalking 会显示健康检查失败（预期，推送标记跳过）；形象生成/渲染/RTMP 推流均可用
+
+## 2026-08-05 形象生成 OOM 崩溃修复 + 前端并发保护
+- 现象：用户生成引擎形象失败，控制台 status 502 / ERR_INSUFFICIENT_RESOURCES
+- 根因（引擎日志）：多个 avatar 生成任务并发 + WebRTC 会话同时跑 → `Recovering from OOM error` → 引擎进程崩溃（RTX 4060 8GB 显存被多任务撑爆）
+- 处理：
+  - 重启引擎（清掉卡住的 running 任务）
+  - 前端全局并发保护：一次只允许一个「生成引擎形象」任务（其它按钮禁用 + 提示等待）；生成提示「期间勿在引擎页面开直播/录制」
+- 测试：前端 86 项全绿；typecheck/eslint 通过
+- 建议：一次生成一个形象；视频需正面/清晰/单人；生成期间勿开引擎会话
