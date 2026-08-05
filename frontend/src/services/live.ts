@@ -362,6 +362,8 @@ export const liveService = {
       {},
       { timeout: 120_000 }
     ),
+  releaseEngine: () => api.post<{ released: boolean }>("/live-engines/release"),
+  startEngine: () => api.post<{ started: boolean }>("/live-engines/start"),
   getEngineAvatarStatus: (id: string) =>
     api.get<{
       status: string;

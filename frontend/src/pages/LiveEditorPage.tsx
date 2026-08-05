@@ -165,6 +165,26 @@ export default function LiveEditorPage({ onReady }: Props) {
     }
   };
 
+  const handleReleaseEngine = async () => {
+    try {
+      const res = await liveService.releaseEngine();
+      if (res.data.released) message.success("已停止引擎并释放 GPU");
+      else message.warning("引擎释放未生效（可能未配置引擎路径）");
+    } catch (e) {
+      showApiError(e);
+    }
+  };
+
+  const handleStartEngine = async () => {
+    try {
+      const res = await liveService.startEngine();
+      if (res.data.started) message.success("引擎已启动，约 30 秒后可预览");
+      else message.warning("引擎启动失败，请检查引擎配置");
+    } catch (e) {
+      showApiError(e);
+    }
+  };
+
   const handleSaveBasic = async () => {
     if (!project) return;
     let values;
@@ -413,7 +433,13 @@ export default function LiveEditorPage({ onReady }: Props) {
               <Space direction="vertical" style={{ width: "100%" }}>
                 {project.engine_config?.base_url && project.engine_config?.enabled && (
                   <Card size="small" title="引擎画面预览（本地数字人）">
-                    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8, flexWrap: "wrap" }}>
+                      <Button size="small" danger onClick={handleReleaseEngine}>
+                        释放 GPU
+                      </Button>
+                      <Button size="small" onClick={handleStartEngine}>
+                        启动引擎
+                      </Button>
                       <Text style={{ fontSize: 12, whiteSpace: "nowrap" }}>预览高度</Text>
                       <Slider
                         min={320}
@@ -421,10 +447,10 @@ export default function LiveEditorPage({ onReady }: Props) {
                         step={20}
                         value={previewHeight}
                         onChange={setPreviewHeight}
-                        style={{ flex: 1, maxWidth: 320, margin: 0 }}
+                        style={{ flex: 1, maxWidth: 260, margin: 0 }}
                       />
                       <Text type="secondary" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
-                        {previewHeight}px（视频为 3:4 竖版，调大可完整显示）
+                        {previewHeight}px（视频为 3:4 竖版）
                       </Text>
                     </div>
                     <iframe

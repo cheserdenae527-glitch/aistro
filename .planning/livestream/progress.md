@@ -207,3 +207,15 @@
   - 前端「生成引擎形象」按钮加 Tooltip（需达标视频说明）
 - 测试：+3（不达标视频 400 / 短视频拒绝单元 / completed 自动重启断言）→ test_live.py 83 项全绿；前端 86 项全绿
 - 说明：用户用 AI 生成达标视频（正面/单人/≥6秒/光线足）→ 生成引擎形象 → 引擎 s3fd 高质量动态形象 → 自动重启引擎切换
+
+## 2026-08-05 引擎 GPU 生命周期管理（自动释放）
+- 背景：用户 GPU 常被引擎占满（~6GB），要求生成失败/结束直播自动释放
+- 实现：
+  - _release_live_engine()：停止本机引擎进程释放 GPU
+  - POST /live-engines/release、/live-engines/start：手动释放/启动
+  - 场次 live→ended 自动 _release_live_engine（结束直播释放 GPU）
+  - engine-avatar status failed → 自动重启引擎清理卡死任务显存
+- 前端：场次 Tab 预览卡加「释放 GPU」「启动引擎」按钮
+- 测试：+3（release 端点/start 端点/live→ended 自动释放）→ test_live.py 86 项全绿；前端 86 项全绿
+- 实测：释放前 7.7GB/100% → release → 1.4GB/25%（释放 6.3GB），8010 停止
+- 引擎当前已停止（GPU 释放）；需用时点「启动引擎」（~30s 就绪）

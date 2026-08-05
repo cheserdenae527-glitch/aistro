@@ -2301,3 +2301,53 @@ def test_prepare_engine_video_rejects_short():
     with pytest.raises(ValueError, match="视频过短"):
         _prepare_engine_video(data)
 
+
+# ============================================================
+# 引擎 GPU 生命周期（释放 / 启动 / 结束直播自动释放）
+# ============================================================
+
+
+def test_live_engine_release_endpoint(client, monkeypatch):
+    released = {"v": False}
+    monkeypatch.setattr(
+        "app.api.v1.live._release_live_engine", lambda: released.update(v=True) or True
+    )
+    resp = client.post("/api/v1/live-engines/release", headers=auth_headers(client))
+    assert resp.status_code == 200
+    assert resp.json()["released"] is True
+    assert released["v"] is True
+
+
+def test_live_engine_start_endpoint(client, monkeypatch):
+    monkeypatch.setattr("app.api.v1.live._restart_live_engine", lambda aid: True)
+    resp = client.post("/api/v1/live-engines/start", headers=auth_headers(client))
+    assert resp.status_code == 200
+    assert resp.json()["started"] is True
+
+
+def test_session_live_to_ended_releases_engine(client, monkeypatch):
+    """直播结束（live→ended）自动释放引擎 GPU。"""
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    released = {"n": 0}
+    monkeypatch.setattr(
+        "app.api.v1.live._release_live_engine", lambda: released.update(n=released["n"] + 1) or True
+    )
+    headers = auth_headers(client)
+    session = _create_session(client, project["id"])
+    operator = current_user_id(client)
+    resp = client.patch(
+        f"/api/v1/live-projects/{project['id']}/sessions/{session['id']}",
+        json={"operator_id": operator, "duty_confirmed": True, "ai_label_confirmed": True, "status": "live"},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    resp = client.patch(
+        f"/api/v1/live-projects/{project['id']}/sessions/{session['id']}",
+        json={"status": "ended"},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "ended"
+    assert released["n"] >= 1  # 结束直播触发了引擎释放
+

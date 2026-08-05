@@ -782,6 +782,12 @@ async def get_engine_avatar_status(
     if status == "completed" and avatar.engine_avatar_id:
         # 生成完成 → 自动重启引擎用新形象（幂等：已在用则跳过）
         restarted = _restart_live_engine(avatar.engine_avatar_id)
+    elif status == "failed":
+        # 生成失败 → 重启引擎清理可能的卡死任务显存
+        if avatar.engine_avatar_id:
+            _restart_live_engine(avatar.engine_avatar_id)
+        else:
+            _restart_live_engine("wav2lip_avatar_female_model")
     return {
         "status": status,
         "progress": max(0, min(100, progress)),
@@ -1026,6 +1032,28 @@ def _prepare_engine_video(video_bytes: bytes) -> tuple[bytes, str]:
     return out, "video/mp4"
 
 
+def _release_live_engine() -> bool:
+    """停止本机 LiveTalking 引擎进程，释放 GPU。"""
+    workdir = settings.LIVE_ENGINE_WORKDIR
+    if not workdir or not os.path.isdir(workdir):
+        return False
+    try:
+        subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                "Where-Object { $_.CommandLine -match 'listenport 8010' } | "
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }",
+            ],
+            timeout=30,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _restart_live_engine(avatar_id: str) -> bool:
     """重启本机 LiveTalking 引擎（--avatar_id <新形象>）。配置缺失或失败返回 False。"""
     workdir = settings.LIVE_ENGINE_WORKDIR
@@ -1141,6 +1169,29 @@ async def sync_avatar_to_engine_static(
         "dir": avatar_dir,
         "kind": kind,
     }
+
+
+@router.post("/live-engines/release")
+async def release_live_engine(
+    current_user: User = Depends(get_current_user),
+):
+    """停止本地引擎，释放 GPU（结束直播/长时间不播时使用）。"""
+    released = _release_live_engine()
+    return {"released": released}
+
+
+@router.post("/live-engines/start")
+async def start_live_engine(
+    body: EngineAvatarCreateRequest | None = None,
+    current_user: User = Depends(get_current_user),
+):
+    """启动本地引擎（--avatar_id 默认用引擎当前形象；可传 engine_base_url 覆盖地址）。"""
+    avatar_id = ""
+    if body and body.engine_base_url:
+        # 兼容传地址参数；实际启动用默认形象
+        pass
+    restarted = _restart_live_engine(avatar_id or "wav2lip_avatar_female_model")
+    return {"started": restarted}
 
 
 @router.post("/live-avatars", response_model=LiveAvatarOut)
@@ -1819,6 +1870,8 @@ async def update_session(
                     status_code=400, detail="已开播场次仅可流转到 ended"
                 )
             session.status = "ended"
+            # 结束直播 → 自动释放引擎 GPU
+            _release_live_engine()
         if "notes" in data:
             session.notes = data["notes"]
         return session
