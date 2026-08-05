@@ -18,12 +18,18 @@ from app.models.studio_copy import StudioCopy
 from app.models.studio_deck import StudioDeck
 from app.models.district_snapshot import DistrictSnapshot
 from app.models.district_poi import DistrictPoi
+from app.models.district_poi_override import DistrictPoiOverride
+from app.models.deal_project import DealProject
+from app.models.deal_item import DealItem
+from app.models.competitor_deal import CompetitorDeal
+from app.models.deal_scheme import DealScheme
+from app.models.deal_scheme_copy import DealSchemeCopy
 
 __all__ = [
     "User", "Merchant", "Shop", "PlatformShop", "Review",
     "MenuItem", "CrawlJob", "Report", "ManualImport", "ShopProfile",
     "DesignProject", "DesignAsset", "MenuDesign", "DesignJob", "MenuDesignVersion",
     "StudioProject", "StudioCopy", "StudioDeck",
-    "DistrictSnapshot", "DistrictPoi",
+    "DistrictSnapshot", "DistrictPoi", "DistrictPoiOverride",
+    "DealProject", "DealItem", "CompetitorDeal", "DealScheme", "DealSchemeCopy",
 ]
-

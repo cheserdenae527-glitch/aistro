@@ -31,7 +31,7 @@ class DesignAsset(Base):
         server_default="photo",
     )
     source: Mapped[str] = mapped_column(
-        Enum("upload", "ai", "studio", name="design_asset_source"),
+        Enum("upload", "ai", "studio", "deals", name="design_asset_source"),
         nullable=False,
         server_default="upload",
     )
@@ -67,4 +67,5 @@ class DesignAsset(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=sa.func.now()
     )
+
 

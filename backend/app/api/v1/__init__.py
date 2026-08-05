@@ -11,8 +11,10 @@ from app.api.v1.reviews import router as reviews_router
 from app.api.v1.studio import router as studio_router
 from app.api.v1.maps import router as maps_router
 from app.api.v1.district import router as district_router
+from app.api.v1.deals import router as deals_router
 
-routers = [auth_router, merchants_router, shops_router, crawl_jobs_router, notes_router, images_router, subscriptions_router, profiles_router, designs_router, reviews_router, studio_router, maps_router, district_router]
+routers = [auth_router, merchants_router, shops_router, crawl_jobs_router, notes_router, images_router, subscriptions_router, profiles_router, designs_router, reviews_router, studio_router, maps_router, district_router, deals_router]
+
 
 
 
