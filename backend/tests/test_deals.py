@@ -10,13 +10,22 @@ AI Agent 与频控全部 monkeypatch，不调用真实 LLM / Redis。
 from __future__ import annotations
 
 import asyncio
+import io
 import os
 
 import pytest
+from PIL import Image
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.ai.deal_agent import DealAgentError
+
+
+def _make_png(size=(64, 64), color=(210, 110, 50)) -> bytes:
+    img = Image.new("RGB", size, color)
+    buf = io.BytesIO()
+    img.save(buf, format="PNG")
+    return buf.getvalue()
 
 
 # ============================================================
@@ -860,3 +869,99 @@ def test_cascade_delete_project(client, monkeypatch):
 
 
 
+
+
+# ============================================================
+# 图片上传 / copy 人工编辑（G2 补充端点）
+# ============================================================
+
+
+def test_item_image_upload(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    project, _ = _setup_project_with_items(client)
+    headers = auth_headers(client)
+    item = _create_item(client, project["id"])
+
+    name = "dish.png"
+    buf = io.BytesIO(_make_png())
+    buf.seek(0)
+    resp = client.post(
+        f"/api/v1/deal-projects/{project['id']}/items/{item['id']}/image",
+        files={"file": (name, buf, "image/png")},
+        headers=headers,
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["image_url"].startswith("http")
+
+    # 列表返回预签名 URL
+    listed = client.get(
+        f"/api/v1/deal-projects/{project['id']}/items",
+        headers=headers,
+    ).json()
+    match = next(i for i in listed["items"] if i["id"] == item["id"])
+    assert match["image_url"].startswith("http")
+
+
+def test_item_image_upload_bad_type(client, monkeypatch):
+    project, _ = _setup_project_with_items(client)
+    headers = auth_headers(client)
+    item = _create_item(client, project["id"])
+    resp = client.post(
+        f"/api/v1/deal-projects/{project['id']}/items/{item['id']}/image",
+        files={"file": ("a.txt", io.BytesIO(b"not image"), "text/plain")},
+        headers=headers,
+    )
+    assert resp.status_code == 400
+
+
+def test_copy_patch_updates_only_that_platform(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    project, _ = _setup_project_with_items(client)
+    headers = auth_headers(client)
+    scheme = _generate_and_take(client, project["id"])
+
+    client.post(
+        f"/api/v1/deal-projects/{project['id']}/schemes/{scheme['id']}/copy",
+        json={"platform": "douyin"},
+        headers=headers,
+    )
+    client.post(
+        f"/api/v1/deal-projects/{project['id']}/schemes/{scheme['id']}/copy",
+        json={"platform": "meituan"},
+        headers=headers,
+    )
+
+    copies = client.get(
+        f"/api/v1/deal-projects/{project['id']}/schemes/{scheme['id']}/copies",
+        headers=headers,
+    ).json()
+    douyin = next(c for c in copies if c["platform"] == "douyin")
+    meituan = next(c for c in copies if c["platform"] == "meituan")
+
+    resp = client.patch(
+        f"/api/v1/deal-projects/{project['id']}/schemes/{scheme['id']}/copies/{douyin['id']}",
+        json={"title": "人工改的抖音标题", "selling_points": ["新卖点A", "新卖点B"]},
+        headers=headers,
+    )
+    assert resp.status_code == 200
+    assert resp.json()["title"] == "人工改的抖音标题"
+    assert resp.json()["selling_points"] == ["新卖点A", "新卖点B"]
+
+    # 其余平台不受影响
+    meituan_after = next(
+        c
+        for c in client.get(
+            f"/api/v1/deal-projects/{project['id']}/schemes/{scheme['id']}/copies",
+            headers=headers,
+        ).json()
+        if c["platform"] == "meituan"
+    )
+    assert meituan_after["title"] == meituan["title"]
+
+    # 敏感词 422
+    resp = client.patch(
+        f"/api/v1/deal-projects/{project['id']}/schemes/{scheme['id']}/copies/{douyin['id']}",
+        json={"title": "赌博标题"},
+        headers=headers,
+    )
+    assert resp.status_code == 422

@@ -262,6 +262,27 @@ class DealCopyGenerateRequest(BaseModel):
     platform: Platform
 
 
+class DealCopyUpdate(BaseModel):
+    title: str | None = Field(None, min_length=1, max_length=200)
+    selling_points: list[str] | None = Field(None, max_length=8)
+    rules: str | None = Field(None, max_length=2000)
+    cover_prompt: str | None = Field(None, max_length=2000)
+
+    @field_validator("title", "rules", "cover_prompt")
+    @classmethod
+    def text_blocked(cls, v: str | None) -> str | None:
+        return _check_no_blocked(v)
+
+    @field_validator("selling_points")
+    @classmethod
+    def points_blocked(cls, v: list[str] | None) -> list[str] | None:
+        if v is not None:
+            for point in v:
+                if contains_blocked(point):
+                    raise ValueError("文本包含敏感词")
+        return v
+
+
 class ExportToDesignRequest(BaseModel):
     platform: Platform
 
@@ -269,5 +290,6 @@ class ExportToDesignRequest(BaseModel):
 class ExportToDesignResponse(BaseModel):
     design_project_id: uuid.UUID
     asset_ids: list[uuid.UUID]
+
 
 

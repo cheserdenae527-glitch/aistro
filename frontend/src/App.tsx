@@ -1,6 +1,6 @@
 import { Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
 import { Layout, Menu, Spin, Button, Dropdown } from "antd";
-import { ShopOutlined, DashboardOutlined, LogoutOutlined, UserOutlined, SearchOutlined, PictureOutlined, BgColorsOutlined, CommentOutlined, EditOutlined } from "@ant-design/icons";
+import { ShopOutlined, DashboardOutlined, LogoutOutlined, UserOutlined, SearchOutlined, PictureOutlined, BgColorsOutlined, CommentOutlined, EditOutlined, EnvironmentOutlined, ShoppingCartOutlined } from "@ant-design/icons";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useAuthStore } from "./store/auth";
 import { getMe } from "./services/auth";
@@ -18,7 +18,11 @@ const DesignEditorPage = lazy(() => import("./pages/DesignEditorPage"));
 const ReputationIndexPage = lazy(() => import("./pages/ReputationIndexPage"));
 const ReputationWorkbenchPage = lazy(() => import("./pages/ReputationWorkbenchPage"));
 const StudioIndexPage = lazy(() => import("./pages/StudioIndexPage"));
+const DistrictIndexPage = lazy(() => import("./pages/DistrictIndexPage"));
+const DistrictDetailPage = lazy(() => import("./pages/DistrictDetailPage"));
 const StudioEditorPage = lazy(() => import("./pages/StudioEditorPage"));
+const DealIndexPage = lazy(() => import("./pages/DealIndexPage"));
+const DealEditorPage = lazy(() => import("./pages/DealEditorPage"));
 
 const { Header, Content } = Layout;
 
@@ -42,6 +46,8 @@ function AppLayout({ children }: { children: React.ReactNode }) {
     { key: "/design", icon: <BgColorsOutlined />, label: "视觉设计" },
     { key: "/studio", icon: <EditOutlined />, label: "内容工坊" },
     { key: "/reputation", icon: <CommentOutlined />, label: "口碑管理" },
+    { key: "/district", icon: <EnvironmentOutlined />, label: "商圈分析" },
+    { key: "/deals", icon: <ShoppingCartOutlined />, label: "团购工坊" },
     { key: "/subscriptions", icon: <UserOutlined />, label: "博主订阅" },
   ];
 
@@ -245,6 +251,46 @@ export default function App() {
         }
       />
       <Route
+        path="/district"
+        element={
+          <ProtectedRoute>
+            <AppLayout>
+              <DistrictIndexPage />
+            </AppLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/district/:shop_id"
+        element={
+          <ProtectedRoute>
+            <AppLayout>
+              <DistrictDetailPage />
+            </AppLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/deals"
+        element={
+          <ProtectedRoute>
+            <AppLayout>
+              <DealIndexPage />
+            </AppLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/deals/:id"
+        element={
+          <ProtectedRoute>
+            <AppLayout>
+              <DealEditorPage />
+            </AppLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/shops/:shop_id/profile/:platform"
         element={
           <ProtectedRoute>
@@ -259,6 +305,7 @@ export default function App() {
     </Suspense>
   );
 }
+
 
 
 

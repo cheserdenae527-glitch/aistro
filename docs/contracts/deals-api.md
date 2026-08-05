@@ -1,6 +1,6 @@
 # 团购工坊 API 接口契约
 
-> 版本：v1.0 · 2026-08-05
+> 版本：v1.1 · 2026-08-05（G2 补充：菜品图上传 + copy 人工编辑）
 > 基于：SPEC-DEALS v0.2 · PLAN-DEALS G1 交付
 
 ## 通用约定
@@ -62,6 +62,10 @@ Body：
 ### GET /deal-projects/{id}/items?page=&page_size=
 ### PATCH /deal-projects/{id}/items/{iid}
 任意子集（传 null 表示清空该字段，如 `cost_price`）。
+### POST /deal-projects/{id}/items/{iid}/image
+- `multipart/form-data`：`file`（png/jpeg/webp，≤10MB，PIL 二次校验，类型/大小不符 400）
+- 上传到 MinIO（folder=`deals`）并把 object 名写入 `image_url`
+- **`image_url` 返回语义**：MinIO object 名在响应中转换为预签名 URL（http 直链原样返回）
 ### DELETE /deal-projects/{id}/items/{iid}
 
 ---
@@ -153,6 +157,9 @@ Body：`{ "platform": "douyin" }`
 
 ### GET /deal-projects/{id}/schemes/{sid}/copies
 列出该方案已生成的全部平台文案（含归档方案的 copies，物理保留、前端只读）。
+### PATCH /deal-projects/{id}/schemes/{sid}/copies/{copy_id}
+人工编辑某平台文案，Body 任意子集：`title` / `selling_points` / `rules` / `cover_prompt`（传 null 清空，敏感词 422）。
+**只影响该平台**，其余平台 copy 不受影响；不改变方案 status。
 
 ---
 
@@ -208,4 +215,5 @@ net_margin   = (deal_price × (1 - 平台佣金率) - 组合成本) / deal_price
 | 502 | AI 返回格式错误 / AI 服务不可用（不占频控） |
 
 > 说明：全站采用 FastAPI 默认校验语义，枚举越界（如 category）返回 422 而非 400；PLAN-DEALS 测试清单中的「category 枚举越界 400」按此实现为 422，与 studio/district 等既有模块一致。
+
 

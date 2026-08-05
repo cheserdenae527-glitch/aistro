@@ -8,11 +8,12 @@
 """
 from __future__ import annotations
 
+import io
 import uuid
 from decimal import Decimal
 
 import openai
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -32,12 +33,14 @@ from app.models.design_project import DesignProject
 from app.models.merchant import Merchant
 from app.models.shop import Shop
 from app.models.user import User
+from PIL import Image
 from app.schemas.deals import (
     CompetitorDealCreate,
     CompetitorDealUpdate,
     CompetitorDealListResponse,
     CompetitorDealOut,
     DealCopyGenerateRequest,
+    DealCopyUpdate,
     DealCopyOut,
     DealItemCreate,
     DealItemListResponse,
@@ -54,12 +57,15 @@ from app.schemas.deals import (
     SchemeUpdateRequest,
 )
 from app.services.deals import build_margin_estimate, platform_commission_rate
+from app.services.storage import safe_get_presigned_url, upload_bytes
 
 router = APIRouter(tags=["deals"])
 
 _RATE_TTL = 20
 _DEFAULT_PAGE_SIZE = 20
 _MAX_PAGE_SIZE = 100
+_ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp"}
+_MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10MB
 
 
 # ============================================================
@@ -146,6 +152,32 @@ async def _get_scheme(project: DealProject, scheme_id: str, db: AsyncSession) ->
     if not scheme:
         raise HTTPException(status_code=404, detail="Scheme not found")
     return scheme
+
+
+def _item_out(item: DealItem) -> DealItemOut:
+    """菜品输出：MinIO object 名转为预签名 URL（http 直链原样返回）。"""
+    out = DealItemOut.model_validate(item)
+    if out.image_url and not out.image_url.startswith(("http://", "https://")):
+        out.image_url = safe_get_presigned_url(out.image_url) or out.image_url
+    return out
+
+
+async def _get_copy(
+    scheme: DealScheme, copy_id: str, db: AsyncSession
+) -> DealSchemeCopy:
+    try:
+        copy_uuid = uuid.UUID(copy_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Copy not found")
+    result = await db.execute(
+        select(DealSchemeCopy).where(
+            DealSchemeCopy.id == copy_uuid, DealSchemeCopy.scheme_id == scheme.id
+        )
+    )
+    copy = result.scalar_one_or_none()
+    if not copy:
+        raise HTTPException(status_code=404, detail="Copy not found")
+    return copy
 
 
 async def _scheme_copies(db: AsyncSession, scheme_id: uuid.UUID) -> list[DealSchemeCopy]:
@@ -332,7 +364,7 @@ async def create_item(
     item = DealItem(project_id=project.id, **body.model_dump())
     db.add(item)
     await db.flush()
-    return item
+    return _item_out(item)
 
 
 @router.get("/deal-projects/{project_id}/items", response_model=DealItemListResponse)
@@ -358,7 +390,9 @@ async def list_items(
             .limit(page_size)
         )
     ).scalars().all()
-    return DealItemListResponse(items=list(rows), total=total, page=page, size=page_size)
+    return DealItemListResponse(
+        items=[_item_out(r) for r in rows], total=total, page=page, size=page_size
+    )
 
 
 @router.patch("/deal-projects/{project_id}/items/{item_id}", response_model=DealItemOut)
@@ -374,7 +408,41 @@ async def update_item(
     data = body.model_dump(exclude_unset=True)
     for field, value in data.items():
         setattr(item, field, value)
-    return item
+    return _item_out(item)
+
+
+@router.post(
+    "/deal-projects/{project_id}/items/{item_id}/image",
+    response_model=DealItemOut,
+)
+async def upload_item_image(
+    project_id: str,
+    item_id: str,
+    file: UploadFile = File(...),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """上传菜品图到 MinIO（png/jpeg/webp，≤10MB），并写入 item.image_url。"""
+    project = await _get_project(project_id, current_user, db)
+    item = await _get_item(project, item_id, db)
+    if file.content_type not in _ALLOWED_MIME:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"不支持的文件类型: {file.content_type}，"
+                f"仅允许: {', '.join(sorted(_ALLOWED_MIME))}"
+            ),
+        )
+    data = await file.read()
+    if len(data) > _MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=400, detail="图片超过 10MB 限制")
+    try:
+        Image.open(io.BytesIO(data)).verify()
+    except Exception:
+        raise HTTPException(status_code=400, detail="无法识别的图片格式")
+    object_name = upload_bytes(data, file.content_type or "image/png", folder="deals")
+    item.image_url = object_name
+    return _item_out(item)
 
 
 @router.delete("/deal-projects/{project_id}/items/{item_id}")
@@ -744,6 +812,28 @@ async def list_copies(
     return await _scheme_copies(db, scheme.id)
 
 
+@router.patch(
+    "/deal-projects/{project_id}/schemes/{scheme_id}/copies/{copy_id}",
+    response_model=DealCopyOut,
+)
+async def update_copy(
+    project_id: str,
+    scheme_id: str,
+    copy_id: str,
+    body: DealCopyUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """人工编辑某平台的文案（只影响该平台，其余平台不受影响）。"""
+    project = await _get_project(project_id, current_user, db)
+    scheme = await _get_scheme(project, scheme_id, db)
+    copy = await _get_copy(scheme, copy_id, db)
+    data = body.model_dump(exclude_unset=True)
+    for field, value in data.items():
+        setattr(copy, field, value)
+    return copy
+
+
 @router.post(
     "/deal-projects/{project_id}/schemes/{scheme_id}/export-to-design",
     response_model=ExportToDesignResponse,
@@ -796,4 +886,9 @@ async def export_to_design(
         design_project_id=design_project.id,
         asset_ids=[asset.id],
     )
+
+
+
+
+
 
