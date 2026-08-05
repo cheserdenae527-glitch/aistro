@@ -414,6 +414,8 @@ describe("LiveEditorPage · 引擎画面预览", () => {
     await screen.findByText("火锅直播间");
     await userEvent.click(screen.getByRole("tab", { name: "场次与复盘" }));
     expect(await screen.findByText("引擎画面预览（本地数字人）")).toBeInTheDocument();
+    expect(screen.getByText(/预览高度/)).toBeInTheDocument();
+    expect(screen.getByText(/3:4 竖版/)).toBeInTheDocument();
   });
 });
 

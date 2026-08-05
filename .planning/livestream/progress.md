@@ -101,3 +101,8 @@
 - 修正：iframe 指向 {base_url}/dashboard.html；文案说明「点开始连接 → 已连接 → 输入文本驱动」
 - Playwright 实测 dashboard.html：开始连接 7s 连上，发送文本后 video 576x768 播放、两帧差 798 万像素（画面在动）
 - OBS 用途：引擎 webrtc 模式可用 OBS「窗口捕获」抓 dashboard.html 画面 → 推流抖音/视频号/小红书；或引擎改 --transport virtualcam 输出虚拟摄像头由 OBS 采集
+
+## 2026-08-05 预览框大小调节 + 画质说明
+- 引擎画面预览加「预览高度」Slider（320-1100px，默认 720，适配 3:4 竖版完整显示）
+- 画质提示写入预览卡：当前形象输出 576×768（3:4），画质上限由形象素材决定（更高清需 avatar.html 上传高清视频生成形象）；平台推流画质在 OBS 输出设置调整分辨率/码率
+- 测试：预览测试补断言（预览高度/3:4 竖版）→ 前端 86 项全绿；typecheck/eslint/build 通过

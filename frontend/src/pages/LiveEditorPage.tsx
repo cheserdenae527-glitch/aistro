@@ -8,6 +8,7 @@ import {
   Input,
   InputNumber,
   Select,
+  Slider,
   Space,
   Spin,
   Switch,
@@ -74,6 +75,7 @@ export default function LiveEditorPage({ onReady }: Props) {
   const [avatars, setAvatars] = useState<LiveAvatar[]>([]);
   const [savingBasic, setSavingBasic] = useState(false);
   const [testingEngine, setTestingEngine] = useState(false);
+  const [previewHeight, setPreviewHeight] = useState(720);
   const [engineTestResult, setEngineTestResult] = useState<EngineTestResult | null>(null);
   const [basicForm] = Form.useForm<BasicForm>();
   const watchedBaseUrl = Form.useWatch("base_url", basicForm);
@@ -411,12 +413,26 @@ export default function LiveEditorPage({ onReady }: Props) {
               <Space direction="vertical" style={{ width: "100%" }}>
                 {project.engine_config?.base_url && project.engine_config?.enabled && (
                   <Card size="small" title="引擎画面预览（本地数字人）">
+                    <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 8 }}>
+                      <Text style={{ fontSize: 12, whiteSpace: "nowrap" }}>预览高度</Text>
+                      <Slider
+                        min={320}
+                        max={1100}
+                        step={20}
+                        value={previewHeight}
+                        onChange={setPreviewHeight}
+                        style={{ flex: 1, maxWidth: 320, margin: 0 }}
+                      />
+                      <Text type="secondary" style={{ fontSize: 12, whiteSpace: "nowrap" }}>
+                        {previewHeight}px（视频为 3:4 竖版，调大可完整显示）
+                      </Text>
+                    </div>
                     <iframe
                       src={`${project.engine_config.base_url.replace(/\/+$/, "")}/dashboard.html`}
                       title="引擎画面预览"
                       style={{
                         width: "100%",
-                        height: 420,
+                        height: previewHeight,
                         border: "1px solid #d9d9d9",
                         borderRadius: 8,
                         background: "#000",
@@ -427,6 +443,12 @@ export default function LiveEditorPage({ onReady }: Props) {
                       即可驱动数字人；推流到平台后的画面在直播伴侣/平台直播间查看（纯 LiveTalking
                       引擎请把页面换成 /index.html）。
                     </Text>
+                    <div style={{ marginTop: 8 }}>
+                      <Text type="secondary" style={{ fontSize: 12 }}>
+                        画质提示：当前形象输出 576×768（3:4），画质上限由形象素材决定——要更清晰请用
+                        引擎 avatar.html 上传更高清视频生成形象；平台推流画质在 OBS 输出设置里调分辨率/码率。
+                      </Text>
+                    </div>
                   </Card>
                 )}
                 <SessionsTab
