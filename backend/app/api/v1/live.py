@@ -955,14 +955,26 @@ def _build_dynamic_avatar(video_bytes: bytes, workdir: str, avatar_id: str) -> s
 def _prepare_engine_video(video_bytes: bytes) -> tuple[bytes, str]:
     """驱动视频达标检查 + 预处理（转 720x960 竖版 + 提亮），供引擎 s3fd 生成形象。
 
-    不达标抛 ValueError（含明确原因），避免引擎卡在 40% 人脸检测：
-    - 过短（<150 帧 ≈ 6 秒）
-    - 过暗（平均亮度 <45/255）
-    - 未检测到清晰正脸（haar 检出率 <50%）
+    先转竖版/提亮，再对预处理后的帧做检查（时长/亮度/haar 正脸检出率）——
+    因为实际喂给引擎的就是预处理后的画面（竖版中心裁剪放大人脸、提亮）。
+    不达标抛 ValueError（含明确指标与原因），避免引擎卡在 40% 人脸检测。
     """
     import cv2
     import numpy as np
     import tempfile
+
+    def _to_vertical(frame):
+        h, w = frame.shape[:2]
+        if w / h > 3 / 4:
+            tw = int(h * 3 / 4)
+            x0 = (w - tw) // 2
+            frame = frame[:, x0 : x0 + tw]
+        else:
+            th = int(w * 4 / 3)
+            y0 = int((h - th) * 0.35)
+            y0 = max(0, min(y0, h - th))
+            frame = frame[y0 : y0 + th, :]
+        return cv2.resize(frame, (720, 960))
 
     tmp = os.path.join(tempfile.gettempdir(), f"prep_{uuid.uuid4().hex}.mp4")
     with open(tmp, "wb") as f:
@@ -974,51 +986,44 @@ def _prepare_engine_video(video_bytes: bytes) -> tuple[bytes, str]:
     fps = cap.get(cv2.CAP_PROP_FPS) or 25
     if total < 150:
         raise ValueError(f"视频过短（{total} 帧 ≈ {total / fps:.0f} 秒），需 ≥6 秒（≥150 帧）")
+
+    gamma = 1.2
+    table = np.array([((i / 255.0) ** (1 / gamma)) * 255 for i in range(256)], dtype=np.uint8)
+    processed: list = []
     cascade = cv2.CascadeClassifier(
         cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
     )
-    idx = 0
-    sample: list[bool] = []
-    brightness: list[float] = []
-    step = max(1, total // 30)
     while True:
         ok, frame = cap.read()
         if not ok:
             break
-        if idx % step == 0:
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            brightness.append(float(gray.mean()))
-            sample.append(len(cascade.detectMultiScale(gray, 1.1, 5, minSize=(80, 80))) > 0)
-        idx += 1
+        processed.append(cv2.LUT(_to_vertical(frame), table))
+        if len(processed) >= 450:
+            break
     cap.release()
-    if brightness and np.mean(brightness) < 45:
-        raise ValueError(f"视频过暗（平均亮度 {np.mean(brightness):.0f}/255），请用光线充足的正面视频")
-    if not sample or sum(sample) / len(sample) < 0.5:
-        raise ValueError("未检测到清晰正脸（检出率不足 50%），请用正面、单人、面部清晰的视频")
+    if not processed:
+        raise ValueError("无法解析视频文件")
 
-    cap = cv2.VideoCapture(tmp)
+    step = max(1, len(processed) // 30)
+    brightness = [float(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY).mean()) for f in processed[::step]]
+    sample = [
+        len(cascade.detectMultiScale(cv2.cvtColor(f, cv2.COLOR_BGR2GRAY), 1.1, 5, minSize=(80, 80))) > 0
+        for f in processed[::step]
+    ]
+    avg_b = float(np.mean(brightness)) if brightness else 0
+    rate = sum(sample) / len(sample) * 100 if sample else 0
+    if avg_b < 45:
+        raise ValueError(f"视频过暗（预处理后平均亮度 {avg_b:.0f}/255），请用光线充足的正面视频")
+    if rate < 50:
+        raise ValueError(
+            f"未检测到清晰正脸（检出率 {rate:.0f}% <50%），请用正面、单人、面部清晰的视频"
+        )
+
     out_tmp = os.path.join(tempfile.gettempdir(), f"prepout_{uuid.uuid4().hex}.mp4")
     vw = cv2.VideoWriter(out_tmp, cv2.VideoWriter_fourcc(*"mp4v"), 25, (720, 960))
-    gamma = 1.15
-    table = np.array([((i / 255.0) ** (1 / gamma)) * 255 for i in range(256)], dtype=np.uint8)
-    while True:
-        ok, frame = cap.read()
-        if not ok:
-            break
-        h, w = frame.shape[:2]
-        if w / h > 3 / 4:
-            tw = int(h * 3 / 4)
-            x0 = (w - tw) // 2
-            frame = frame[:, x0 : x0 + tw]
-        else:
-            th = int(w * 4 / 3)
-            y0 = int((h - th) * 0.35)
-            y0 = max(0, min(y0, h - th))
-            frame = frame[y0 : y0 + th, :]
-        frame = cv2.resize(frame, (720, 960))
-        vw.write(cv2.LUT(frame, table))
+    for frame in processed:
+        vw.write(frame)
     vw.release()
-    cap.release()
     try:
         os.remove(tmp)
     except Exception:
@@ -1030,28 +1035,6 @@ def _prepare_engine_video(video_bytes: bytes) -> tuple[bytes, str]:
     except Exception:
         pass
     return out, "video/mp4"
-
-
-def _release_live_engine() -> bool:
-    """停止本机 LiveTalking 引擎进程，释放 GPU。"""
-    workdir = settings.LIVE_ENGINE_WORKDIR
-    if not workdir or not os.path.isdir(workdir):
-        return False
-    try:
-        subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-                "Where-Object { $_.CommandLine -match 'listenport 8010' } | "
-                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }",
-            ],
-            timeout=30,
-        )
-        return True
-    except Exception:
-        return False
 
 
 def _restart_live_engine(avatar_id: str) -> bool:
