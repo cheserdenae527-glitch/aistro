@@ -64,3 +64,8 @@
   - 已同步修正 backend engine-test、mock 引擎、后端测试、deploy README §8、livestream-api.md
 - 验证脚本留档：`.planning/livestream/mock_engine.py`、`e2e_l3.py`、`engines/`（LiveTalking）、`dhl/`（digital-human-livestream）、`verify_webrtc.mjs`（Playwright，临时）、截图 frame_a/frame_b.png
 - 测试：后端 test_live.py 55 项全绿（engine-test + persona 相关 18 项单独跑过）；前端 85 项不受影响
+
+## 2026-08-05 值守人开播 SOP
+- 交付 `deploy/livestream/OPERATOR-SOP.md`：面向运营/值守人（非部署工程师）的操作手册
+- 内容：开播前三件套自检（AI 标识 + LiveTalking 水印 + 真人值守）、导出开播包、引擎连接测试/手动导入（wordlist 用 {"content": 文本} 格式、persona 四必填）、三条推流链路（B站 RTMP 直推 / 抖音/视频号/小红书 OBS+虚拟摄像头）、开播流程（planned→live 前置确认）、开播中互动与巡检、复盘录入 + AI 复盘、故障对照表、合规红线
+- 合规终审：全文「无人直播/24小时」仅出现在「不宣传」负面表述

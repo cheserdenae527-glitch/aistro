@@ -3,6 +3,7 @@
 > 版本：v1.0 · 2026-08-05（L3 交付）
 > 依据：docs/PLAN-LIVESTREAM.md L3 / docs/SPEC-LIVESTREAM.md §3.1
 > 适用：把 AiRestro 导出的「开播包」（script_markdown / persona_json / wordlist / reply_rules / compliance / engine_guide）落地到本地数字人引擎并推流。
+> **值守人操作手册见 [`OPERATOR-SOP.md`](./OPERATOR-SOP.md)**（导出→导入→推流→开播→复盘 检查清单）；本文档面向部署工程师。
 > 边界：AiRestro 只生产草稿与配置，不直接发布、不直接推流；数字人引擎在本机 / 私有 GPU 环境部署（Apache-2.0 开源），开播前由真人运营确认（值守 + AI 标识）。
 
 ## 0. 一句话路线
