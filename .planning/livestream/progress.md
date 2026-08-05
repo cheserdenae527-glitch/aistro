@@ -90,3 +90,8 @@
 - 测试：test_script_agent_duration_deviation_rejected → autoscaled（30min/2000s → 1800s）+ 新增 small_target（5min/510s → 300s）→ test_live.py 62 项全绿
 - 真实验证：duration_min=5 → 200，total_duration_sec=300（7 段）
 - 另：upload-image 405 为用户浏览器端干扰（后端带登录态 multipart 实测 200）；content_main.js TypeError 为浏览器扩展注入，与项目无关
+
+## 2026-08-05 引擎画面预览嵌入 AiRestro
+- 背景：用户问「点击开播后的画面在哪看」；当前架构开播按钮只做状态流转，画面在引擎侧 webrtcapi.html
+- 实现：LiveEditorPage 场次 Tab 顶部新增「引擎画面预览」Card，iframe 嵌入 {base_url}/webrtcapi.html（引擎 enabled 且有 base_url 时显示）；附说明（驱动方式 / 纯 LiveTalking 用 /index.html / 平台画面看直播伴侣）
+- 测试：+1（引擎启用时场次 Tab 展示预览）→ 前端 86 项全绿；typecheck/eslint/build 通过

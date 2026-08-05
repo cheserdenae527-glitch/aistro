@@ -408,12 +408,34 @@ export default function LiveEditorPage({ onReady }: Props) {
             key: "sessions",
             label: "场次与复盘",
             children: (
-              <SessionsTab
-                projectId={project.id}
-                scripts={scripts}
-                avatars={avatars}
-                aiLabelText={project.ai_label_text ?? ""}
-              />
+              <Space direction="vertical" style={{ width: "100%" }}>
+                {project.engine_config?.base_url && project.engine_config?.enabled && (
+                  <Card size="small" title="引擎画面预览（本地数字人）">
+                    <iframe
+                      src={`${project.engine_config.base_url.replace(/\/+$/, "")}/webrtcapi.html`}
+                      title="引擎画面预览"
+                      style={{
+                        width: "100%",
+                        height: 420,
+                        border: "1px solid #d9d9d9",
+                        borderRadius: 8,
+                        background: "#000",
+                      }}
+                    />
+                    <Text type="secondary" style={{ fontSize: 12 }}>
+                      数字人画面由本地引擎渲染：在此页「开始连接」后输入文本即可驱动；
+                      推流到平台后的画面在直播伴侣/平台直播间查看（纯 LiveTalking 引擎请把页面换成
+                      /index.html）。
+                    </Text>
+                  </Card>
+                )}
+                <SessionsTab
+                  projectId={project.id}
+                  scripts={scripts}
+                  avatars={avatars}
+                  aiLabelText={project.ai_label_text ?? ""}
+                />
+              </Space>
             ),
           },
         ]}

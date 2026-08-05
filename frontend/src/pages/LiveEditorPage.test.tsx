@@ -393,3 +393,27 @@ describe("LiveEditorPage · 本地引擎连接测试", () => {
   });
 });
 
+
+describe("LiveEditorPage · 引擎画面预览", () => {
+  it("引擎启用时场次 Tab 展示画面预览 iframe", async () => {
+    (liveService.listScripts as ReturnType<typeof vi.fn>).mockResolvedValue({ data: [] });
+    (liveService.listSessions as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: { items: [], total: 0, page: 1, size: 20 },
+    });
+    (liveService.getProject as ReturnType<typeof vi.fn>).mockResolvedValue({
+      data: {
+        ...project,
+        engine_config: {
+          base_url: "http://localhost:8010",
+          enabled: true,
+          api_key_configured: true,
+        },
+      },
+    });
+    await renderPage();
+    await screen.findByText("火锅直播间");
+    await userEvent.click(screen.getByRole("tab", { name: "场次与复盘" }));
+    expect(await screen.findByText("引擎画面预览（本地数字人）")).toBeInTheDocument();
+  });
+});
+
