@@ -412,7 +412,7 @@ export default function LiveEditorPage({ onReady }: Props) {
                 {project.engine_config?.base_url && project.engine_config?.enabled && (
                   <Card size="small" title="引擎画面预览（本地数字人）">
                     <iframe
-                      src={`${project.engine_config.base_url.replace(/\/+$/, "")}/webrtcapi.html`}
+                      src={`${project.engine_config.base_url.replace(/\/+$/, "")}/dashboard.html`}
                       title="引擎画面预览"
                       style={{
                         width: "100%",
@@ -423,9 +423,9 @@ export default function LiveEditorPage({ onReady }: Props) {
                       }}
                     />
                     <Text type="secondary" style={{ fontSize: 12 }}>
-                      数字人画面由本地引擎渲染：在此页「开始连接」后输入文本即可驱动；
-                      推流到平台后的画面在直播伴侣/平台直播间查看（纯 LiveTalking 引擎请把页面换成
-                      /index.html）。
+                      数字人画面由本地引擎渲染：在预览页点「开始连接」，等状态变为已连接后输入文本
+                      即可驱动数字人；推流到平台后的画面在直播伴侣/平台直播间查看（纯 LiveTalking
+                      引擎请把页面换成 /index.html）。
                     </Text>
                   </Card>
                 )}

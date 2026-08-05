@@ -95,3 +95,9 @@
 - 背景：用户问「点击开播后的画面在哪看」；当前架构开播按钮只做状态流转，画面在引擎侧 webrtcapi.html
 - 实现：LiveEditorPage 场次 Tab 顶部新增「引擎画面预览」Card，iframe 嵌入 {base_url}/webrtcapi.html（引擎 enabled 且有 base_url 时显示）；附说明（驱动方式 / 纯 LiveTalking 用 /index.html / 平台画面看直播伴侣）
 - 测试：+1（引擎启用时场次 Tab 展示预览）→ 前端 86 项全绿；typecheck/eslint/build 通过
+
+## 2026-08-05 引擎画面预览修正：webrtcapi.html → dashboard.html
+- 背景：用户反馈预览无画面；实测发现 dhl 的 webrtcapi.html 只是 API 测试页（不建 WebRTC、video 是摆设），dhl 完整交互页是 dashboard.html
+- 修正：iframe 指向 {base_url}/dashboard.html；文案说明「点开始连接 → 已连接 → 输入文本驱动」
+- Playwright 实测 dashboard.html：开始连接 7s 连上，发送文本后 video 576x768 播放、两帧差 798 万像素（画面在动）
+- OBS 用途：引擎 webrtc 模式可用 OBS「窗口捕获」抓 dashboard.html 画面 → 推流抖音/视频号/小红书；或引擎改 --transport virtualcam 输出虚拟摄像头由 OBS 采集
