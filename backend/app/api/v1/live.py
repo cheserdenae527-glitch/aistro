@@ -909,7 +909,7 @@ def _build_dynamic_avatar(video_bytes: bytes, workdir: str, avatar_id: str) -> s
         if not ok:
             break
         frames.append(frame)
-        if len(frames) >= 300:
+        if len(frames) >= 450:  # 上限 450 帧 ≈ 18 秒，支持 15 秒视频完整保留
             break
     cap.release()
     if len(frames) < 10:
