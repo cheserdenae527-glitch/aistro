@@ -223,9 +223,17 @@ class LiveScriptAgent:
         if duration_min:
             target = duration_min * 60
             if total < target * 0.9 or total > target * 1.1:
-                raise LiveScriptAgentError(
-                    f"脚本总时长 {total}s 与设定时长 {duration_min} 分钟偏差超过 10%"
-                )
+                # 时长自适应：按比例缩放各段至目标时长，避免小目标（如 5 分钟）或
+                # 内容偏长时整体失败。保留各段相对权重，运营可再逐段微调。
+                ratio = target / total if total else 1.0
+                scaled = [max(1, int(seg["duration_sec"] * ratio)) for seg in content]
+                diff = target - sum(scaled)
+                if scaled:
+                    idx = max(range(len(scaled)), key=lambda i: scaled[i])
+                    scaled[idx] += diff
+                for seg, d in zip(content, scaled):
+                    seg["duration_sec"] = d
+                total = sum(scaled)
 
         risks = data.get("compliance_risks")
         compliance_risks = (

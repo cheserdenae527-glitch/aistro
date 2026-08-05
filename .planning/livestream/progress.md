@@ -82,3 +82,11 @@
 - 修复：export_script 依据 script.avatar_id → live_avatars.voice_config，在 engine_guide 追加第 8 行「引擎 TTS 配置：--tts <provider> --REF_FILE <voice>」
 - 默认 provider=edgetts；voice 空则只输出 --tts
 - 测试：+2（cosyvoice+voice 断言 / 无配置默认 edgetts）→ test_live.py 61 项全绿
+
+## 2026-08-05 脚本生成 502 修复（时长硬校验 → 自动缩放）
+- 现象：用户生成脚本 502，detail「脚本总时长 510s 与设定时长 5 分钟偏差超过 10%」
+- 根因：_clean_script 时长偏差 >10% 直接抛错；小目标（5 分钟）时 6 类分段基础时长易超
+- 修复：偏差 >10% 时按比例缩放各段 duration_sec 至目标时长（保留相对权重，最长段吸收舍入差，各段 ≥1s），不再整体失败；运营仍可逐段微调
+- 测试：test_script_agent_duration_deviation_rejected → autoscaled（30min/2000s → 1800s）+ 新增 small_target（5min/510s → 300s）→ test_live.py 62 项全绿
+- 真实验证：duration_min=5 → 200，total_duration_sec=300（7 段）
+- 另：upload-image 405 为用户浏览器端干扰（后端带登录态 multipart 实测 200）；content_main.js TypeError 为浏览器扩展注入，与项目无关

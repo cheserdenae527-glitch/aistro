@@ -277,7 +277,8 @@ def test_script_agent_clean_script_ok():
     }
 
 
-def test_script_agent_duration_deviation_rejected():
+def test_script_agent_duration_deviation_autoscaled():
+    """时长偏差 >10% 时自动按比例缩放至目标时长，不再整体失败。"""
     agent = LiveScriptAgent()
     data = {
         "title": "测试脚本",
@@ -285,8 +286,29 @@ def test_script_agent_duration_deviation_rejected():
         "content": _make_segments(2000),  # 30min -> 1800s，偏差 >10%
         "compliance_risks": [],
     }
-    with pytest.raises(LiveScriptAgentError, match="偏差超过 10%"):
-        agent._clean_script(data, duration_min=30)
+    cleaned = agent._clean_script(data, duration_min=30)
+    assert cleaned["total_duration_sec"] == 1800
+    # 各段相对比例保留（最长段仍是 product）
+    by_type = {s["type"]: s["duration_sec"] for s in cleaned["content"]}
+    assert max(by_type, key=by_type.get) == "product"
+
+
+def test_script_agent_duration_autoscale_small_target():
+    """小目标（5 分钟）时长不足时同样自动缩放，避免 502。"""
+    agent = LiveScriptAgent()
+    content = [
+        {"type": "opening", "title": "开场", "text": "欢迎来到直播间", "duration_sec": 60, "cue": "笑"},
+        {"type": "product", "title": "招牌", "text": "先讲招牌菜", "duration_sec": 180, "cue": "展示"},
+        {"type": "promo", "title": "优惠", "text": "限时 88 元", "duration_sec": 90, "cue": "指向"},
+        {"type": "interaction", "title": "互动", "text": "想吃什么评论区说", "duration_sec": 90, "cue": "看屏"},
+        {"type": "qa", "title": "答疑", "text": "辣度可选微辣", "duration_sec": 60, "cue": "比划"},
+        {"type": "closing", "title": "收尾", "text": "记得核销", "duration_sec": 30, "cue": "挥手"},
+    ]
+    assert sum(s["duration_sec"] for s in content) == 510  # 目标 300s，偏差 >10%
+    data = {"title": "短场脚本", "tone": "烟火气", "content": content, "compliance_risks": []}
+    cleaned = agent._clean_script(data, duration_min=5)
+    assert cleaned["total_duration_sec"] == 300
+    assert all(s["duration_sec"] >= 1 for s in cleaned["content"])
 
 
 def test_script_agent_missing_type_rejected():
