@@ -1,0 +1,1244 @@
+"""直播工坊模块 API — 项目/形象/脚本/弹幕配置/场次/复盘 CRUD + AI 生成 + 合规 + 开播包导出。
+
+鉴权边界（SPEC §6）：
+- live-projects / scripts / danmaku / sessions / metrics / review：JWT + shop 所有权
+  （project -> shop -> merchant -> user，跨用户一律 404）
+- live-avatars：org 归属校验（MVP 退化 org_id = 创建用户主账号 users.id，
+  见 SPEC §4/§10 与 app/models/live_avatar.py 注释），跨 org 一律 404
+- 凡接受 avatar_id 入参的接口（scripts/generate、sessions 创建/PATCH）都校验
+  该形象的 org_id 与当前用户一致，跨 org 一律 404
+
+频控（成功才计入）：
+- scripts/generate、danmaku-config/generate：60s，key = user+shop，独立 key
+- sessions/{sid}/review：30s，key = user+session_id
+"""
+from __future__ import annotations
+
+import uuid
+from typing import Any
+
+import openai
+from fastapi import APIRouter, Depends, HTTPException, Query
+from sqlalchemy import func, select, update
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.ai.live_compliance import LiveCompliance, default_wordlist
+from app.ai.live_danmaku_agent import LiveDanmakuAgent, LiveDanmakuAgentError
+from app.ai.live_review_agent import LiveReviewAgent, LiveReviewAgentError
+from app.ai.live_script_agent import LiveScriptAgent, LiveScriptAgentError
+from app.core.database import get_db
+from app.core.deps import get_current_user
+from app.core.rate_limit import peek_rate_limit, set_rate_limit
+from app.models.live_avatar import LiveAvatar
+from app.models.live_danmaku_config import LiveDanmakuConfig
+from app.models.live_project import LiveProject
+from app.models.live_script import LiveScript
+from app.models.live_session import LiveSession
+from app.models.live_session_metric import LiveSessionMetric
+from app.models.merchant import Merchant
+from app.models.shop import Shop
+from app.models.user import User
+from app.schemas.live import (
+    ComplianceCheckRequest,
+    ComplianceResult,
+    DanmakuConfigUpdate,
+    LiveAvatarCreate,
+    LiveAvatarListResponse,
+    LiveAvatarOut,
+    LiveAvatarUpdate,
+    LiveDanmakuConfigOut,
+    LiveExportBundle,
+    LiveProjectCreate,
+    LiveProjectListResponse,
+    LiveProjectOut,
+    LiveProjectUpdate,
+    LiveScriptOut,
+    LiveSessionCreate,
+    LiveSessionListResponse,
+    LiveSessionMetricOut,
+    LiveSessionOut,
+    LiveSessionUpdate,
+    MetricsCreate,
+    ReviewResponse,
+    ScriptGenerateRequest,
+    ScriptUpdateRequest,
+)
+
+router = APIRouter(tags=["live"])
+
+_RATE_TTL_SCRIPTS = 60
+_RATE_TTL_DANMAKU = 60
+_RATE_TTL_REVIEW = 30
+_DEFAULT_PAGE_SIZE = 20
+_MAX_PAGE_SIZE = 100
+_DEFAULT_AI_LABEL = "本直播间由 AI 数字人出镜，真人运营团队值守"
+_ENGINE_SENSITIVE_KEYS = ("api_key", "secret")
+
+_PLATFORM_NAMES = {
+    "douyin": "抖音",
+    "xiaohongshu": "小红书",
+    "wechat": "视频号（微信）",
+}
+
+_TYPE_LABELS = {
+    "opening": "开场留人",
+    "product": "产品介绍",
+    "promo": "优惠逼单",
+    "interaction": "互动",
+    "qa": "答疑",
+    "closing": "收尾",
+}
+
+_DEFAULT_PERSONA = {
+    "name": "门店主播",
+    "personality": "亲切热情，懂美食",
+    "style": "烟火气，口语化",
+    "knowledge_scope": "本店菜品、优惠、营业信息",
+    "forbidden_topics": ["政治", "宗教"],
+}
+
+
+# ============================================================
+# 鉴权与资源 helper
+# ============================================================
+
+
+async def _get_shop(shop_id: str, user: User, db: AsyncSession) -> Shop:
+    try:
+        shop_uuid = uuid.UUID(shop_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    result = await db.execute(
+        select(Shop)
+        .join(Merchant, Shop.merchant_id == Merchant.id)
+        .where(Shop.id == shop_uuid, Merchant.user_id == user.id)
+    )
+    shop = result.scalar_one_or_none()
+    if not shop:
+        raise HTTPException(status_code=404, detail="Shop not found")
+    return shop
+
+
+async def _get_project(project_id: str, user: User, db: AsyncSession) -> LiveProject:
+    try:
+        project_uuid = uuid.UUID(project_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Project not found")
+    result = await db.execute(
+        select(LiveProject)
+        .join(Shop, LiveProject.shop_id == Shop.id)
+        .join(Merchant, Shop.merchant_id == Merchant.id)
+        .where(LiveProject.id == project_uuid, Merchant.user_id == user.id)
+    )
+    project = result.scalar_one_or_none()
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+async def _get_avatar(avatar_id: str, user: User, db: AsyncSession) -> LiveAvatar:
+    """按 org 归属取形象；跨 org 一律 404。"""
+    try:
+        avatar_uuid = uuid.UUID(avatar_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    return await _get_avatar_by_uuid(avatar_uuid, user, db)
+
+
+async def _get_avatar_by_uuid(
+    avatar_id: uuid.UUID, user: User, db: AsyncSession
+) -> LiveAvatar:
+    result = await db.execute(
+        select(LiveAvatar).where(
+            LiveAvatar.id == avatar_id, LiveAvatar.org_id == user.id
+        )
+    )
+    avatar = result.scalar_one_or_none()
+    if not avatar:
+        raise HTTPException(status_code=404, detail="Avatar not found")
+    return avatar
+
+
+async def _get_script(
+    project: LiveProject, script_id: str, db: AsyncSession
+) -> LiveScript:
+    try:
+        script_uuid = uuid.UUID(script_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Script not found")
+    result = await db.execute(
+        select(LiveScript).where(
+            LiveScript.id == script_uuid, LiveScript.project_id == project.id
+        )
+    )
+    script = result.scalar_one_or_none()
+    if not script:
+        raise HTTPException(status_code=404, detail="Script not found")
+    return script
+
+
+async def _get_session(
+    project: LiveProject, session_id: str, db: AsyncSession
+) -> LiveSession:
+    try:
+        session_uuid = uuid.UUID(session_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Session not found")
+    result = await db.execute(
+        select(LiveSession).where(
+            LiveSession.id == session_uuid, LiveSession.project_id == project.id
+        )
+    )
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    return session
+
+
+async def _validate_operator(operator_id: uuid.UUID, db: AsyncSession) -> None:
+    user = await db.get(User, operator_id)
+    if user is None:
+        raise HTTPException(status_code=404, detail="Operator not found")
+
+
+async def _active_confirmed_script(
+    project_id: uuid.UUID, db: AsyncSession
+) -> LiveScript | None:
+    result = await db.execute(
+        select(LiveScript)
+        .where(
+            LiveScript.project_id == project_id,
+            LiveScript.is_archived.is_(False),
+            LiveScript.status == "confirmed",
+        )
+        .order_by(LiveScript.generation_batch.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+async def _latest_script(project_id: uuid.UUID, db: AsyncSession) -> LiveScript | None:
+    result = await db.execute(
+        select(LiveScript)
+        .where(LiveScript.project_id == project_id)
+        .order_by(LiveScript.generation_batch.desc(), LiveScript.created_at.desc())
+        .limit(1)
+    )
+    return result.scalar_one_or_none()
+
+
+def _mask_engine_config(cfg: dict | None) -> dict | None:
+    """engine_config GET 脱敏：api_key 等敏感字段不原样回传，仅返回是否已配置。"""
+    if not cfg:
+        return None
+    masked: dict[str, Any] = {}
+    for k, v in cfg.items():
+        if k in _ENGINE_SENSITIVE_KEYS:
+            continue
+        masked[k] = v
+    masked["api_key_configured"] = bool(cfg.get("api_key"))
+    return masked
+
+
+def _project_payload(project: LiveProject) -> dict[str, Any]:
+    return {
+        "id": project.id,
+        "shop_id": project.shop_id,
+        "title": project.title,
+        "platform": project.platform,
+        "goal": project.goal,
+        "promo_items": project.promo_items,
+        "ai_label_text": project.ai_label_text,
+        "engine_config": _mask_engine_config(project.engine_config),
+        "status": project.status,
+        "created_at": project.created_at,
+        "updated_at": project.updated_at,
+    }
+
+
+def _build_script_markdown(script: LiveScript) -> str:
+    lines = [f"# {script.title}", ""]
+    for seg in script.content or []:
+        seg_type = str(seg.get("type", ""))
+        title = str(seg.get("title") or _TYPE_LABELS.get(seg_type, seg_type))
+        duration = seg.get("duration_sec", "?")
+        lines.append(f"## {title}（{duration}s）")
+        lines.append(str(seg.get("text", "")))
+        cue = seg.get("cue")
+        if cue:
+            lines.append("")
+            lines.append(f"[画面/动作提示] {cue}")
+        lines.append("")
+    lines.append(f"总时长：{script.total_duration_sec}s" if script.total_duration_sec else "")
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _build_engine_guide(project: LiveProject, ai_label_text: str) -> str:
+    platform = _PLATFORM_NAMES.get(project.platform, project.platform)
+    lines = [
+        "1. 本地启动 LiveTalking（数字人视频实时生成），通过 RTMP 推流到 " + platform + "。",
+        "2. 将 persona.json 与 wordlist.txt 导入 digital-human-livestream 管理后台"
+        "（/admin/persona、/admin/wordlist），热加载生效。",
+        "3. 弹幕互动：" + platform + " 不在 MVP 自动弹幕范围，请使用导出包 reply_rules 的"
+        "候选话术在直播间人工粘贴。",
+        f"4. AI 标识提醒：直播须展示 AI 标识文案「{ai_label_text}」，开播前由值守人确认。",
+        "5. LiveTalking 水印提醒：发布到 B站/视频号/抖音的视频需带 LiveTalking 水印与标识，"
+        "与 AI 标识合规要求一致。",
+        "6. 平台数字人直播规则随时更新，以平台最新公告为准。",
+    ]
+    if project.engine_config and project.engine_config.get("base_url"):
+        lines.append(f"7. 本地引擎管理后台地址：{project.engine_config['base_url']}")
+    return "\n".join(lines)
+
+
+# ============================================================
+# 直播项目
+# ============================================================
+
+
+@router.post("/live-projects", response_model=LiveProjectOut)
+async def create_project(
+    body: LiveProjectCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    shop = await _get_shop(str(body.shop_id), current_user, db)
+    project = LiveProject(
+        shop_id=shop.id,
+        title=body.title,
+        platform=body.platform,
+        goal=body.goal,
+        promo_items=body.promo_items,
+        ai_label_text=body.ai_label_text,
+        engine_config=body.engine_config,
+        status="draft",
+    )
+    db.add(project)
+    await db.flush()
+    return _project_payload(project)
+
+
+@router.get("/live-projects", response_model=LiveProjectListResponse)
+async def list_projects(
+    shop_id: uuid.UUID | None = None,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    base = (
+        select(LiveProject)
+        .join(Shop, LiveProject.shop_id == Shop.id)
+        .join(Merchant, Shop.merchant_id == Merchant.id)
+        .where(Merchant.user_id == current_user.id)
+    )
+    if shop_id is not None:
+        base = base.where(LiveProject.shop_id == shop_id)
+    total = (
+        await db.execute(select(func.count()).select_from(base.subquery()))
+    ).scalar_one()
+    rows = (
+        await db.execute(
+            base.order_by(LiveProject.updated_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).scalars().all()
+    return LiveProjectListResponse(
+        items=[_project_payload(p) for p in rows], total=total, page=page, size=page_size
+    )
+
+
+@router.get("/live-projects/{project_id}", response_model=LiveProjectOut)
+async def get_project(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    return _project_payload(project)
+
+
+@router.patch("/live-projects/{project_id}", response_model=LiveProjectOut)
+async def update_project(
+    project_id: str,
+    body: LiveProjectUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    data = body.model_dump(exclude_unset=True)
+    for field, value in data.items():
+        setattr(project, field, value)
+    return _project_payload(project)
+
+
+@router.delete("/live-projects/{project_id}")
+async def delete_project(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    await db.delete(project)
+    await db.flush()
+    return {"ok": True}
+
+
+# ============================================================
+# 数字人形象（org 维度，团队级共享）
+# ============================================================
+
+
+@router.post("/live-avatars", response_model=LiveAvatarOut)
+async def create_avatar(
+    body: LiveAvatarCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    avatar = LiveAvatar(org_id=current_user.id, **body.model_dump())
+    db.add(avatar)
+    await db.flush()
+    return avatar
+
+
+@router.get("/live-avatars", response_model=LiveAvatarListResponse)
+async def list_avatars(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    base = select(LiveAvatar).where(LiveAvatar.org_id == current_user.id)
+    total = (
+        await db.execute(select(func.count()).select_from(base.subquery()))
+    ).scalar_one()
+    rows = (
+        await db.execute(
+            base.order_by(LiveAvatar.updated_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).scalars().all()
+    return LiveAvatarListResponse(items=list(rows), total=total, page=page, size=page_size)
+
+
+@router.get("/live-avatars/{avatar_id}", response_model=LiveAvatarOut)
+async def get_avatar(
+    avatar_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    return await _get_avatar(avatar_id, current_user, db)
+
+
+@router.patch("/live-avatars/{avatar_id}", response_model=LiveAvatarOut)
+async def update_avatar(
+    avatar_id: str,
+    body: LiveAvatarUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    avatar = await _get_avatar(avatar_id, current_user, db)
+    data = body.model_dump(exclude_unset=True)
+    for field, value in data.items():
+        setattr(avatar, field, value)
+    return avatar
+
+
+@router.delete("/live-avatars/{avatar_id}")
+async def delete_avatar(
+    avatar_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    avatar = await _get_avatar(avatar_id, current_user, db)
+    ref_script = (
+        await db.execute(
+            select(LiveScript.id).where(LiveScript.avatar_id == avatar.id).limit(1)
+        )
+    ).scalar_one_or_none()
+    if ref_script:
+        raise HTTPException(status_code=409, detail="该形象已被直播脚本引用，无法删除")
+    ref_session = (
+        await db.execute(
+            select(LiveSession.id).where(LiveSession.avatar_id == avatar.id).limit(1)
+        )
+    ).scalar_one_or_none()
+    if ref_session:
+        raise HTTPException(status_code=409, detail="该形象已被场次引用，无法删除")
+    await db.delete(avatar)
+    await db.flush()
+    return {"ok": True}
+
+
+# ============================================================
+# 直播脚本
+# ============================================================
+
+
+@router.post(
+    "/live-projects/{project_id}/scripts/generate", response_model=LiveScriptOut
+)
+async def generate_script(
+    project_id: str,
+    body: ScriptGenerateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    rate_key = f"live:scripts:generate:{current_user.id}:{project.shop_id}"
+    if not await peek_rate_limit(rate_key):
+        raise HTTPException(
+            status_code=429, detail=f"操作过于频繁，请 {_RATE_TTL_SCRIPTS} 秒后再试"
+        )
+
+    # 解析形象：显式传 avatar_id 校验 org 归属；缺省取最近一次生成用过的形象
+    avatar: LiveAvatar | None = None
+    if body.avatar_id is not None:
+        avatar = await _get_avatar_by_uuid(body.avatar_id, current_user, db)
+    else:
+        latest = await _latest_script(project.id, db)
+        if latest is None or latest.avatar_id is None:
+            raise HTTPException(
+                status_code=400,
+                detail="项目尚未生成过脚本，请显式指定数字人形象 avatar_id",
+            )
+        avatar = await _get_avatar_by_uuid(latest.avatar_id, current_user, db)
+        if avatar.status == "disabled":
+            raise HTTPException(
+                status_code=400,
+                detail="默认形象已停用，请显式指定其他形象 avatar_id",
+            )
+
+    # AI 标识文案缺省自动填充
+    if not (project.ai_label_text and project.ai_label_text.strip()):
+        project.ai_label_text = _DEFAULT_AI_LABEL
+
+    shop = await db.get(Shop, project.shop_id)
+    agent = LiveScriptAgent()
+    try:
+        data = await agent.generate(
+            shop_name=shop.name if shop else "",
+            category=shop.category if shop else None,
+            platform=project.platform,
+            goal=project.goal,
+            promo_items=project.promo_items,
+            persona=avatar.persona if avatar else None,
+            tone=body.tone,
+            duration_min=body.duration_min,
+        )
+    except LiveScriptAgentError as exc:
+        if "敏感词" in str(exc):
+            raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=502, detail=str(exc))
+    except openai.RateLimitError:
+        raise HTTPException(status_code=429, detail="AI 服务繁忙，请稍后再试")
+    except openai.APIError as exc:
+        raise HTTPException(status_code=502, detail=f"AI 服务暂时不可用: {exc}")
+
+    current_max = (
+        await db.execute(
+            select(func.max(LiveScript.generation_batch)).where(
+                LiveScript.project_id == project.id
+            )
+        )
+    ).scalar_one()
+    batch = (current_max or 0) + 1
+    # regenerate 语义：旧批次全部归档（含 edited/confirmed），内容不代入
+    await db.execute(
+        update(LiveScript)
+        .where(LiveScript.project_id == project.id)
+        .values(is_archived=True)
+    )
+
+    script = LiveScript(
+        project_id=project.id,
+        avatar_id=avatar.id if avatar else None,
+        persona_snapshot=dict(avatar.persona) if avatar and avatar.persona else None,
+        generation_batch=batch,
+        title=data["title"],
+        tone=data["tone"],
+        content=data["content"],
+        total_duration_sec=data["total_duration_sec"],
+        status="draft",
+        is_archived=False,
+    )
+    db.add(script)
+    await db.flush()
+    project.status = "active"
+
+    # 仅生成成功才计入频控
+    await set_rate_limit(rate_key, _RATE_TTL_SCRIPTS)
+    return script
+
+
+@router.get("/live-projects/{project_id}/scripts", response_model=list[LiveScriptOut])
+async def list_scripts(
+    project_id: str,
+    include_archived: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    stmt = select(LiveScript).where(LiveScript.project_id == project.id)
+    if not include_archived:
+        stmt = stmt.where(LiveScript.is_archived.is_(False))
+    rows = (
+        await db.execute(stmt.order_by(LiveScript.generation_batch.desc()))
+    ).scalars().all()
+    return list(rows)
+
+
+@router.get("/live-projects/{project_id}/scripts/{sid}", response_model=LiveScriptOut)
+async def get_script(
+    project_id: str,
+    sid: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    return await _get_script(project, sid, db)
+
+
+@router.put("/live-projects/{project_id}/scripts/{sid}", response_model=LiveScriptOut)
+async def update_script(
+    project_id: str,
+    sid: str,
+    body: ScriptUpdateRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """人工编辑脚本，status=edited；confirmed 禁止 PUT。"""
+    project = await _get_project(project_id, current_user, db)
+    script = await _get_script(project, sid, db)
+    if script.status == "confirmed":
+        raise HTTPException(status_code=400, detail="已定稿脚本禁止修改")
+    data = body.model_dump(exclude_unset=True)
+    if "content" in data and data["content"] is not None:
+        data["total_duration_sec"] = sum(s["duration_sec"] for s in data["content"])
+    for field, value in data.items():
+        setattr(script, field, value)
+    script.status = "edited"
+    return script
+
+
+@router.post(
+    "/live-projects/{project_id}/scripts/{sid}/confirm", response_model=LiveScriptOut
+)
+async def confirm_script(
+    project_id: str,
+    sid: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """合规自检通过后定稿；pass=false → 422；幂等。"""
+    project = await _get_project(project_id, current_user, db)
+    script = await _get_script(project, sid, db)
+    if script.status == "confirmed":
+        return script
+    result = LiveCompliance.check(
+        ai_label_text=project.ai_label_text,
+        persona_snapshot=script.persona_snapshot,
+        content=script.content,
+    )
+    if not result["pass"]:
+        raise HTTPException(
+            status_code=422,
+            detail={"message": "合规自检未通过", "items": result["items"]},
+        )
+    script.status = "confirmed"
+    script.compliance = result
+    return script
+
+
+@router.delete("/live-projects/{project_id}/scripts/{sid}")
+async def delete_script(
+    project_id: str,
+    sid: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    script = await _get_script(project, sid, db)
+    if script.status == "confirmed":
+        raise HTTPException(status_code=400, detail="已定稿脚本禁止删除")
+    try:
+        await db.delete(script)
+        await db.flush()
+    except IntegrityError:
+        raise HTTPException(status_code=409, detail="脚本已被场次引用，无法删除")
+    return {"ok": True}
+
+
+@router.post(
+    "/live-projects/{project_id}/scripts/{sid}/export",
+    response_model=LiveExportBundle,
+)
+async def export_script(
+    project_id: str,
+    sid: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """导出开播包：仅当前活跃批次（未归档）的 confirmed 脚本可导出。"""
+    project = await _get_project(project_id, current_user, db)
+    script = await _get_script(project, sid, db)
+    if script.is_archived:
+        raise HTTPException(
+            status_code=400,
+            detail="该脚本已归档，如需留档请通过 GET 查看，不支持导出开播包",
+        )
+    if script.status != "confirmed":
+        raise HTTPException(status_code=400, detail="脚本未定稿，无法导出开播包")
+
+    compliance = dict(script.compliance) if script.compliance else None
+    if compliance is None:
+        compliance = LiveCompliance.check(
+            ai_label_text=project.ai_label_text,
+            persona_snapshot=script.persona_snapshot,
+            content=script.content,
+        )
+    items = list(compliance.get("items", []))
+
+    danmaku = (
+        await db.execute(
+            select(LiveDanmakuConfig).where(
+                LiveDanmakuConfig.project_id == project.id
+            )
+        )
+    ).scalar_one_or_none()
+
+    # persona_json 优先级：弹幕配置 persona → 脚本人设快照 → 默认占位 + 提示
+    persona_json: dict[str, Any]
+    if danmaku and danmaku.persona:
+        persona_json = dict(danmaku.persona)
+    elif script.persona_snapshot:
+        persona_json = dict(script.persona_snapshot)
+    else:
+        persona_json = dict(_DEFAULT_PERSONA)
+        items.append(
+            {
+                "key": "persona_placeholder",
+                "ok": True,
+                "detail": "未配置人设，导出包使用默认占位人设，请按实际形象调整",
+            }
+        )
+
+    # 弹幕规则
+    if danmaku is None:
+        reply_rules: list[dict] = []
+        wordlist: list[str] = default_wordlist()
+        items.append(
+            {
+                "key": "danmaku_missing",
+                "ok": True,
+                "detail": "未配置弹幕互动规则（导出包 reply_rules 为空，请使用候选话术人工粘贴）",
+            }
+        )
+    else:
+        reply_rules = list(danmaku.reply_rules or [])
+        wordlist = list(danmaku.sensitive_words or [])
+        if danmaku.source_script_id != script.id:
+            items.append(
+                {
+                    "key": "danmaku_stale",
+                    "ok": True,
+                    "detail": "弹幕规则基于其他脚本版本生成，建议重新生成",
+                }
+            )
+
+    compliance = {"pass": compliance.get("pass", True), "items": items}
+    return LiveExportBundle(
+        script_markdown=_build_script_markdown(script),
+        persona_json=persona_json,
+        wordlist=wordlist,
+        reply_rules=reply_rules,
+        compliance=compliance,
+        engine_guide=_build_engine_guide(
+            project, project.ai_label_text or _DEFAULT_AI_LABEL
+        ),
+    )
+
+
+# ============================================================
+# 弹幕互动配置
+# ============================================================
+
+
+@router.post(
+    "/live-projects/{project_id}/danmaku-config/generate",
+    response_model=LiveDanmakuConfigOut,
+)
+async def generate_danmaku_config(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """覆盖式生成弹幕规则；前置：项目存在当前活跃批次的 confirmed 脚本；失败保留旧配置。"""
+    project = await _get_project(project_id, current_user, db)
+    rate_key = f"live:danmaku:generate:{current_user.id}:{project.shop_id}"
+    if not await peek_rate_limit(rate_key):
+        raise HTTPException(
+            status_code=429, detail=f"操作过于频繁，请 {_RATE_TTL_DANMAKU} 秒后再试"
+        )
+
+    script = await _active_confirmed_script(project.id, db)
+    if script is None:
+        raise HTTPException(
+            status_code=400,
+            detail="项目必须存在当前活跃批次的已定稿脚本，才能生成弹幕规则",
+        )
+
+    existing = (
+        await db.execute(
+            select(LiveDanmakuConfig).where(
+                LiveDanmakuConfig.project_id == project.id
+            )
+        )
+    ).scalar_one_or_none()
+    persona_input = None
+    if existing and existing.persona:
+        persona_input = existing.persona
+    else:
+        persona_input = script.persona_snapshot
+
+    agent = LiveDanmakuAgent()
+    try:
+        data = await agent.generate(
+            platform=project.platform,
+            persona=persona_input,
+            script={"title": script.title, "content": script.content},
+        )
+    except LiveDanmakuAgentError as exc:
+        if "敏感词" in str(exc):
+            raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=502, detail=str(exc))
+    except openai.RateLimitError:
+        raise HTTPException(status_code=429, detail="AI 服务繁忙，请稍后再试")
+    except openai.APIError as exc:
+        raise HTTPException(status_code=502, detail=f"AI 服务暂时不可用: {exc}")
+
+    # 仅在 AI 成功返回且通过校验后一次性落库；失败时旧配置原样保留
+    if existing:
+        existing.persona = data["persona"]
+        existing.reply_rules = data["reply_rules"]
+        existing.sensitive_words = data["sensitive_words"]
+        existing.escalate_topics = data["escalate_topics"]
+        existing.source_script_id = script.id
+        config = existing
+    else:
+        config = LiveDanmakuConfig(
+            project_id=project.id,
+            source_script_id=script.id,
+            persona=data["persona"],
+            reply_rules=data["reply_rules"],
+            sensitive_words=data["sensitive_words"],
+            escalate_topics=data["escalate_topics"],
+        )
+        db.add(config)
+    await db.flush()
+
+    await set_rate_limit(rate_key, _RATE_TTL_DANMAKU)
+    return config
+
+
+@router.get(
+    "/live-projects/{project_id}/danmaku-config", response_model=LiveDanmakuConfigOut
+)
+async def get_danmaku_config(
+    project_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    config = (
+        await db.execute(
+            select(LiveDanmakuConfig).where(
+                LiveDanmakuConfig.project_id == project.id
+            )
+        )
+    ).scalar_one_or_none()
+    if config is None:
+        raise HTTPException(status_code=404, detail="尚未生成弹幕互动规则")
+    return config
+
+
+@router.put(
+    "/live-projects/{project_id}/danmaku-config", response_model=LiveDanmakuConfigOut
+)
+async def update_danmaku_config(
+    project_id: str,
+    body: DanmakuConfigUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """人工编辑弹幕配置；未生成过则创建（source_script_id 为空）。"""
+    project = await _get_project(project_id, current_user, db)
+    config = (
+        await db.execute(
+            select(LiveDanmakuConfig).where(
+                LiveDanmakuConfig.project_id == project.id
+            )
+        )
+    ).scalar_one_or_none()
+    data = body.model_dump(exclude_unset=True)
+    if config is None:
+        config = LiveDanmakuConfig(project_id=project.id, **data)
+        db.add(config)
+    else:
+        for field, value in data.items():
+            setattr(config, field, value)
+    await db.flush()
+    return config
+
+
+# ============================================================
+# 合规自检
+# ============================================================
+
+
+@router.post(
+    "/live-projects/{project_id}/compliance/check", response_model=ComplianceResult
+)
+async def compliance_check(
+    project_id: str,
+    body: ComplianceCheckRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """返回 { pass, items }，不落库；confirm 时才快照。"""
+    project = await _get_project(project_id, current_user, db)
+    script: LiveScript | None
+    if body.script_id is not None:
+        script = await _get_script(project, str(body.script_id), db)
+    else:
+        script = await _active_confirmed_script(project.id, db)
+        if script is None:
+            script = await _latest_script(project.id, db)
+    if script is None:
+        raise HTTPException(
+            status_code=400, detail="项目尚无直播脚本，无法进行合规自检"
+        )
+    result = LiveCompliance.check(
+        ai_label_text=project.ai_label_text,
+        persona_snapshot=script.persona_snapshot,
+        content=script.content,
+    )
+    return ComplianceResult(pass_=result["pass"], items=result["items"])
+
+
+# ============================================================
+# 场次与复盘
+# ============================================================
+
+
+@router.post("/live-projects/{project_id}/sessions", response_model=LiveSessionOut)
+async def create_session(
+    project_id: str,
+    body: LiveSessionCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    if body.avatar_id is not None:
+        await _get_avatar_by_uuid(body.avatar_id, current_user, db)
+    if body.script_id is not None:
+        await _get_script(project, str(body.script_id), db)
+    if body.operator_id is not None:
+        await _validate_operator(body.operator_id, db)
+    session = LiveSession(
+        project_id=project.id,
+        script_id=body.script_id,
+        avatar_id=body.avatar_id,
+        scheduled_at=body.scheduled_at,
+        duration_min=body.duration_min,
+        operator_id=body.operator_id,
+        notes=body.notes,
+        status="planned",
+        duty_confirmed=False,
+        ai_label_confirmed=False,
+        is_backfilled=False,
+    )
+    db.add(session)
+    await db.flush()
+    return session
+
+
+@router.get(
+    "/live-projects/{project_id}/sessions", response_model=LiveSessionListResponse
+)
+async def list_sessions(
+    project_id: str,
+    page: int = Query(1, ge=1),
+    page_size: int = Query(_DEFAULT_PAGE_SIZE, ge=1, le=_MAX_PAGE_SIZE),
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    base = select(LiveSession).where(LiveSession.project_id == project.id)
+    total = (
+        await db.execute(select(func.count()).select_from(base.subquery()))
+    ).scalar_one()
+    rows = (
+        await db.execute(
+            base.order_by(LiveSession.scheduled_at.desc())
+            .offset((page - 1) * page_size)
+            .limit(page_size)
+        )
+    ).scalars().all()
+    return LiveSessionListResponse(items=list(rows), total=total, page=page, size=page_size)
+
+
+@router.get("/live-projects/{project_id}/sessions/{sid}", response_model=LiveSessionOut)
+async def get_session(
+    project_id: str,
+    sid: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    return await _get_session(project, sid, db)
+
+
+@router.patch("/live-projects/{project_id}/sessions/{sid}", response_model=LiveSessionOut)
+async def update_session(
+    project_id: str,
+    sid: str,
+    body: LiveSessionUpdate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """编辑排期 + 状态流转；可编辑字段受状态限制，终态仅 notes。"""
+    project = await _get_project(project_id, current_user, db)
+    session = await _get_session(project, sid, db)
+    data = body.model_dump(exclude_unset=True)
+    new_status = data.pop("status", None)
+    started_at = data.pop("started_at", None)
+    ended_at = data.pop("ended_at", None)
+
+    if session.status in ("ended", "cancelled"):
+        if (
+            (set(data) - {"notes"})
+            or new_status is not None
+            or started_at is not None
+            or ended_at is not None
+        ):
+            raise HTTPException(
+                status_code=400, detail="已结束/已取消场次为终态，仅允许修改 notes"
+            )
+        if "notes" in data:
+            session.notes = data["notes"]
+        return session
+
+    if session.status == "live":
+        if (
+            (set(data) - {"notes"})
+            or started_at is not None
+            or ended_at is not None
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="已开播场次排期与绑定字段已锁定，仅允许修改 notes 或结束场次",
+            )
+        if new_status is not None:
+            if new_status != "ended":
+                raise HTTPException(
+                    status_code=400, detail="已开播场次仅可流转到 ended"
+                )
+            session.status = "ended"
+        if "notes" in data:
+            session.notes = data["notes"]
+        return session
+
+    # planned
+    editable = {
+        "script_id",
+        "avatar_id",
+        "scheduled_at",
+        "duration_min",
+        "operator_id",
+        "notes",
+        "duty_confirmed",
+        "ai_label_confirmed",
+    }
+    invalid = set(data) - editable
+    if invalid:
+        raise HTTPException(
+            status_code=400,
+            detail=f"planned 状态不允许修改字段: {','.join(sorted(invalid))}",
+        )
+
+    if data.get("avatar_id") is not None:
+        await _get_avatar_by_uuid(data["avatar_id"], current_user, db)
+    if data.get("script_id") is not None:
+        await _get_script(project, str(data["script_id"]), db)
+    if data.get("operator_id") is not None:
+        await _validate_operator(data["operator_id"], db)
+    if data.get("duty_confirmed") is True and (
+        data.get("operator_id") or session.operator_id
+    ) is None:
+        raise HTTPException(
+            status_code=422, detail="值守确认（duty_confirmed）必须同时填写值守人 operator_id"
+        )
+
+    for field, value in data.items():
+        setattr(session, field, value)
+
+    if new_status == "live":
+        unmet: list[str] = []
+        if not (session.duty_confirmed and session.operator_id is not None):
+            unmet.append("duty_confirmed 为 true 且 operator_id 非空")
+        if not session.ai_label_confirmed:
+            unmet.append("ai_label_confirmed 为 true")
+        if session.script_id is not None:
+            script = await db.get(LiveScript, session.script_id)
+            if script is None or script.status != "confirmed" or script.is_archived:
+                unmet.append("关联脚本必须是当前活跃批次的已定稿脚本（confirmed 且未归档）")
+        if unmet:
+            raise HTTPException(
+                status_code=422,
+                detail={"message": "开播前置条件未满足", "items": unmet},
+            )
+        session.status = "live"
+    elif new_status == "cancelled":
+        session.status = "cancelled"
+    elif new_status == "ended":
+        if started_at is None or ended_at is None:
+            raise HTTPException(
+                status_code=422,
+                detail="补录场次必须同时提供 started_at 与 ended_at",
+            )
+        session.started_at = started_at
+        session.ended_at = ended_at
+        session.is_backfilled = True
+        session.status = "ended"
+    elif new_status not in (None, "planned"):
+        raise HTTPException(status_code=400, detail=f"非法状态流转: {new_status}")
+    return session
+
+
+@router.delete("/live-projects/{project_id}/sessions/{sid}")
+async def delete_session(
+    project_id: str,
+    sid: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    session = await _get_session(project, sid, db)
+    if session.status != "planned":
+        raise HTTPException(status_code=400, detail="仅可删除 planned 状态的场次")
+    await db.delete(session)
+    await db.flush()
+    return {"ok": True}
+
+
+@router.post(
+    "/live-projects/{project_id}/sessions/{sid}/metrics",
+    response_model=LiveSessionMetricOut,
+)
+async def upsert_metrics(
+    project_id: str,
+    sid: str,
+    body: MetricsCreate,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """手动录入复盘数据（每场一条，重复提交覆盖）。"""
+    project = await _get_project(project_id, current_user, db)
+    session = await _get_session(project, sid, db)
+    metric = (
+        await db.execute(
+            select(LiveSessionMetric).where(
+                LiveSessionMetric.session_id == session.id
+            )
+        )
+    ).scalar_one_or_none()
+    if metric:
+        metric.metrics = body.metrics
+        metric.source = body.source
+    else:
+        metric = LiveSessionMetric(
+            session_id=session.id, metrics=body.metrics, source=body.source
+        )
+        db.add(metric)
+        await db.flush()
+    return metric
+
+
+@router.get(
+    "/live-projects/{project_id}/sessions/{sid}/metrics",
+    response_model=LiveSessionMetricOut,
+)
+async def get_metrics(
+    project_id: str,
+    sid: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    project = await _get_project(project_id, current_user, db)
+    session = await _get_session(project, sid, db)
+    metric = (
+        await db.execute(
+            select(LiveSessionMetric).where(
+                LiveSessionMetric.session_id == session.id
+            )
+        )
+    ).scalar_one_or_none()
+    if metric is None:
+        raise HTTPException(status_code=404, detail="该场次暂无复盘数据")
+    return metric
+
+
+@router.post(
+    "/live-projects/{project_id}/sessions/{sid}/review", response_model=ReviewResponse
+)
+async def review_session(
+    project_id: str,
+    sid: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """AI 复盘写入 metrics.ai_review；频控 30s（user+session_id，成功才计入）。"""
+    project = await _get_project(project_id, current_user, db)
+    session = await _get_session(project, sid, db)
+    rate_key = f"live:review:{current_user.id}:{session.id}"
+    if not await peek_rate_limit(rate_key):
+        raise HTTPException(
+            status_code=429, detail=f"操作过于频繁，请 {_RATE_TTL_REVIEW} 秒后再试"
+        )
+
+    metric = (
+        await db.execute(
+            select(LiveSessionMetric).where(
+                LiveSessionMetric.session_id == session.id
+            )
+        )
+    ).scalar_one_or_none()
+    if metric is None or not metric.metrics:
+        raise HTTPException(status_code=400, detail="该场次暂无复盘数据，请先录入 metrics")
+
+    script_summary: str | None = None
+    if session.script_id:
+        script = await db.get(LiveScript, session.script_id)
+        if script:
+            script_summary = f"{script.title}（总时长 {script.total_duration_sec}s）"
+
+    agent = LiveReviewAgent()
+    try:
+        review = await agent.review(metrics=metric.metrics, script_summary=script_summary)
+    except LiveReviewAgentError as exc:
+        if "敏感词" in str(exc):
+            raise HTTPException(status_code=422, detail=str(exc))
+        raise HTTPException(status_code=502, detail=str(exc))
+    except openai.RateLimitError:
+        raise HTTPException(status_code=429, detail="AI 服务繁忙，请稍后再试")
+    except openai.APIError as exc:
+        raise HTTPException(status_code=502, detail=f"AI 服务暂时不可用: {exc}")
+
+    metric.ai_review = review
+    await set_rate_limit(rate_key, _RATE_TTL_REVIEW)
+    return ReviewResponse(ai_review=review)
+

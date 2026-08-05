@@ -24,6 +24,12 @@ from app.models.deal_item import DealItem
 from app.models.competitor_deal import CompetitorDeal
 from app.models.deal_scheme import DealScheme
 from app.models.deal_scheme_copy import DealSchemeCopy
+from app.models.live_project import LiveProject
+from app.models.live_avatar import LiveAvatar
+from app.models.live_script import LiveScript
+from app.models.live_danmaku_config import LiveDanmakuConfig
+from app.models.live_session import LiveSession
+from app.models.live_session_metric import LiveSessionMetric
 
 __all__ = [
     "User", "Merchant", "Shop", "PlatformShop", "Review",
@@ -32,4 +38,6 @@ __all__ = [
     "StudioProject", "StudioCopy", "StudioDeck",
     "DistrictSnapshot", "DistrictPoi", "DistrictPoiOverride",
     "DealProject", "DealItem", "CompetitorDeal", "DealScheme", "DealSchemeCopy",
+    "LiveProject", "LiveAvatar", "LiveScript", "LiveDanmakuConfig",
+    "LiveSession", "LiveSessionMetric",
 ]

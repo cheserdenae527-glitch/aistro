@@ -64,6 +64,11 @@ def _get_pattern() -> re.Pattern[str]:
     return _compiled
 
 
+def blacklist() -> tuple[str, ...]:
+    """返回内置敏感词库（供直播工坊导出开播包 wordlist 等场景复用）。"""
+    return _BLACKLIST
+
+
 def contains_blocked(text: str) -> bool:
     """检查文本是否含敏感词。"""
     if not text:
@@ -82,3 +87,4 @@ def filter_text(text: str, replacement: str = "[内容待审核]") -> tuple[str,
     if _get_pattern().search(text):
         return replacement, True
     return text, False
+

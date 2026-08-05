@@ -1,6 +1,6 @@
 import { Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
 import { Layout, Menu, Spin, Button, Dropdown } from "antd";
-import { ShopOutlined, DashboardOutlined, LogoutOutlined, UserOutlined, SearchOutlined, PictureOutlined, BgColorsOutlined, CommentOutlined, EditOutlined, EnvironmentOutlined, ShoppingCartOutlined } from "@ant-design/icons";
+import { ShopOutlined, DashboardOutlined, LogoutOutlined, UserOutlined, SearchOutlined, PictureOutlined, BgColorsOutlined, CommentOutlined, EditOutlined, EnvironmentOutlined, ShoppingCartOutlined, VideoCameraOutlined } from "@ant-design/icons";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useAuthStore } from "./store/auth";
 import { getMe } from "./services/auth";
@@ -23,6 +23,8 @@ const DistrictDetailPage = lazy(() => import("./pages/DistrictDetailPage"));
 const StudioEditorPage = lazy(() => import("./pages/StudioEditorPage"));
 const DealIndexPage = lazy(() => import("./pages/DealIndexPage"));
 const DealEditorPage = lazy(() => import("./pages/DealEditorPage"));
+const LiveIndexPage = lazy(() => import("./pages/LiveIndexPage"));
+const LiveEditorPage = lazy(() => import("./pages/LiveEditorPage"));
 
 const { Header, Content } = Layout;
 
@@ -48,6 +50,7 @@ function AppLayout({ children }: { children: React.ReactNode }) {
     { key: "/reputation", icon: <CommentOutlined />, label: "口碑管理" },
     { key: "/district", icon: <EnvironmentOutlined />, label: "商圈分析" },
     { key: "/deals", icon: <ShoppingCartOutlined />, label: "团购工坊" },
+    { key: "/live", icon: <VideoCameraOutlined />, label: "直播工坊" },
     { key: "/subscriptions", icon: <UserOutlined />, label: "博主订阅" },
   ];
 
@@ -291,6 +294,26 @@ export default function App() {
         }
       />
       <Route
+        path="/live"
+        element={
+          <ProtectedRoute>
+            <AppLayout>
+              <LiveIndexPage />
+            </AppLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/live/:id"
+        element={
+          <ProtectedRoute>
+            <AppLayout>
+              <LiveEditorPage />
+            </AppLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
         path="/shops/:shop_id/profile/:platform"
         element={
           <ProtectedRoute>
@@ -305,6 +328,7 @@ export default function App() {
     </Suspense>
   );
 }
+
 
 
 

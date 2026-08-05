@@ -8,7 +8,14 @@ from sqlalchemy.ext.asyncio import create_async_engine
 
 from app.core.config import settings
 from app.core.database import Base
-from app.models import User, Merchant, Shop, PlatformShop, Review, MenuItem, CrawlJob, Report, ManualImport, ShopProfile, DesignProject, DesignAsset, MenuDesign, DesignJob, MenuDesignVersion, StudioProject, StudioCopy, StudioDeck  # noqa: F401
+from app.models import (  # noqa: F401
+    User, Merchant, Shop, PlatformShop, Review, MenuItem, CrawlJob, Report,
+    ManualImport, ShopProfile, DesignProject, DesignAsset, MenuDesign, DesignJob,
+    MenuDesignVersion, StudioProject, StudioCopy, StudioDeck, DistrictSnapshot,
+    DistrictPoi, DistrictPoiOverride, DealProject, DealItem, CompetitorDeal,
+    DealScheme, DealSchemeCopy, LiveProject, LiveAvatar, LiveScript,
+    LiveDanmakuConfig, LiveSession, LiveSessionMetric,
+)
 
 config = context.config
 
@@ -51,6 +58,8 @@ if context.is_offline_mode():
    run_migrations_offline()
 else:
    run_migrations_online()
+
+
 
 
 

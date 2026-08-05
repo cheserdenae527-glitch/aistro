@@ -1,0 +1,317 @@
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate, useParams } from "react-router-dom";
+import {
+  Alert,
+  Button,
+  Card,
+  Form,
+  Input,
+  InputNumber,
+  Select,
+  Space,
+  Spin,
+  Switch,
+  Tabs,
+  Tag,
+  Typography,
+  message,
+} from "antd";
+import { ArrowLeftOutlined, DeleteOutlined, PlusOutlined, SaveOutlined } from "@ant-design/icons";
+import AvatarsTab from "../components/live/AvatarsTab";
+import DanmakuTab from "../components/live/DanmakuTab";
+import ScriptTab from "../components/live/ScriptTab";
+import SessionsTab from "../components/live/SessionsTab";
+import {
+  liveService,
+  type LiveAvatar,
+  type LivePlatform,
+  type LiveProject,
+  type LiveScript,
+  type PromoItem,
+} from "../services/live";
+import { shopService, type Shop } from "../services/shops";
+import { activeScript, PLATFORM_LABELS } from "../utils/live";
+import { showApiError } from "../utils/errors";
+
+const { Text, Title } = Typography;
+
+interface BasicForm {
+  platform: LivePlatform;
+  goal?: string;
+  ai_label_text?: string;
+  base_url?: string;
+  enabled?: boolean;
+  api_key?: string;
+}
+
+interface Props {
+  // 供测试注入的 onReady（加载完成后回调）
+  onReady?: () => void;
+}
+
+export default function LiveEditorPage({ onReady }: Props) {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const started = useRef(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [project, setProject] = useState<LiveProject | null>(null);
+  const [shop, setShop] = useState<Shop | null>(null);
+  const [scripts, setScripts] = useState<LiveScript[]>([]);
+  const [avatars, setAvatars] = useState<LiveAvatar[]>([]);
+  const [savingBasic, setSavingBasic] = useState(false);
+  const [basicForm] = Form.useForm<BasicForm>();
+  const [promoDraft, setPromoDraft] = useState<PromoItem[]>([]);
+
+  const loadAll = useCallback(async () => {
+    if (!id) return;
+    try {
+      const [projectRes, scriptsRes, avatarsRes] = await Promise.all([
+        liveService.getProject(id),
+        liveService.listScripts(id, true),
+        liveService.listAvatars({ page: 1, page_size: 100 }),
+      ]);
+      setProject(projectRes.data);
+      setScripts(scriptsRes.data);
+      setAvatars(avatarsRes.data.items);
+      basicForm.setFieldsValue({
+        platform: projectRes.data.platform,
+        goal: projectRes.data.goal ?? undefined,
+        ai_label_text: projectRes.data.ai_label_text ?? undefined,
+        base_url: projectRes.data.engine_config?.base_url ?? undefined,
+        enabled: projectRes.data.engine_config?.enabled ?? false,
+      });
+      setPromoDraft(projectRes.data.promo_items ?? []);
+      const shopRes = await shopService.get(projectRes.data.shop_id).catch(() => null);
+      setShop(shopRes?.data ?? null);
+    } catch {
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+      onReady?.();
+    }
+  }, [id, basicForm, onReady]);
+
+  useEffect(() => {
+    if (started.current) return;
+    started.current = true;
+    loadAll();
+  }, [loadAll]);
+
+  const reload = useCallback(async () => {
+    if (!id) return;
+    try {
+      const [scriptsRes, avatarsRes] = await Promise.all([
+        liveService.listScripts(id, true),
+        liveService.listAvatars({ page: 1, page_size: 100 }),
+      ]);
+      setScripts(scriptsRes.data);
+      setAvatars(avatarsRes.data.items);
+    } catch {
+      // 忽略
+    }
+  }, [id]);
+
+  const active = activeScript(scripts);
+
+  const handleSaveBasic = async () => {
+    if (!project) return;
+    let values;
+    try {
+      values = await basicForm.validateFields();
+    } catch {
+      return;
+    }
+    setSavingBasic(true);
+    try {
+      const res = await liveService.updateProject(project.id, {
+        platform: values.platform,
+        goal: values.goal?.trim() || null,
+        ai_label_text: values.ai_label_text?.trim() || null,
+        promo_items: promoDraft.length ? promoDraft : null,
+        engine_config: {
+          base_url: values.base_url?.trim() || null,
+          enabled: values.enabled ?? false,
+        },
+      });
+      setProject(res.data);
+      message.success("基本信息已保存");
+    } catch (e) {
+      showApiError(e);
+    } finally {
+      setSavingBasic(false);
+    }
+  };
+
+  const updatePromo = (idx: number, patch: Partial<PromoItem>) => {
+    setPromoDraft((prev) => prev.map((p, i) => (i === idx ? { ...p, ...patch } : p)));
+  };
+
+  if (loading) {
+    return (
+      <div style={{ textAlign: "center", padding: 80 }}>
+        <Spin size="large" />
+      </div>
+    );
+  }
+
+  if (loadError || !project) {
+    return (
+      <Card>
+        <Alert type="error" showIcon message="直播项目不存在或无权访问" />
+        <Button style={{ marginTop: 12 }} onClick={() => navigate("/live")}>
+          返回列表
+        </Button>
+      </Card>
+    );
+  }
+
+  return (
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 16 }}>
+        <Button icon={<ArrowLeftOutlined />} onClick={() => navigate("/live")}>
+          返回
+        </Button>
+        <Title level={4} style={{ margin: 0 }}>
+          {project.title}
+        </Title>
+        <Tag color="geekblue">{PLATFORM_LABELS[project.platform] ?? project.platform}</Tag>
+        <Text type="secondary">{shop?.name ?? ""}</Text>
+      </div>
+
+      <Tabs
+        items={[
+          {
+            key: "basic",
+            label: "基本信息",
+            children: (
+              <Card>
+                <Form form={basicForm} layout="vertical" style={{ maxWidth: 720 }}>
+                  <Form.Item name="platform" label="主直播平台">
+                    <Select
+                      options={[
+                        { value: "douyin", label: "抖音" },
+                        { value: "xiaohongshu", label: "小红书" },
+                        { value: "wechat", label: "视频号" },
+                      ]}
+                    />
+                  </Form.Item>
+                  <Form.Item name="goal" label="场次目标">
+                    <Input.TextArea rows={2} placeholder="如：提升核销 / 拉新 / 互动" />
+                  </Form.Item>
+                  <Form.Item name="ai_label_text" label="AI 标识文案（合规必填，开播前确认）">
+                    <Input.TextArea rows={2} placeholder="如：本直播间由 AI 数字人出镜，真人运营团队值守" />
+                  </Form.Item>
+
+                  <Title level={5}>优惠商品（MVP 手填，后续接团购工坊）</Title>
+                  {promoDraft.map((p, idx) => (
+                    <div
+                      key={idx}
+                      style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "center" }}
+                    >
+                      <Input
+                        style={{ flex: 2 }}
+                        placeholder="商品名"
+                        value={p.name}
+                        onChange={(e) => updatePromo(idx, { name: e.target.value })}
+                      />
+                      <InputNumber
+                        style={{ width: 110 }}
+                        placeholder="现价"
+                        value={p.price ?? undefined}
+                        onChange={(v) => updatePromo(idx, { price: v ?? undefined })}
+                      />
+                      <InputNumber
+                        style={{ width: 110 }}
+                        placeholder="原价"
+                        value={p.original_price ?? undefined}
+                        onChange={(v) => updatePromo(idx, { original_price: v ?? undefined })}
+                      />
+                      <Input
+                        style={{ flex: 2 }}
+                        placeholder="规则/链接"
+                        value={p.rules ?? ""}
+                        onChange={(e) => updatePromo(idx, { rules: e.target.value })}
+                      />
+                      <Button
+                        danger
+                        size="small"
+                        icon={<DeleteOutlined />}
+                        onClick={() => setPromoDraft((prev) => prev.filter((_, i) => i !== idx))}
+                      />
+                    </div>
+                  ))}
+                  <Button
+                    size="small"
+                    icon={<PlusOutlined />}
+                    onClick={() => setPromoDraft((prev) => [...prev, { name: "", price: undefined, original_price: undefined, rules: "" }])}
+                  >
+                    添加优惠商品
+                  </Button>
+
+                  <Title level={5} style={{ marginTop: 20 }}>
+                    本地引擎连接配置（L1 仅存储，L3 联调）
+                  </Title>
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                    <Form.Item name="base_url" label="引擎管理后台地址">
+                      <Input placeholder="http://localhost:xxxx" />
+                    </Form.Item>
+                    <Form.Item name="enabled" label="启用" valuePropName="checked">
+                      <Switch checkedChildren="开" unCheckedChildren="关" />
+                    </Form.Item>
+                  </div>
+                  <Space style={{ marginBottom: 16 }}>
+                    <Text type="secondary">
+                      API Key：{project.engine_config?.api_key_configured ? "已配置（不回传明文）" : "未配置"}
+                    </Text>
+                    <Form.Item name="api_key" label="更新 API Key（留空保持不变）" style={{ marginBottom: 0 }}>
+                      <Input.Password placeholder="留空则保留原值" style={{ width: 280 }} />
+                    </Form.Item>
+                  </Space>
+                  <div>
+                    <Button type="primary" icon={<SaveOutlined />} loading={savingBasic} onClick={handleSaveBasic}>
+                      保存基本信息
+                    </Button>
+                  </div>
+                </Form>
+              </Card>
+            ),
+          },
+          {
+            key: "avatars",
+            label: "数字人形象",
+            children: (
+              <AvatarsTab currentAvatarId={active?.avatar_id ?? null} onChanged={reload} />
+            ),
+          },
+          {
+            key: "scripts",
+            label: "直播脚本",
+            children: (
+              <ScriptTab projectId={project.id} onChanged={reload} />
+            ),
+          },
+          {
+            key: "danmaku",
+            label: "弹幕互动",
+            children: (
+              <DanmakuTab projectId={project.id} activeScript={active} />
+            ),
+          },
+          {
+            key: "sessions",
+            label: "场次与复盘",
+            children: (
+              <SessionsTab
+                projectId={project.id}
+                scripts={scripts}
+                avatars={avatars}
+                aiLabelText={project.ai_label_text ?? ""}
+              />
+            ),
+          },
+        ]}
+      />
+    </div>
+  );
+}
