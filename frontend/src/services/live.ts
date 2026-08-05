@@ -330,6 +330,15 @@ export const liveService = {
       { timeout: 60_000 }
     );
   },
+  uploadAvatarVideo: (file: File) => {
+    const fd = new FormData();
+    fd.append("file", file);
+    return api.post<{ url: string; object_name: string }>(
+      "/live-avatars/upload-video",
+      fd,
+      { timeout: 300_000 }
+    );
+  },
 
   // ---- 直播脚本 ----
   generateScript: (projectId: string, data: ScriptGenerateRequest) =>

@@ -106,3 +106,9 @@
 - 引擎画面预览加「预览高度」Slider（320-1100px，默认 720，适配 3:4 竖版完整显示）
 - 画质提示写入预览卡：当前形象输出 576×768（3:4），画质上限由形象素材决定（更高清需 avatar.html 上传高清视频生成形象）；平台推流画质在 OBS 输出设置调整分辨率/码率
 - 测试：预览测试补断言（预览高度/3:4 竖版）→ 前端 86 项全绿；typecheck/eslint/build 通过
+
+## 2026-08-05 驱动视频上传 + TTS 提供方下拉
+- 后端 POST /live-avatars/upload-video：视频 ≤200MB（MP4/WebM/MOV），MinIO live_avatars/ 存储，返回 presigned URL（7 天）+ object_name
+- 前端：video_url 字段加「上传视频」按钮（Upload → uploadAvatarVideo → 回填）；provider 改 Select（TTS_OPTIONS：edgetts/cosyvoice/gpt-sovits/tencent/xtts/azuretts/doubao/fishtts/indextts2/qwentts/omnitts），voice 输入框 placeholder 随 provider 动态提示（edgetts 显示常用 Edge 音色）
+- 测试：后端 +4（video 成功/非视频 400/超大 400/未登录 401）→ test_live.py 66 项全绿；前端 86 项全绿；typecheck/eslint/build 通过
+- dev 后端已重启（PID 32096）生效

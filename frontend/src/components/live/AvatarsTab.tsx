@@ -39,6 +39,20 @@ const TYPE_OPTIONS: { value: AvatarType; label: string }[] = [
   { value: "video", label: "视频驱动" },
 ];
 
+const TTS_OPTIONS: { value: string; label: string }[] = [
+  { value: "edgetts", label: "edgetts（Edge，免费推荐）" },
+  { value: "cosyvoice", label: "cosyvoice（高自然度）" },
+  { value: "gpt-sovits", label: "gpt-sovits（声音克隆）" },
+  { value: "tencent", label: "tencent（腾讯云）" },
+  { value: "xtts", label: "xtts" },
+  { value: "azuretts", label: "azuretts（Azure）" },
+  { value: "doubao", label: "doubao（豆包）" },
+  { value: "fishtts", label: "fishtts" },
+  { value: "indextts2", label: "indextts2" },
+  { value: "qwentts", label: "qwentts（通义）" },
+  { value: "omnitts", label: "omnitts" },
+];
+
 const STATUS_OPTIONS: { value: AvatarStatus; label: string }[] = [
   { value: "draft", label: "草稿" },
   { value: "ready", label: "就绪" },
@@ -75,6 +89,7 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
   const [modalOpen, setModalOpen] = useState(false);
   const [saving, setSaving] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
+  const [uploadingVideo, setUploadingVideo] = useState(false);
   const [form] = Form.useForm<AvatarFormValues>();
 
   const load = useCallback(async () => {
@@ -135,6 +150,20 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
       setUploadingImage(false);
     }
     return false; // 阻止 antd 默认上传
+  };
+
+  const handleUploadVideo = async (file: File) => {
+    setUploadingVideo(true);
+    try {
+      const res = await liveService.uploadAvatarVideo(file);
+      form.setFieldValue("video_url", res.data.url);
+      message.success("驱动视频已上传，保存后生效");
+    } catch (e) {
+      showApiError(e);
+    } finally {
+      setUploadingVideo(false);
+    }
+    return false;
   };
 
   const handleSubmit = async () => {
@@ -301,8 +330,19 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
               </Upload>
             </Space.Compact>
           </Form.Item>
-          <Form.Item name="video_url" label="驱动视频 URL（可选）">
-            <Input placeholder="https://..." />
+          <Form.Item name="video_url" label="驱动视频（可上传视频或填直链 URL）">
+            <Space.Compact style={{ width: "100%" }}>
+              <Input placeholder="https://... 或点右侧上传" />
+              <Upload
+                accept="video/mp4,video/webm,video/quicktime"
+                showUploadList={false}
+                beforeUpload={handleUploadVideo}
+              >
+                <Button icon={<UploadOutlined />} loading={uploadingVideo}>
+                  上传
+                </Button>
+              </Upload>
+            </Space.Compact>
           </Form.Item>
           <Form.Item name="status" label="状态">
             <Select options={STATUS_OPTIONS} />
@@ -310,10 +350,26 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
           <Card size="small" title="声音（映射 LiveTalking TTS）" style={{ marginBottom: 12 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <Form.Item name="provider" label="TTS 提供方">
-                <Input placeholder="edge-tts / cosyvoice / gpt-sovits" />
+                <Select
+                  options={TTS_OPTIONS}
+                  placeholder="选择 TTS 提供方"
+                  allowClear
+                  showSearch
+                />
               </Form.Item>
-              <Form.Item name="voice" label="音色">
-                <Input placeholder="zh-CN-XiaoxiaoNeural" />
+              <Form.Item
+                name="voice"
+                label="音色"
+                dependencies={["provider"]}
+                style={{ marginBottom: 12 }}
+              >
+                <Input
+                  placeholder={
+                    (form.getFieldValue("provider") || "edgetts") === "edgetts"
+                      ? "如 zh-CN-XiaoxiaoNeural / zh-CN-YunxiNeural"
+                      : "填该 TTS 的音色/模型 ID（按引擎文档）"
+                  }
+                />
               </Form.Item>
               <Form.Item name="speed" label="语速">
                 <InputNumber style={{ width: "100%" }} min={0.5} max={2} step={0.1} />

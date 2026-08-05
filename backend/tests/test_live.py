@@ -1890,3 +1890,47 @@ def test_export_engine_guide_tts_default_edgetts(client, monkeypatch):
     assert "引擎 TTS 配置" in bundle["engine_guide"]
     assert "--tts edgetts" in bundle["engine_guide"]
 
+
+def test_avatar_upload_video_ok(client, monkeypatch):
+    _stub_storage(monkeypatch, object_name="live_avatars/v123")
+    resp = client.post(
+        "/api/v1/live-avatars/upload-video",
+        files={"file": ("drive.mp4", b"\x00\x00\x00\x18ftypmp42", "video/mp4")},
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["object_name"] == "live_avatars/v123"
+    assert body["url"].startswith("http://minio.local/live_avatars/")
+
+
+def test_avatar_upload_video_rejects_non_video(client, monkeypatch):
+    _stub_storage(monkeypatch)
+    resp = client.post(
+        "/api/v1/live-avatars/upload-video",
+        files={"file": ("a.png", _make_png_bytes(), "image/png")},
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 400
+    assert "MP4/WebM/MOV" in resp.json()["detail"]
+
+
+def test_avatar_upload_video_too_large(client, monkeypatch):
+    monkeypatch.setattr("app.api.v1.live._AVATAR_VIDEO_MAX_BYTES", 3)  # 上传 4 字节 > 3 触发 400
+    _stub_storage(monkeypatch)
+    resp = client.post(
+        "/api/v1/live-avatars/upload-video",
+        files={"file": ("a.mp4", b"xxxx", "video/mp4")},
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 400
+    assert "200MB" in resp.json()["detail"]
+
+
+def test_avatar_upload_video_requires_auth(client):
+    resp = client.post(
+        "/api/v1/live-avatars/upload-video",
+        files={"file": ("a.mp4", b"x", "video/mp4")},
+    )
+    assert resp.status_code == 401
+

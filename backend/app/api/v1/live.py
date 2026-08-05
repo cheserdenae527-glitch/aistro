@@ -612,6 +612,8 @@ async def test_engine_connection(
 
 _AVATAR_IMAGE_MAX_BYTES = 10 * 1024 * 1024  # 10MB
 _AVATAR_IMAGE_MIME = ("image/png", "image/jpeg", "image/webp")
+_AVATAR_VIDEO_MAX_BYTES = 200 * 1024 * 1024  # 200MB
+_AVATAR_VIDEO_MIME = ("video/mp4", "video/webm", "video/quicktime")
 
 
 @router.post("/live-avatars/upload-image")
@@ -634,6 +636,28 @@ async def upload_avatar_image(
         Image.open(io.BytesIO(data)).verify()
     except Exception:
         raise HTTPException(status_code=400, detail="无法识别的图片格式")
+    object_name = upload_bytes(data, mime, folder="live_avatars")
+    return {
+        "url": get_presigned_url(object_name, expires=7 * 24 * 3600),
+        "object_name": object_name,
+    }
+
+
+@router.post("/live-avatars/upload-video")
+async def upload_avatar_video(
+    file: UploadFile = File(...),
+    current_user: User = Depends(get_current_user),
+):
+    """上传驱动视频到 MinIO，返回可访问 URL（形象表单 video_url 使用）。
+
+    与 live-avatars 一致为登录用户维度；视频 ≤200MB 且为 MP4/WebM/MOV。
+    """
+    data = await file.read()
+    if len(data) > _AVATAR_VIDEO_MAX_BYTES:
+        raise HTTPException(status_code=400, detail="驱动视频超过 200MB")
+    mime = (file.content_type or "").lower()
+    if mime not in _AVATAR_VIDEO_MIME:
+        raise HTTPException(status_code=400, detail="仅支持 MP4/WebM/MOV 视频")
     object_name = upload_bytes(data, mime, folder="live_avatars")
     return {
         "url": get_presigned_url(object_name, expires=7 * 24 * 3600),
