@@ -1934,3 +1934,145 @@ def test_avatar_upload_video_requires_auth(client):
     )
     assert resp.status_code == 401
 
+
+# ============================================================
+# 形象 → 引擎 Avatar 生成（LiveTalking /api/avatar/task）
+# ============================================================
+
+
+class _FakeEngineAvatarClient:
+    def __init__(self, *, task_status="running", task_progress=50, task_error="", create_status=200, create_payload=None):
+        self.calls = []
+        self.task_status = task_status
+        self.task_progress = task_progress
+        self.task_error = task_error
+        self.create_status = create_status
+        self.create_payload = create_payload
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+    async def get(self, url, **kw):
+        self.calls.append(("GET", url))
+        req = httpx.Request("GET", url)
+        if "/api/avatar/task/" in url:
+            body = {"code": 0, "data": {
+                "task_id": "t1", "status": self.task_status,
+                "progress": self.task_progress, "error_msg": self.task_error,
+            }}
+            return httpx.Response(200, json=body, request=req)
+        # 下载视频
+        return httpx.Response(200, content=b"fake-video-bytes", headers={"content-type": "video/mp4"}, request=req)
+
+    async def post(self, url, **kw):
+        self.calls.append(("POST", url, kw))
+        req = httpx.Request("POST", url)
+        if self.create_status >= 400:
+            return httpx.Response(self.create_status, text="boom", request=req)
+        payload = self.create_payload or {"code": 0, "data": {"task_id": "t1"}}
+        return httpx.Response(200, json=payload, request=req)
+
+
+def _patch_engine_avatar(client, monkeypatch, **kw):
+    fake = _FakeEngineAvatarClient(**kw)
+    monkeypatch.setattr("app.api.v1.live.httpx.AsyncClient", lambda *a, **k: fake)
+    return fake
+
+
+def test_engine_avatar_create_ok(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    avatar = _create_avatar(
+        client, persona=_PERSONA,
+        video_url="http://minio.local/v.mp4", engine_base_url="http://localhost:8010",
+    )
+    fake = _patch_engine_avatar(client, monkeypatch)
+
+    resp = client.post(
+        f"/api/v1/live-avatars/{avatar['id']}/engine-avatar",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["task_id"] == "t1"
+    assert body["avatar_id"].startswith("airestro_")
+    # 提交给引擎的 multipart 带 video_file + model/avatar_id
+    post_call = next(c for c in fake.calls if c[0] == "POST")
+    assert post_call[2]["data"]["model"] == "wav2lip"
+    assert post_call[2]["data"]["avatar_id"].startswith("airestro_")
+    assert "video_file" in post_call[2]["files"]
+    # 落库
+    got = client.get(f"/api/v1/live-avatars/{avatar['id']}", headers=auth_headers(client)).json()
+    assert got["engine_avatar_id"].startswith("airestro_")
+    assert got["engine_task_id"] == "t1"
+
+
+def test_engine_avatar_create_missing_video_400(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    avatar = _create_avatar(client, persona=_PERSONA, video_url=None)
+    resp = client.post(
+        f"/api/v1/live-avatars/{avatar['id']}/engine-avatar",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 400
+    assert "驱动视频" in resp.json()["detail"]
+
+
+def test_engine_avatar_create_missing_engine_url_400(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    avatar = _create_avatar(client, persona=_PERSONA, video_url="http://minio.local/v.mp4")
+    resp = client.post(
+        f"/api/v1/live-avatars/{avatar['id']}/engine-avatar",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 400
+    assert "引擎管理后台地址" in resp.json()["detail"]
+
+
+def test_engine_avatar_create_engine_error_502(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    avatar = _create_avatar(
+        client, persona=_PERSONA,
+        video_url="http://minio.local/v.mp4", engine_base_url="http://localhost:8010",
+    )
+    _patch_engine_avatar(client, monkeypatch, create_status=500)
+
+    resp = client.post(
+        f"/api/v1/live-avatars/{avatar['id']}/engine-avatar",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 502
+
+
+def test_engine_avatar_status_completed(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    avatar = _create_avatar(
+        client, persona=_PERSONA,
+        video_url="http://minio.local/v.mp4", engine_base_url="http://localhost:8010",
+    )
+    fake = _patch_engine_avatar(client, monkeypatch, task_status="completed", task_progress=100)
+    client.post(f"/api/v1/live-avatars/{avatar['id']}/engine-avatar", headers=auth_headers(client))
+
+    resp = client.get(
+        f"/api/v1/live-avatars/{avatar['id']}/engine-avatar/status",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["status"] == "completed"
+    assert body["progress"] == 100
+    assert body["engine_avatar_id"].startswith("airestro_")
+
+
+def test_engine_avatar_status_idle_before_create(client, monkeypatch):
+    _patch_agents(monkeypatch)
+    avatar = _create_avatar(client, persona=_PERSONA, video_url="http://minio.local/v.mp4")
+    resp = client.get(
+        f"/api/v1/live-avatars/{avatar['id']}/engine-avatar/status",
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "idle"
+

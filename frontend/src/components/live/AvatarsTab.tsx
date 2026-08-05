@@ -21,6 +21,7 @@ import {
   DeleteOutlined,
   EditOutlined,
   PlusOutlined,
+  RobotOutlined,
   UploadOutlined,
 } from "@ant-design/icons";
 import {
@@ -64,6 +65,7 @@ interface AvatarFormValues {
   avatar_type: AvatarType;
   image_url?: string;
   video_url?: string;
+  engine_base_url?: string;
   provider?: string;
   voice?: string;
   speed?: number;
@@ -90,6 +92,8 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
   const [saving, setSaving] = useState(false);
   const [uploadingImage, setUploadingImage] = useState(false);
   const [uploadingVideo, setUploadingVideo] = useState(false);
+  const [generatingAvatarId, setGeneratingAvatarId] = useState<string | null>(null);
+  const [avatarProgress, setAvatarProgress] = useState(0);
   const [form] = Form.useForm<AvatarFormValues>();
 
   const load = useCallback(async () => {
@@ -123,6 +127,7 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
       avatar_type: avatar.avatar_type,
       image_url: avatar.image_url ?? undefined,
       video_url: avatar.video_url ?? undefined,
+      engine_base_url: avatar.engine_base_url ?? undefined,
       provider: avatar.voice_config?.provider ?? undefined,
       voice: avatar.voice_config?.voice ?? undefined,
       speed: avatar.voice_config?.speed ?? undefined,
@@ -189,6 +194,7 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
       avatar_type: values.avatar_type,
       image_url: values.image_url?.trim() || null,
       video_url: values.video_url?.trim() || null,
+      engine_base_url: values.engine_base_url?.trim() || null,
       voice_config: {
         provider: values.provider?.trim() || null,
         voice: values.voice?.trim() || null,
@@ -215,6 +221,43 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
       showApiError(e);
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleGenerateEngineAvatar = async (avatar: LiveAvatar) => {
+    if (!avatar.video_url) {
+      message.warning("该形象还没有驱动视频，请先上传/填写驱动视频并保存");
+      return;
+    }
+    if (!avatar.engine_base_url) {
+      message.warning("该形象还没有引擎地址，请先在编辑里填写引擎地址并保存");
+      return;
+    }
+    setGeneratingAvatarId(avatar.id);
+    setAvatarProgress(0);
+    try {
+      const res = await liveService.generateEngineAvatar(avatar.id, avatar.engine_base_url);
+      message.success("已在引擎创建形象生成任务，正在处理（1-3 分钟）…");
+      for (let i = 0; i < 150; i++) {
+        await new Promise((r) => setTimeout(r, 2000));
+        const st = await liveService.getEngineAvatarStatus(avatar.id);
+        setAvatarProgress(st.data.progress);
+        if (st.data.status === "completed") {
+          message.success(`引擎形象生成完成：${st.data.engine_avatar_id ?? res.data.avatar_id}`);
+          await load();
+          return;
+        }
+        if (st.data.status === "failed") {
+          message.error(`引擎形象生成失败：${st.data.error_msg || "未知错误"}`);
+          return;
+        }
+      }
+      message.warning("生成超时，请在引擎侧查看任务进度");
+    } catch (e) {
+      showApiError(e);
+    } finally {
+      setGeneratingAvatarId(null);
+      setAvatarProgress(0);
     }
   };
 
@@ -274,6 +317,14 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
                 }
                 extra={
                   <Space>
+                    <Button
+                      size="small"
+                      icon={<RobotOutlined />}
+                      loading={generatingAvatarId === avatar.id}
+                      onClick={() => handleGenerateEngineAvatar(avatar)}
+                    >
+                      {generatingAvatarId === avatar.id ? `${avatarProgress}%` : "生成引擎形象"}
+                    </Button>
                     <Button size="small" icon={<EditOutlined />} onClick={() => openEdit(avatar)}>
                       编辑
                     </Button>
@@ -290,6 +341,7 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
                     {avatar.avatar_type === "image" ? "图片形象" : "视频驱动"}
                   </Tag>
                   {avatar.voice_config?.voice && <Tag>声音：{avatar.voice_config.voice}</Tag>}
+                  {avatar.engine_avatar_id && <Tag color="green">引擎形象：{avatar.engine_avatar_id}</Tag>}
                 </div>
                 {avatar.persona?.identity && (
                   <Text type="secondary">人设：{String(avatar.persona.identity)}</Text>
@@ -343,6 +395,13 @@ export default function AvatarsTab({ currentAvatarId, onChanged }: Props) {
                 </Button>
               </Upload>
             </Space.Compact>
+          </Form.Item>
+          <Form.Item
+            name="engine_base_url"
+            label="引擎地址（生成引擎形象用，需支持 /api/avatar/task 的 LiveTalking 引擎）"
+            extra="生成引擎形象 = 用上面的驱动视频在引擎侧抽帧生成 data/avatars/<id>，完成后引擎用 --avatar_id 启动即可"
+          >
+            <Input placeholder="http://localhost:8010" />
           </Form.Item>
           <Form.Item name="status" label="状态">
             <Select options={STATUS_OPTIONS} />

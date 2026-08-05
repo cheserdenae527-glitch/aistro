@@ -101,6 +101,9 @@ export interface LiveAvatar {
   avatar_type: AvatarType;
   image_url: string | null;
   video_url: string | null;
+  engine_base_url: string | null;
+  engine_avatar_id: string | null;
+  engine_task_id: string | null;
   voice_config: VoiceConfig | null;
   persona: Persona | null;
   status: AvatarStatus;
@@ -237,6 +240,7 @@ export interface LiveAvatarCreate {
   avatar_type?: AvatarType;
   image_url?: string | null;
   video_url?: string | null;
+  engine_base_url?: string | null;
   voice_config?: VoiceConfig | null;
   persona?: Persona | null;
   status?: AvatarStatus;
@@ -247,6 +251,7 @@ export interface LiveAvatarUpdate {
   avatar_type?: AvatarType;
   image_url?: string | null;
   video_url?: string | null;
+  engine_base_url?: string | null;
   voice_config?: VoiceConfig | null;
   persona?: Persona | null;
   status?: AvatarStatus;
@@ -339,6 +344,19 @@ export const liveService = {
       { timeout: 300_000 }
     );
   },
+  generateEngineAvatar: (id: string, engineBaseUrl?: string | null) =>
+    api.post<{ task_id: string; avatar_id: string }>(
+      `/live-avatars/${id}/engine-avatar`,
+      engineBaseUrl ? { engine_base_url: engineBaseUrl } : {},
+      { timeout: 180_000 }
+    ),
+  getEngineAvatarStatus: (id: string) =>
+    api.get<{
+      status: string;
+      progress: number;
+      engine_avatar_id: string | null;
+      error_msg: string;
+    }>(`/live-avatars/${id}/engine-avatar/status`),
 
   // ---- 直播脚本 ----
   generateScript: (projectId: string, data: ScriptGenerateRequest) =>

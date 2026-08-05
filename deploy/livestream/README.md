@@ -227,6 +227,14 @@ LiveTalking（虚拟摄像头输出）→ OBS 采集摄像头源 → OBS 推流�
 3. 引擎侧验证：`GET /health` → `POST /admin/persona`（人设）→ `POST /admin/wordlist`（敏感词）→ 管理后台 `GET /admin/persona`、`GET /admin/wordlist` 回读确认热加载生效
 4. AiRestro 侧：项目基本信息 Tab → 填写引擎管理后台地址 → [连接测试] 一键完成「健康检查 + 配置推送」，通过后 `engine_config.last_health_check` 自动更新
 
+## 7.5 形象生成（AiRestro → 引擎，一键出形象）
+
+- AiRestro 数字人形象 → 「生成引擎形象」按钮：把该形象的**驱动视频**提交到引擎
+  `POST /api/avatar/task`（LiveTalking Avatar 生成 API）→ 轮询
+  `GET /api/avatar/task/{task_id}` → 完成后引擎侧生成 `data/avatars/<airestro_xxx>/`
+- 之后引擎用 `--avatar_id <airestro_xxx>` 启动即可使用该形象（正面、光线均匀、少遮挡、1-2 分钟视频最佳）
+- **前提**：引擎需支持 `/api/avatar/task`（LiveTalking 新版含此 API；当前 digital-human-livestream db728c7 未裁剪该路由，如需生成形象请用 LiveTalking 引擎或后续给 dhl 补路由）
+
 ## 8. 管理后台 API 速查（engine-test 对接）
 
 > digital-human-livestream 管理后台 API；响应格式：成功 `{"code":0,"data":{...}}`，失败 `{"code":-1,"msg":"..."}`。

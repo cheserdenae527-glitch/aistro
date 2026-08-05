@@ -137,11 +137,12 @@ class LiveAvatarCreate(BaseModel):
     avatar_type: AvatarType = "image"
     image_url: str | None = Field(None, max_length=2000)
     video_url: str | None = Field(None, max_length=2000)
+    engine_base_url: str | None = Field(None, max_length=2000)
     voice_config: dict | None = None
     persona: dict | None = None
     status: AvatarStatus = "draft"
 
-    @field_validator("name", "image_url", "video_url")
+    @field_validator("name", "image_url", "video_url", "engine_base_url")
     @classmethod
     def text_blocked(cls, v: str | None) -> str | None:
         return _check_no_blocked(v)
@@ -159,11 +160,12 @@ class LiveAvatarUpdate(BaseModel):
     avatar_type: AvatarType | None = None
     image_url: str | None = Field(None, max_length=2000)
     video_url: str | None = Field(None, max_length=2000)
+    engine_base_url: str | None = Field(None, max_length=2000)
     voice_config: dict | None = None
     persona: dict | None = None
     status: AvatarStatus | None = None
 
-    @field_validator("name", "image_url", "video_url")
+    @field_validator("name", "image_url", "video_url", "engine_base_url")
     @classmethod
     def text_blocked(cls, v: str | None) -> str | None:
         return _check_no_blocked(v)
@@ -185,6 +187,9 @@ class LiveAvatarOut(BaseModel):
     avatar_type: str
     image_url: str | None = None
     video_url: str | None = None
+    engine_base_url: str | None = None
+    engine_avatar_id: str | None = None
+    engine_task_id: str | None = None
     voice_config: dict | None = None
     persona: dict | None = None
     status: str
@@ -436,6 +441,17 @@ class LiveExportBundle(BaseModel):
 
 class ComplianceCheckRequest(BaseModel):
     script_id: uuid.UUID | None = None
+
+
+class EngineAvatarCreateRequest(BaseModel):
+    """形象 → 引擎 Avatar 生成：可覆盖引擎地址（不传则用形象已存 engine_base_url）。"""
+
+    engine_base_url: str | None = Field(None, max_length=2000)
+
+    @field_validator("engine_base_url")
+    @classmethod
+    def text_blocked(cls, v: str | None) -> str | None:
+        return _check_no_blocked(v)
 
 
 class EngineTestRequest(BaseModel):

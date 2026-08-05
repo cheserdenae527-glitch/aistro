@@ -112,3 +112,14 @@
 - 前端：video_url 字段加「上传视频」按钮（Upload → uploadAvatarVideo → 回填）；provider 改 Select（TTS_OPTIONS：edgetts/cosyvoice/gpt-sovits/tencent/xtts/azuretts/doubao/fishtts/indextts2/qwentts/omnitts），voice 输入框 placeholder 随 provider 动态提示（edgetts 显示常用 Edge 音色）
 - 测试：后端 +4（video 成功/非视频 400/超大 400/未登录 401）→ test_live.py 66 项全绿；前端 86 项全绿；typecheck/eslint/build 通过
 - dev 后端已重启（PID 32096）生效
+
+## 2026-08-05 主播视频一键生成引擎形象（AiRestro → LiveTalking avatar API）
+- 背景：用户要求把主播图/驱动视频真正接入数字人形象生成（不只运营侧记录）
+- 迁移 a1d2e3f4a5b6：live_avatars 加 engine_base_url / engine_avatar_id / engine_task_id
+- 后端：
+  - POST /live-avatars/{id}/engine-avatar：读形象 video_url（MinIO 下载）→ POST 引擎 /api/avatar/task（multipart video_file + model=wav2lip + avatar_id=airestro_xxx）→ 落库 engine_avatar_id/task_id
+  - GET /live-avatars/{id}/engine-avatar/status：GET 引擎 /api/avatar/task/{task_id} → 返回 status/progress
+- 前端：形象表单加「引擎地址」输入；列表项「生成引擎形象」按钮（校验驱动视频+引擎地址 → 创建任务 → 2s 轮询 → 进度% → completed 显示 engine_avatar_id）；列表徽标显示引擎形象 id
+- 测试：后端 +6（创建成功/缺视频 400/缺引擎地址 400/引擎错误 502/status completed/idle）→ test_live.py 72 项全绿；前端 86 项全绿；typecheck/eslint/build 通过
+- 迁移已应用到 dev 库（alembic upgrade head）；dev 后端重启（PID 41256）
+- 前提说明：/api/avatar/task 为 LiveTalking 新版 API；当前 dhl 无该路由，生成形象需用 LiveTalking 引擎（README §7.5 已注明）

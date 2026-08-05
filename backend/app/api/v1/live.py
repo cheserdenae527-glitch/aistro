@@ -47,6 +47,7 @@ from app.models.merchant import Merchant
 from app.models.shop import Shop
 from app.models.user import User
 from app.schemas.live import (
+    EngineAvatarCreateRequest,
     EngineTestRequest,
     EngineTestResult,
 
@@ -662,6 +663,112 @@ async def upload_avatar_video(
     return {
         "url": get_presigned_url(object_name, expires=7 * 24 * 3600),
         "object_name": object_name,
+    }
+
+
+@router.post("/live-avatars/{avatar_id}/engine-avatar")
+async def create_engine_avatar(
+    avatar_id: str,
+    body: EngineAvatarCreateRequest | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """把形象驱动视频提交到引擎 Avatar 生成 API（LiveTalking /api/avatar/task）。
+
+    - video_url 必填（引擎抽帧生成形象）；引擎地址取 body 覆盖或形象已存 engine_base_url
+    - 提交后引擎异步生成 data/avatars/<engine_avatar_id>，轮询
+      GET /live-avatars/{id}/engine-avatar/status 查进度
+    - 生成成功后在引擎用 --avatar_id <engine_avatar_id> 启动
+    """
+    avatar = await _get_avatar(avatar_id, current_user, db)
+    video_url = (avatar.video_url or "").strip()
+    if not video_url:
+        raise HTTPException(status_code=400, detail="请先上传或填写驱动视频（video_url）")
+    override = (body.engine_base_url or "").strip().rstrip("/") if body and body.engine_base_url else ""
+    engine_base = override or (avatar.engine_base_url or "").strip().rstrip("/")
+    if not engine_base:
+        raise HTTPException(status_code=400, detail="请填写引擎管理后台地址（engine_base_url）")
+    if not (engine_base.startswith("http://") or engine_base.startswith("https://")):
+        raise HTTPException(status_code=400, detail="引擎地址需以 http:// 或 https:// 开头")
+    engine_avatar_id = f"airestro_{uuid.uuid4().hex[:12]}"
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
+            vr = await client.get(video_url)
+            vr.raise_for_status()
+            video_bytes = vr.content
+            mime = vr.headers.get("content-type") or "video/mp4"
+            resp = await client.post(
+                f"{engine_base}/api/avatar/task",
+                data={"model": "wav2lip", "avatar_id": engine_avatar_id},
+                files={"video_file": (f"{engine_avatar_id}.mp4", video_bytes, mime)},
+            )
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"连接引擎失败：{_engine_exc_text(exc)}")
+    if resp.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"引擎创建形象任务失败（HTTP {resp.status_code}）：{_trim_engine_body(resp.text)}",
+        )
+    try:
+        payload = resp.json()
+    except Exception:
+        raise HTTPException(status_code=502, detail="引擎返回无法解析的响应")
+    if payload.get("code", 0) != 0:
+        raise HTTPException(
+            status_code=502, detail=f"引擎创建形象任务失败：{payload.get('msg') or '未知错误'}"
+        )
+    task_id = str((payload.get("data") or {}).get("task_id") or "")
+    if not task_id:
+        raise HTTPException(status_code=502, detail="引擎未返回 task_id")
+    avatar.engine_base_url = engine_base
+    avatar.engine_avatar_id = engine_avatar_id
+    avatar.engine_task_id = task_id
+    await db.flush()
+    return {"task_id": task_id, "avatar_id": engine_avatar_id}
+
+
+@router.get("/live-avatars/{avatar_id}/engine-avatar/status")
+async def get_engine_avatar_status(
+    avatar_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    """查询引擎 Avatar 生成任务进度（GET /api/avatar/task/{task_id}）。"""
+    avatar = await _get_avatar(avatar_id, current_user, db)
+    engine_base = (avatar.engine_base_url or "").strip().rstrip("/")
+    task_id = (avatar.engine_task_id or "").strip()
+    if not engine_base or not task_id:
+        return {
+            "status": "idle",
+            "progress": 0,
+            "engine_avatar_id": avatar.engine_avatar_id,
+            "error_msg": "",
+        }
+    try:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
+            resp = await client.get(f"{engine_base}/api/avatar/task/{task_id}")
+    except httpx.HTTPError as exc:
+        raise HTTPException(status_code=502, detail=f"连接引擎失败：{_engine_exc_text(exc)}")
+    if resp.status_code >= 400:
+        raise HTTPException(
+            status_code=502,
+            detail=f"引擎查询任务失败（HTTP {resp.status_code}）：{_trim_engine_body(resp.text)}",
+        )
+    try:
+        payload = resp.json()
+        data = payload.get("data") or {}
+    except Exception:
+        raise HTTPException(status_code=502, detail="引擎返回无法解析的响应")
+    status = str(data.get("status") or "unknown")
+    try:
+        progress = int(data.get("progress") or 0)
+    except (TypeError, ValueError):
+        progress = 0
+    return {
+        "status": status,
+        "progress": max(0, min(100, progress)),
+        "engine_avatar_id": avatar.engine_avatar_id,
+        "error_msg": str(data.get("error_msg") or ""),
     }
 
 

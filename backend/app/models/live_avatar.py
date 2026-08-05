@@ -41,6 +41,9 @@ class LiveAvatar(Base):
     )
     image_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     video_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    engine_base_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    engine_avatar_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
+    engine_task_id: Mapped[str | None] = mapped_column(String(100), nullable=True)
     voice_config: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     persona: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     status: Mapped[str] = mapped_column(
