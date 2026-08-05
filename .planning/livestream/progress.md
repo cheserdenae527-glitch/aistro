@@ -76,3 +76,9 @@
 - 前端 live.ts 加 uploadAvatarImage；AvatarsTab 形象图字段改为「上传按钮 + 直链输入」（Space.Compact + Upload beforeUpload → setFieldsValue image_url）
 - 测试：后端 +4（成功/非图片 400/超大 400/未登录 401）→ test_live.py 59 项全绿；前端 85 项全绿；typecheck/eslint 通过
 - dev 后端已重启（PID 16596）使新端点生效，.service-pids.json 已更新
+
+## 2026-08-05 TTS 配置随开播包导出
+- 背景：用户问 TTS 提供方怎么填；发现 voice_config 只存形象元数据、导出开播包未携带
+- 修复：export_script 依据 script.avatar_id → live_avatars.voice_config，在 engine_guide 追加第 8 行「引擎 TTS 配置：--tts <provider> --REF_FILE <voice>」
+- 默认 provider=edgetts；voice 空则只输出 --tts
+- 测试：+2（cosyvoice+voice 断言 / 无配置默认 edgetts）→ test_live.py 61 项全绿

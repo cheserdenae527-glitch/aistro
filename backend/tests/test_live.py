@@ -1831,3 +1831,40 @@ def test_avatar_upload_image_requires_auth(client):
     )
     assert resp.status_code == 401
 
+
+def test_export_engine_guide_includes_tts_config(client, monkeypatch):
+    """形象声音配置（TTS 提供方/音色）随开播包 engine_guide 导出。"""
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    avatar = _create_avatar(
+        client,
+        persona=_PERSONA,
+        voice_config={"provider": "cosyvoice", "voice": "cosy-voice-id"},
+    )
+    script = _generate(client, project["id"], avatar_id=avatar["id"])
+    _confirm(client, project["id"], script["id"])
+
+    bundle = client.post(
+        f"/api/v1/live-projects/{project['id']}/scripts/{script['id']}/export",
+        headers=auth_headers(client),
+    ).json()
+    assert "引擎 TTS 配置" in bundle["engine_guide"]
+    assert "--tts cosyvoice" in bundle["engine_guide"]
+    assert "--REF_FILE cosy-voice-id" in bundle["engine_guide"]
+
+
+def test_export_engine_guide_tts_default_edgetts(client, monkeypatch):
+    """无声音配置时 engine_guide 默认提示 edgetts。"""
+    _patch_agents(monkeypatch)
+    project = _create_project(client)
+    avatar = _create_avatar(client, persona=_PERSONA, voice_config=None)
+    script = _generate(client, project["id"], avatar_id=avatar["id"])
+    _confirm(client, project["id"], script["id"])
+
+    bundle = client.post(
+        f"/api/v1/live-projects/{project['id']}/scripts/{script['id']}/export",
+        headers=auth_headers(client),
+    ).json()
+    assert "引擎 TTS 配置" in bundle["engine_guide"]
+    assert "--tts edgetts" in bundle["engine_guide"]
+

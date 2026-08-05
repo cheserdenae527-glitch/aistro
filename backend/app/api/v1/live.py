@@ -1001,6 +1001,22 @@ async def export_script(
                 }
             )
 
+    # 形象声音配置 → 追加到 engine_guide，随开播包直达值守人（TTS 提供方/音色）
+    tts_line = ""
+    if script.avatar_id:
+        avatar = await _get_avatar_by_uuid(script.avatar_id, current_user, db)
+        vc = avatar.voice_config or {}
+        provider = str(vc.get("provider") or "edgetts").strip() or "edgetts"
+        voice = str(vc.get("voice") or "").strip()
+        flags = [f"--tts {provider}"]
+        if voice:
+            flags.append(f"--REF_FILE {voice}")
+        tts_line = (
+            f"\n8. 引擎 TTS 配置（形象 {avatar.name}）："
+            + " ".join(flags)
+            + "；语速/音调如需调节按引擎 TTS 文档设置"
+        )
+
     compliance = {"pass": compliance.get("pass", True), "items": items}
     return LiveExportBundle(
         script_markdown=_build_script_markdown(script),
@@ -1010,7 +1026,8 @@ async def export_script(
         compliance=compliance,
         engine_guide=_build_engine_guide(
             project, project.ai_label_text or _DEFAULT_AI_LABEL
-        ),
+        )
+        + tts_line,
     )
 
 
