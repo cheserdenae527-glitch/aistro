@@ -745,6 +745,8 @@ async def create_engine_avatar(
     avatar.engine_avatar_id = engine_avatar_id
     avatar.engine_task_id = task_id
     await db.flush()
+    # 后台监控：完成后自动重启引擎用新形象（不依赖前端轮询）
+    asyncio.create_task(_watch_engine_avatar_task(task_id, engine_base, engine_avatar_id))
     return {"task_id": task_id, "avatar_id": engine_avatar_id}
 
 
@@ -979,6 +981,31 @@ async def _ensure_engine_online(engine_base: str, default_avatar: str = "wav2lip
                 except httpx.HTTPError:
                     continue
     return False
+
+
+async def _watch_engine_avatar_task(
+    task_id: str, engine_base: str, engine_avatar_id: str
+) -> None:
+    """后台轮询引擎形象生成任务，完成后自动重启引擎用新形象；失败则清理。
+
+    不依赖前端轮询（前端登出/关页也不影响），避免"生成了但没切换"。
+    最长监控约 10 分钟；_restart_live_engine 幂等（已在用该形象则跳过）。
+    """
+    for _ in range(120):
+        await asyncio.sleep(5)
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(15.0, connect=5.0)) as client:
+                resp = await client.get(f"{engine_base}/api/avatar/task/{task_id}")
+                data = resp.json().get("data") or {}
+        except Exception:
+            continue
+        status = str(data.get("status") or "")
+        if status == "completed":
+            _restart_live_engine(engine_avatar_id)
+            return
+        if status == "failed":
+            _restart_live_engine("wav2lip_avatar_female_model")
+            return
 
 
 def _prepare_engine_video(video_bytes: bytes) -> tuple[bytes, str]:

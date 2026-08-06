@@ -238,3 +238,11 @@
 - 修复：create_engine_avatar 提交任务前 _ensure_engine_online（探测失败 → 自动 _restart_live_engine 启动 + 轮询等待就绪 ≤90s；仍失败才 502 明确提示）
 - 测试：+2（不在线自动启动/在线不重启，整模块替换 httpx mock）→ test_live.py 88 项全绿
 - 另：过程中发现 Postgres 容器掉线导致测试 ERROR，已 docker start 恢复
+
+## 2026-08-06 生成后自动切换改为后端后台监控（不依赖前端轮询）
+- 现象：生成引擎形象中途登出 → 轮询断 → 任务实际 completed（airestro_6b2b483f17e0，450 帧动态）但引擎没切新形象；GPU 生成中占满
+- 修复：
+  - _watch_engine_avatar_task 后台协程：create_engine_avatar 提交成功后 asyncio.create_task 后台每 5s 查引擎任务，completed → _restart_live_engine(新形象)；failed → 清理。前端登出/关页不影响
+  - 已手动把引擎切到 airestro_6b2b483f17e0（450 帧加载完成上线）
+- 测试：+1（后台监控 completed 自动重启）→ test_live.py 89 项全绿
+- 遗留：中途登出根因待观察（前端 401 拦截器 remove token 跳登录），若复现再查 auth

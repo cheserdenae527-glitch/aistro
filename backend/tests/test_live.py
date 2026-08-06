@@ -2443,4 +2443,48 @@ def test_ensure_engine_online_online_no_restart(monkeypatch):
     assert state["restarted"] == 0
 
 
+def test_watch_engine_avatar_task_completed(monkeypatch):
+    """后台监控：任务完成自动重启引擎用新形象（不依赖前端轮询）。"""
+    import asyncio
+    import types
+
+    from app.api.v1.live import _watch_engine_avatar_task
+
+    state = {"restarted": ""}
+
+    class _Resp:
+        def json(self):
+            return {"code": 0, "data": {"status": "completed", "progress": 100}}
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, **kw):
+            return _Resp()
+
+    fake_httpx = types.SimpleNamespace(
+        AsyncClient=_FakeClient,
+        Timeout=lambda *a, **k: None,
+        HTTPError=Exception,
+        ConnectError=Exception,
+    )
+    import app.api.v1.live as live_mod
+
+    monkeypatch.setattr(live_mod, "httpx", fake_httpx)
+    monkeypatch.setattr(live_mod, "_restart_live_engine", lambda aid: state.update(restarted=aid) or True)
+
+    async def _fake_sleep(s):
+        return None
+
+    monkeypatch.setattr(live_mod.asyncio, "sleep", _fake_sleep)
+
+    asyncio.run(_watch_engine_avatar_task("t1", "http://localhost:8010", "airestro_abc"))
+    assert state["restarted"] == "airestro_abc"
 
