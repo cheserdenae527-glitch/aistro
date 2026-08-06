@@ -232,3 +232,9 @@
 - 根因2：8000 端口被旧后端进程（19224，加载旧代码）占用，新进程启动失败
 - 修复：恢复 _release_live_engine；清理旧进程重启新后端（PID 32968）
 - 验证：release 端点实测 200 {released:true}；TestClient 200；相关测试通过
+
+## 2026-08-06 「生成引擎形象」失败修复：引擎不在线自动拉起
+- 现象：引擎被释放后未启动，点生成引擎形象失败（后端无法连引擎）
+- 修复：create_engine_avatar 提交任务前 _ensure_engine_online（探测失败 → 自动 _restart_live_engine 启动 + 轮询等待就绪 ≤90s；仍失败才 502 明确提示）
+- 测试：+2（不在线自动启动/在线不重启，整模块替换 httpx mock）→ test_live.py 88 项全绿
+- 另：过程中发现 Postgres 容器掉线导致测试 ERROR，已 docker start 恢复

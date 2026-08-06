@@ -2351,3 +2351,96 @@ def test_session_live_to_ended_releases_engine(client, monkeypatch):
     assert resp.json()["status"] == "ended"
     assert released["n"] >= 1  # 结束直播触发了引擎释放
 
+
+def test_ensure_engine_online_auto_start(monkeypatch):
+    """引擎不在线时自动启动并等待就绪。"""
+    import asyncio
+    import types
+
+    from app.api.v1.live import _ensure_engine_online
+
+    state = {"attempts": 0, "restarted": 0}
+
+    class _Resp:
+        def __init__(self, code=200):
+            self.status_code = code
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, **kw):
+            state["attempts"] += 1
+            if state["attempts"] <= 2:
+                raise ConnectionError("down")
+            return _Resp(200)
+
+    fake_httpx = types.SimpleNamespace(
+        AsyncClient=_FakeClient,
+        Timeout=lambda *a, **k: None,
+        HTTPError=ConnectionError,
+        ConnectError=ConnectionError,
+    )
+    import app.api.v1.live as live_mod
+
+    monkeypatch.setattr(live_mod, "httpx", fake_httpx)
+    monkeypatch.setattr(live_mod, "_restart_live_engine", lambda aid: state.update(restarted=state["restarted"] + 1) or True)
+
+    async def _fake_sleep(s):
+        return None
+
+    monkeypatch.setattr(live_mod.asyncio, "sleep", _fake_sleep)
+
+    ok = asyncio.run(_ensure_engine_online("http://localhost:8010"))
+    assert ok is True
+    assert state["restarted"] >= 1
+
+
+def test_ensure_engine_online_online_no_restart(monkeypatch):
+    """引擎已在线时不触发重启。"""
+    import asyncio
+    import types
+
+    from app.api.v1.live import _ensure_engine_online
+
+    state = {"restarted": 0}
+
+    class _Resp:
+        status_code = 200
+
+    class _FakeClient:
+        def __init__(self, *a, **k):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *exc):
+            return False
+
+        async def get(self, url, **kw):
+            return _Resp()
+
+    fake_httpx = types.SimpleNamespace(
+        AsyncClient=_FakeClient,
+        Timeout=lambda *a, **k: None,
+        HTTPError=ConnectionError,
+        ConnectError=ConnectionError,
+    )
+    import app.api.v1.live as live_mod
+
+    monkeypatch.setattr(live_mod, "httpx", fake_httpx)
+    monkeypatch.setattr(live_mod, "_restart_live_engine", lambda aid: state.update(restarted=1) or True)
+
+    ok = asyncio.run(_ensure_engine_online("http://localhost:8010"))
+    assert ok is True
+    assert state["restarted"] == 0
+
+
+

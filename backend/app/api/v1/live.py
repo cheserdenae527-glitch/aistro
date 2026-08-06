@@ -14,6 +14,7 @@
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 import pickle
@@ -709,6 +710,12 @@ async def create_engine_avatar(
         prepared, mime = _prepare_engine_video(video_bytes)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=f"驱动视频不达标：{exc}")
+    # 确保引擎在线（不在线自动启动并等待）
+    if not await _ensure_engine_online(engine_base):
+        raise HTTPException(
+            status_code=502,
+            detail="引擎不在线且自动启动失败，请先点「启动引擎」或检查引擎配置",
+        )
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
             resp = await client.post(
@@ -950,6 +957,28 @@ def _build_dynamic_avatar(video_bytes: bytes, workdir: str, avatar_id: str) -> s
     with open(os.path.join(base, "coords.pkl"), "wb") as f:
         pickle.dump(coords, f)
     return base
+
+
+async def _ensure_engine_online(engine_base: str, default_avatar: str = "wav2lip_avatar_female_model") -> bool:
+    """确保引擎在线：探测失败则自动启动并等待就绪（最多约 90 秒）。"""
+    for attempt in range(2):
+        try:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
+                await client.get(f"{engine_base}/api/avatar/tasks")
+            return True
+        except httpx.HTTPError:
+            pass
+        if attempt == 0:
+            _restart_live_engine(default_avatar)
+            for _ in range(30):
+                await asyncio.sleep(3)
+                try:
+                    async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
+                        await client.get(f"{engine_base}/api/avatar/tasks")
+                    return True
+                except httpx.HTTPError:
+                    continue
+    return False
 
 
 def _prepare_engine_video(video_bytes: bytes) -> tuple[bytes, str]:
