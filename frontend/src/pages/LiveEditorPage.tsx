@@ -76,6 +76,8 @@ export default function LiveEditorPage({ onReady }: Props) {
   const [savingBasic, setSavingBasic] = useState(false);
   const [testingEngine, setTestingEngine] = useState(false);
   const [previewHeight, setPreviewHeight] = useState(720);
+  const [startingEngine, setStartingEngine] = useState(false);
+  const [previewReloadKey, setPreviewReloadKey] = useState(0);
   const [engineTestResult, setEngineTestResult] = useState<EngineTestResult | null>(null);
   const [basicForm] = Form.useForm<BasicForm>();
   const watchedBaseUrl = Form.useWatch("base_url", basicForm);
@@ -176,12 +178,37 @@ export default function LiveEditorPage({ onReady }: Props) {
   };
 
   const handleStartEngine = async () => {
+    if (!project) return;
+    if (!project.engine_config?.base_url) {
+      message.warning("请先在基本信息里配置引擎管理后台地址");
+      return;
+    }
+    setStartingEngine(true);
     try {
       const res = await liveService.startEngine();
-      if (res.data.started) message.success("引擎已启动，约 30 秒后可预览");
-      else message.warning("引擎启动失败，请检查引擎配置");
+      if (!res.data.started) {
+        message.warning("引擎启动失败，请检查引擎配置");
+        return;
+      }
+      message.info("引擎启动中（约 30 秒），就绪后自动刷新预览…");
+      const base = project.engine_config.base_url.replace(/\/+$/, "");
+      for (let i = 0; i < 40; i++) {
+        await new Promise((r) => setTimeout(r, 3000));
+        try {
+          const probe = await fetch(`${base}/index.html`, { method: "HEAD" });
+          if (probe.ok) {
+            message.success("引擎已就绪，请在预览里点「开始连接」出画面");
+            setPreviewReloadKey((k) => k + 1);
+            break;
+          }
+        } catch {
+          // 引擎还没就绪，继续等
+        }
+      }
     } catch (e) {
       showApiError(e);
+    } finally {
+      setStartingEngine(false);
     }
   };
 
@@ -437,7 +464,7 @@ export default function LiveEditorPage({ onReady }: Props) {
                       <Button size="small" danger onClick={handleReleaseEngine}>
                         释放 GPU
                       </Button>
-                      <Button size="small" onClick={handleStartEngine}>
+                      <Button size="small" loading={startingEngine} onClick={handleStartEngine}>
                         启动引擎
                       </Button>
                       <Text style={{ fontSize: 12, whiteSpace: "nowrap" }}>预览高度</Text>
@@ -454,6 +481,7 @@ export default function LiveEditorPage({ onReady }: Props) {
                       </Text>
                     </div>
                     <iframe
+                      key={previewReloadKey}
                       src={`${project.engine_config.base_url.replace(/\/+$/, "")}/dashboard.html`}
                       title="引擎画面预览"
                       style={{
