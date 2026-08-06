@@ -1154,6 +1154,11 @@ def _restart_live_engine(avatar_id: str) -> bool:
         )
     except Exception:
         pass
+    # 等端口 8010 释放，避免新进程因端口占用启动失败
+    for _ in range(15):
+        if not _port_in_use(8010):
+            break
+        time.sleep(1)
     log = open(os.path.join(workdir, "lt.log"), "a", encoding="utf-8")
     err = open(os.path.join(workdir, "lt.err.log"), "a", encoding="utf-8")
     try:
@@ -1178,6 +1183,23 @@ def _restart_live_engine(avatar_id: str) -> bool:
         return True
     except Exception:
         return False
+
+
+def _port_in_use(port: int) -> bool:
+    """探测本机端口是否被占用。"""
+    import socket
+
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        s.bind(("127.0.0.1", port))
+        s.close()
+        return False
+    except OSError:
+        try:
+            s.close()
+        except Exception:
+            pass
+        return True
 
 
 @router.post("/live-avatars/{avatar_id}/sync-engine-static")
