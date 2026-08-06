@@ -1037,6 +1037,28 @@ def _prepare_engine_video(video_bytes: bytes) -> tuple[bytes, str]:
     return out, "video/mp4"
 
 
+def _release_live_engine() -> bool:
+    """停止本机 LiveTalking 引擎进程，释放 GPU。"""
+    workdir = settings.LIVE_ENGINE_WORKDIR
+    if not workdir or not os.path.isdir(workdir):
+        return False
+    try:
+        subprocess.run(
+            [
+                "powershell",
+                "-NoProfile",
+                "-Command",
+                "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                "Where-Object { $_.CommandLine -match 'listenport 8010' } | "
+                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }",
+            ],
+            timeout=30,
+        )
+        return True
+    except Exception:
+        return False
+
+
 def _restart_live_engine(avatar_id: str) -> bool:
     """重启本机 LiveTalking 引擎（--avatar_id <新形象>）。配置缺失或失败返回 False。"""
     workdir = settings.LIVE_ENGINE_WORKDIR
