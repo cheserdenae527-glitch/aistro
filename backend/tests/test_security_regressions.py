@@ -4,6 +4,8 @@ from __future__ import annotations
 import time
 import uuid
 
+import pytest
+
 from crawler import tasks
 
 
@@ -189,3 +191,27 @@ def test_security_headers_present(client):
     assert resp.headers["x-frame-options"] == "DENY"
     assert resp.headers["referrer-policy"] == "strict-origin-when-cross-origin"
     assert resp.headers["cross-origin-opener-policy"] == "same-origin"
+
+
+def test_live_engine_url_validation():
+    from app.api.v1.live import _validate_engine_base_url, _validate_media_url_host
+
+    assert _validate_engine_base_url("http://127.0.0.1:8010") == "http://127.0.0.1:8010"
+    with pytest.raises(ValueError):
+        _validate_engine_base_url("http://169.254.169.254/latest/meta-data")
+    with pytest.raises(ValueError):
+        _validate_engine_base_url("http://127.0.0.1:8000")
+    with pytest.raises(ValueError):
+        _validate_media_url_host("http://10.0.0.1/secret")
+    with pytest.raises(ValueError):
+        _validate_media_url_host("http://127.0.0.1:8000/secret")
+    with pytest.raises(ValueError):
+        _validate_media_url_host("http://169.254.169.254/latest/meta-data")
+
+
+def test_live_engine_requires_admin(client):
+    headers = _register(client, f"engine-{uuid.uuid4()}@test.com")
+    assert (
+        client.post("/api/v1/live-engines/release", headers=headers).status_code
+        == 403
+    )

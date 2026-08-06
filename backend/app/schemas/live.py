@@ -451,7 +451,7 @@ class AiGenerateImageRequest(BaseModel):
     @field_validator("prompt")
     @classmethod
     def text_blocked(cls, v: str) -> str:
-        return _check_no_blocked(v)
+        return _check_no_blocked(v) or ""
 
 
 class EngineAvatarCreateRequest(BaseModel):

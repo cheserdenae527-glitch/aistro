@@ -6,27 +6,34 @@ from __future__ import annotations
 
 import base64
 import io
+import uuid
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request, UploadFile
 from PIL import Image
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai.profile_agent import (
+    generate_bio_options,
+    generate_nickname_options,
+    generate_pinned_notes,
     generate_section_prompt,
     generate_variants,
+    rewrite_by_health_check,
     run_profile_health_check,
 )
 from app.ai.doubao_image import ImageGenError, generate_avatar, generate_bg_image
 from app.ai.style_analyzer import analyze_style
-from app.core.database import get_db
+from app.core.database import async_session_factory, get_db
 from app.core.deps import get_current_user
 from app.core.rate_limit import check_rate_limit
 from app.core.sensitive_filter import contains_blocked
 from app.models.merchant import Merchant
 from app.models.shop import Shop
+from app.models.profile_image_job import ProfileImageJob
 from app.models.shop_profile import ShopProfile
+from app.models.shop_profile_history import ShopProfileHistory
 from app.models.user import User
 from app.schemas.profile import (
     ColorSchemePreset,
@@ -36,6 +43,14 @@ from app.schemas.profile import (
     GenerateResponse,
     HealthCheckRequest,
     HealthCheckResponse,
+    HealthRewriteRequest,
+    HealthRewriteResponse,
+    ImageJobCreateResponse,
+    ImageJobResponse,
+    PinnedNotesGenerateResponse,
+    ProfileHistoryItem,
+    ProfileOptionsGenerateRequest,
+    ProfileOptionsGenerateResponse,
     ImageGenerateOptionsResponse,
     ImageGenerateRequest,
     ImageGenerateResponse,
@@ -48,7 +63,7 @@ from app.schemas.profile import (
     SelectImageRequest,
 )
 from app.services.color_presets import COLOR_PRESETS
-from app.services.storage import get_presigned_url, safe_get_presigned_url, upload_bytes
+from app.services.storage import get_object_bytes, get_presigned_url, safe_delete_object, safe_get_presigned_url, upload_bytes
 
 router = APIRouter(tags=["profiles"])
 
@@ -103,6 +118,44 @@ def _upload_generated_images(
             )
         )
     return options
+
+
+def _collect_old_profile_images(
+    profile: ShopProfile, section: str, keep: set[str] | None = None
+) -> list[str]:
+    """收集被替换后不再引用、可安全删除的图片对象。"""
+    keep = keep or set()
+    if section == "avatar":
+        gallery = profile.avatar_gallery or []
+        original = profile.avatar_original_url
+        cropped = profile.avatar_url
+    else:
+        gallery = profile.bg_gallery or []
+        original = profile.bg_original_url
+        cropped = profile.bg_image_url
+    candidates = [*gallery, original, cropped]
+    return [name for name in candidates if name and name not in keep]
+
+
+def _profile_snapshot(profile: ShopProfile) -> dict:
+    """保存草稿历史用的完整装修快照。"""
+    return {
+        "nickname": profile.nickname,
+        "bio": profile.bio,
+        "avatar_gen_prompt": profile.avatar_gen_prompt,
+        "bg_gen_prompt": profile.bg_gen_prompt,
+        "pinned_notes": profile.pinned_notes,
+        "color_primary": profile.color_primary,
+        "color_secondary": profile.color_secondary,
+        "color_accent": profile.color_accent,
+        "color_text": profile.color_text,
+        "color_mode": profile.color_mode,
+        "color_preset_name": profile.color_preset_name,
+        "avatar_original_url": profile.avatar_original_url,
+        "avatar_url": profile.avatar_url,
+        "bg_original_url": profile.bg_original_url,
+        "bg_image_url": profile.bg_image_url,
+    }
 
 
 # ============================================================
@@ -185,6 +238,8 @@ async def update_profile(
 
     # 更新字段
     upd = body.model_dump(exclude_unset=True)
+    if "pinned_notes" in upd and upd["pinned_notes"] is not None:
+        upd["pinned_notes"] = [n.model_dump() if hasattr(n, "model_dump") else n for n in upd["pinned_notes"]]
     upd.pop("version", None)
 
     # bio 敏感词标记
@@ -200,6 +255,13 @@ async def update_profile(
 
     profile.version += 1
     profile.updated_at = datetime.now(timezone.utc)
+    db.add(
+        ShopProfileHistory(
+            profile_id=profile.id,
+            version=profile.version,
+            snapshot=_profile_snapshot(profile),
+        )
+    )
     await db.flush()
 
     return ProfileResponse.model_validate(profile)
@@ -319,6 +381,7 @@ async def profile_health_check(
         bio=body.bio,
         avatar_prompt=body.avatar_prompt,
         bg_prompt=body.bg_prompt,
+        pinned_notes=body.pinned_notes,
         color_primary=body.color_primary,
         color_secondary=body.color_secondary,
         color_accent=body.color_accent,
@@ -326,6 +389,21 @@ async def profile_health_check(
         has_avatar=body.has_avatar,
         has_bg=body.has_bg,
     )
+    result["snapshot"] = {
+        "nickname": body.nickname,
+        "bio": body.bio,
+        "avatar_prompt": body.avatar_prompt,
+        "bg_prompt": body.bg_prompt,
+        "pinned_notes": [n.model_dump() for n in (body.pinned_notes or [])],
+        "color_primary": body.color_primary,
+        "color_secondary": body.color_secondary,
+        "color_accent": body.color_accent,
+        "color_text": body.color_text,
+        "has_avatar": body.has_avatar,
+        "has_bg": body.has_bg,
+    }
+    if not result.get("first_impression") or not result.get("strengths"):
+        raise HTTPException(status_code=502, detail="体检服务暂时无响应，请稍后重试")
 
     profile = await _get_or_create_profile(shop_id, platform, db)
     profile.health_check = result
@@ -334,6 +412,438 @@ async def profile_health_check(
     return HealthCheckResponse(
         **result,
         checked_at=datetime.now(timezone.utc),
+    )
+
+
+# ============================================================
+# POST /generate-pinned-notes — AI 生成置顶笔记候选
+# ============================================================
+
+@router.post(
+    "/shops/{shop_id}/profiles/{platform}/generate-pinned-notes",
+    response_model=PinnedNotesGenerateResponse,
+)
+async def generate_pinned_notes_endpoint(
+    shop_id: str,
+    platform: str,
+    body: GenerateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _verify_shop_owner(shop_id, current_user, db)
+
+    rate_key = f"rate_limit:generate_pinned_notes:{shop_id}:{platform}"
+    if not await check_rate_limit(rate_key, ttl_seconds=20):
+        raise HTTPException(
+            status_code=429,
+            detail="操作过于频繁，请 20 秒后重试",
+        )
+
+    notes = await generate_pinned_notes(
+        body.category, body.style, body.price_range
+    )
+    return PinnedNotesGenerateResponse(notes=notes)
+
+
+# ============================================================
+# POST /rewrite-by-health-check — 按体检建议重写内容
+# ============================================================
+
+@router.post(
+    "/shops/{shop_id}/profiles/{platform}/rewrite-by-health-check",
+    response_model=HealthRewriteResponse,
+)
+async def rewrite_by_health_check_endpoint(
+    shop_id: str,
+    platform: str,
+    body: HealthRewriteRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _verify_shop_owner(shop_id, current_user, db)
+
+    rate_key = f"rate_limit:rewrite_by_health_check:{shop_id}:{platform}"
+    if not await check_rate_limit(rate_key, ttl_seconds=20):
+        raise HTTPException(
+            status_code=429,
+            detail="操作过于频繁，请 20 秒后重试",
+        )
+
+    result = await rewrite_by_health_check(
+        nickname=body.nickname,
+        bio=body.bio,
+        pinned_notes=body.pinned_notes,
+        weaknesses=body.weaknesses,
+        suggestions=body.suggestions,
+        category=body.category,
+        style=body.style,
+        price_range=body.price_range,
+    )
+    return HealthRewriteResponse(**result)
+
+
+# ============================================================
+# POST /generate-profile-options — 生成昵称/简介候选
+# ============================================================
+
+@router.post(
+    "/shops/{shop_id}/profiles/{platform}/generate-profile-options",
+    response_model=ProfileOptionsGenerateResponse,
+)
+async def generate_profile_options(
+    shop_id: str,
+    platform: str,
+    body: ProfileOptionsGenerateRequest,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _verify_shop_owner(shop_id, current_user, db)
+
+    rate_key = f"rate_limit:profile_options:{shop_id}:{platform}"
+    if not await check_rate_limit(rate_key, ttl_seconds=20):
+        raise HTTPException(
+            status_code=429,
+            detail="操作过于频繁，请 20 秒后重试",
+        )
+
+    if body.kind == "nickname":
+        options = await generate_nickname_options(
+            body.category, body.style, body.price_range
+        )
+    else:
+        options = await generate_bio_options(
+            body.category, body.style, body.price_range
+        )
+    return ProfileOptionsGenerateResponse(options=options)
+
+
+# ============================================================
+# GET /history — 保存草稿的历史版本
+# ============================================================
+
+@router.get(
+    "/shops/{shop_id}/profiles/{platform}/history",
+    response_model=list[ProfileHistoryItem],
+)
+async def profile_history(
+    shop_id: str,
+    platform: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _verify_shop_owner(shop_id, current_user, db)
+    profile = await _get_or_create_profile(shop_id, platform, db)
+    rows = (
+        await db.execute(
+            select(ShopProfileHistory)
+            .where(ShopProfileHistory.profile_id == profile.id)
+            .order_by(
+                ShopProfileHistory.created_at.desc(),
+                ShopProfileHistory.version.desc(),
+            )
+            .limit(50)
+        )
+    ).scalars().all()
+
+    items: list[ProfileHistoryItem] = []
+    for row in rows:
+        snap = row.snapshot or {}
+        items.append(
+            ProfileHistoryItem(
+                id=row.id,
+                version=row.version,
+                created_at=row.created_at,
+                nickname=snap.get("nickname"),
+                bio=snap.get("bio"),
+                pinned_notes=snap.get("pinned_notes") or [],
+                color_primary=snap.get("color_primary"),
+                avatar_set=bool(snap.get("avatar_original_url") or snap.get("avatar_url")),
+                bg_set=bool(snap.get("bg_original_url") or snap.get("bg_image_url")),
+            )
+        )
+    return items
+
+
+@router.post(
+    "/shops/{shop_id}/profiles/{platform}/history/{history_id}/restore",
+    response_model=ProfileResponse,
+)
+async def restore_profile_history(
+    shop_id: str,
+    platform: str,
+    history_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _verify_shop_owner(shop_id, current_user, db)
+    profile = await _get_or_create_profile(shop_id, platform, db)
+    history = await db.get(ShopProfileHistory, history_id)
+    if not history or str(history.profile_id) != str(profile.id):
+        raise HTTPException(status_code=404, detail="历史版本不存在")
+
+    snap = history.snapshot or {}
+    for k, v in snap.items():
+        setattr(profile, k, v)
+    if snap.get("bio") is not None:
+        profile.bio_flagged = contains_blocked(snap["bio"])
+    profile.version += 1
+    profile.updated_at = datetime.now(timezone.utc)
+    db.add(
+        ShopProfileHistory(
+            profile_id=profile.id,
+            version=profile.version,
+            snapshot=_profile_snapshot(profile),
+        )
+    )
+    await db.flush()
+    return ProfileResponse.model_validate(profile)
+
+
+# ============================================================
+# POST image jobs — 头像/背景生图后台任务
+# ============================================================
+
+async def _run_profile_image_job(
+    job_id: uuid.UUID,
+    ref_data: bytes | None,
+    ref_mime: str,
+) -> None:
+    """后台执行生图：跑豆包 → 存 MinIO → 落库 profile。"""
+    async with async_session_factory() as db:
+        job = await db.get(ProfileImageJob, job_id)
+        if not job:
+            return
+        job.status = "running"
+        job.started_at = datetime.now(timezone.utc)
+        await db.commit()
+
+        try:
+            if job.section == "avatar":
+                images = await generate_avatar(job.prompt, ref_data, ref_mime)
+            else:
+                images = await generate_bg_image(job.prompt, ref_data, ref_mime)
+
+            options = []
+            for img_bytes, mime in images:
+                object_name = upload_bytes(img_bytes, mime, folder="profiles")
+                options.append({"object_name": object_name})
+            job.options = options
+            job.status = "success"
+            job.finished_at = datetime.now(timezone.utc)
+
+            profile = (
+                await db.execute(
+                    select(ShopProfile).where(
+                        ShopProfile.shop_id == job.shop_id,
+                        ShopProfile.platform == job.platform,
+                    )
+                )
+            ).scalar_one_or_none()
+            if profile is None:
+                profile = ShopProfile(shop_id=job.shop_id, platform=job.platform)
+                db.add(profile)
+                await db.flush()
+
+            if job.section == "avatar":
+                old_images = _collect_old_profile_images(profile, "avatar")
+                profile.avatar_original_url = options[0]["object_name"]
+                profile.avatar_gallery = [o["object_name"] for o in options]
+                profile.avatar_url = None
+                profile.avatar_gen_prompt = job.prompt
+            else:
+                old_images = _collect_old_profile_images(profile, "bg")
+                profile.bg_original_url = options[0]["object_name"]
+                profile.bg_gallery = [o["object_name"] for o in options]
+                profile.bg_image_url = None
+                profile.bg_gen_prompt = job.prompt
+
+            for name in old_images:
+                safe_delete_object(name)
+            await db.commit()
+        except ImageGenError as exc:
+            job.status = "failed"
+            job.error = exc.detail
+            job.finished_at = datetime.now(timezone.utc)
+            await db.commit()
+        except Exception as exc:  # noqa: BLE001
+            job.status = "failed"
+            job.error = str(exc)[:300]
+            job.finished_at = datetime.now(timezone.utc)
+            await db.commit()
+
+
+def _create_image_job(
+    db: AsyncSession,
+    shop_id: str,
+    platform: str,
+    section: str,
+    prompt: str,
+    user_id,
+) -> ProfileImageJob:
+    job = ProfileImageJob(
+        shop_id=shop_id,
+        user_id=user_id,
+        platform=platform,
+        section=section,
+        prompt=prompt,
+    )
+    db.add(job)
+    return job
+
+
+@router.post(
+    "/shops/{shop_id}/profiles/{platform}/generate-avatar-job",
+    response_model=ImageJobCreateResponse,
+    status_code=202,
+)
+async def create_avatar_job(
+    shop_id: str,
+    platform: str,
+    body: ImageGenerateRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _verify_shop_owner(shop_id, current_user, db)
+    rate_key = f"rate_limit:gen_avatar:{shop_id}:{platform}"
+    if not await check_rate_limit(rate_key, ttl_seconds=30):
+        raise HTTPException(status_code=429, detail="操作过于频繁，请 30 秒后重试")
+
+    job = _create_image_job(
+        db, shop_id, platform, "avatar", body.prompt, current_user.id,
+    )
+    await db.flush()
+    await db.commit()
+    background_tasks.add_task(_run_profile_image_job, job.id, None, "image/png")
+    return ImageJobCreateResponse(job_id=job.id)
+
+
+@router.post(
+    "/shops/{shop_id}/profiles/{platform}/generate-bg-image-job",
+    response_model=ImageJobCreateResponse,
+    status_code=202,
+)
+async def create_bg_image_job(
+    shop_id: str,
+    platform: str,
+    body: ImageGenerateRequest,
+    background_tasks: BackgroundTasks,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _verify_shop_owner(shop_id, current_user, db)
+    rate_key = f"rate_limit:gen_bg:{shop_id}:{platform}"
+    if not await check_rate_limit(rate_key, ttl_seconds=30):
+        raise HTTPException(status_code=429, detail="操作过于频繁，请 30 秒后重试")
+
+    job = _create_image_job(
+        db, shop_id, platform, "bg", body.prompt, current_user.id,
+    )
+    await db.flush()
+    await db.commit()
+    background_tasks.add_task(_run_profile_image_job, job.id, None, "image/png")
+    return ImageJobCreateResponse(job_id=job.id)
+
+
+@router.post(
+    "/shops/{shop_id}/profiles/{platform}/generate-avatar-with-ref-job",
+    response_model=ImageJobCreateResponse,
+    status_code=202,
+)
+async def create_avatar_with_ref_job(
+    shop_id: str,
+    platform: str,
+    background_tasks: BackgroundTasks,
+    prompt: str = Form(...),
+    ref_image: UploadFile | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _verify_shop_owner(shop_id, current_user, db)
+    if contains_blocked(prompt):
+        raise HTTPException(status_code=422, detail="prompt 包含敏感词")
+    rate_key = f"rate_limit:gen_avatar:{shop_id}:{platform}"
+    if not await check_rate_limit(rate_key, ttl_seconds=30):
+        raise HTTPException(status_code=429, detail="操作过于频繁，请 30 秒后重试")
+
+    ref_data, ref_mime = await _read_ref_image(ref_image)
+    job = _create_image_job(
+        db, shop_id, platform, "avatar", prompt, current_user.id,
+    )
+    await db.flush()
+    await db.commit()
+    background_tasks.add_task(_run_profile_image_job, job.id, ref_data, ref_mime)
+    return ImageJobCreateResponse(job_id=job.id)
+
+
+@router.post(
+    "/shops/{shop_id}/profiles/{platform}/generate-bg-image-with-ref-job",
+    response_model=ImageJobCreateResponse,
+    status_code=202,
+)
+async def create_bg_image_with_ref_job(
+    shop_id: str,
+    platform: str,
+    background_tasks: BackgroundTasks,
+    prompt: str = Form(...),
+    ref_image: UploadFile | None = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _verify_shop_owner(shop_id, current_user, db)
+    if contains_blocked(prompt):
+        raise HTTPException(status_code=422, detail="prompt 包含敏感词")
+    rate_key = f"rate_limit:gen_bg:{shop_id}:{platform}"
+    if not await check_rate_limit(rate_key, ttl_seconds=30):
+        raise HTTPException(status_code=429, detail="操作过于频繁，请 30 秒后重试")
+
+    ref_data, ref_mime = await _read_ref_image(ref_image)
+    job = _create_image_job(
+        db, shop_id, platform, "bg", prompt, current_user.id,
+    )
+    await db.flush()
+    await db.commit()
+    background_tasks.add_task(_run_profile_image_job, job.id, ref_data, ref_mime)
+    return ImageJobCreateResponse(job_id=job.id)
+
+
+@router.get(
+    "/shops/{shop_id}/profiles/{platform}/image-jobs/{job_id}",
+    response_model=ImageJobResponse,
+)
+async def get_image_job(
+    shop_id: str,
+    platform: str,
+    job_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user),
+):
+    await _verify_shop_owner(shop_id, current_user, db)
+    try:
+        job_uuid = uuid.UUID(job_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="任务不存在")
+    job = await db.get(ProfileImageJob, job_uuid)
+    if not job or str(job.shop_id) != str(shop_id):
+        raise HTTPException(status_code=404, detail="任务不存在")
+
+    options = None
+    if job.options:
+        options = [
+            ImageOption(object_name=o["object_name"], url=get_presigned_url(o["object_name"]))
+            for o in job.options
+        ]
+    return ImageJobResponse(
+        id=job.id,
+        section=job.section,
+        status=job.status,
+        options=options,
+        error=job.error,
+        created_at=job.created_at,
+        finished_at=job.finished_at,
     )
 
 
@@ -372,11 +882,14 @@ async def generate_avatar_api(
 
     # 写入 original_url（覆盖旧值）
     profile = await _get_or_create_profile(shop_id, platform, db)
+    old_images = _collect_old_profile_images(profile, "avatar")
     profile.avatar_original_url = object_name
     profile.avatar_gallery = [o.object_name for o in options]
     profile.avatar_url = None
     profile.avatar_gen_prompt = body.prompt
     await db.flush()
+    for name in old_images:
+        safe_delete_object(name)
 
     return ImageGenerateOptionsResponse(
         url=options[0].url,
@@ -418,11 +931,14 @@ async def generate_bg_image_api(
     object_name = options[0].object_name
 
     profile = await _get_or_create_profile(shop_id, platform, db)
+    old_images = _collect_old_profile_images(profile, "bg")
     profile.bg_original_url = object_name
     profile.bg_gallery = [o.object_name for o in options]
     profile.bg_image_url = None
     profile.bg_gen_prompt = body.prompt
     await db.flush()
+    for name in old_images:
+        safe_delete_object(name)
 
     return ImageGenerateOptionsResponse(
         url=options[0].url,
@@ -474,11 +990,15 @@ async def _handle_upload(
     object_name = upload_bytes(data, file.content_type or "image/png", folder="profiles")
 
     profile = await _get_or_create_profile(shop_id, platform, db)
+    section = "avatar" if field_original == "avatar_original_url" else "bg"
+    old_images = _collect_old_profile_images(profile, section)
     setattr(profile, field_original, object_name)
     setattr(profile, field_gallery, None)
     if field_prompt:
         setattr(profile, field_prompt, None)  # 上传覆盖 prompt
     await db.flush()
+    for name in old_images:
+        safe_delete_object(name)
 
     return ImageGenerateResponse(
         url=get_presigned_url(object_name),
@@ -593,10 +1113,13 @@ async def _handle_crop(
     except Exception:
         mime = "image/png"
     object_name = upload_bytes(img_bytes, mime, folder="profiles")
+    old_url = getattr(profile, field_url, None)
 
     # 写入裁剪 URL（不覆盖 original_url）
     setattr(profile, field_url, object_name)
     await db.flush()
+    if old_url and old_url != object_name:
+        safe_delete_object(old_url)
 
     return CropResponse(url=get_presigned_url(object_name))
 
@@ -676,11 +1199,14 @@ async def generate_avatar_with_ref(
     object_name = options[0].object_name
 
     profile = await _get_or_create_profile(shop_id, platform, db)
+    old_images = _collect_old_profile_images(profile, "avatar")
     profile.avatar_original_url = object_name
     profile.avatar_gallery = [o.object_name for o in options]
     profile.avatar_url = None
     profile.avatar_gen_prompt = prompt
     await db.flush()
+    for name in old_images:
+        safe_delete_object(name)
 
     return ImageGenerateOptionsResponse(
         url=options[0].url,
@@ -724,11 +1250,14 @@ async def generate_bg_image_with_ref(
     object_name = options[0].object_name
 
     profile = await _get_or_create_profile(shop_id, platform, db)
+    old_images = _collect_old_profile_images(profile, "bg")
     profile.bg_original_url = object_name
     profile.bg_gallery = [o.object_name for o in options]
     profile.bg_image_url = None
     profile.bg_gen_prompt = prompt
     await db.flush()
+    for name in old_images:
+        safe_delete_object(name)
 
     return ImageGenerateOptionsResponse(
         url=options[0].url,
@@ -848,6 +1377,7 @@ async def remove_gallery_image(
         setattr(profile, original_field, None)
         setattr(profile, url_field, None)
     await db.flush()
+    safe_delete_object(body.object_name)
 
     return [
         ImageOption(object_name=name, url=get_presigned_url(name))

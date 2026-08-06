@@ -30,6 +30,8 @@ from app.models.live_script import LiveScript
 from app.models.live_danmaku_config import LiveDanmakuConfig
 from app.models.live_session import LiveSession
 from app.models.live_session_metric import LiveSessionMetric
+from app.models.profile_image_job import ProfileImageJob
+from app.models.shop_profile_history import ShopProfileHistory
 
 __all__ = [
     "User", "Merchant", "Shop", "PlatformShop", "Review",
@@ -40,4 +42,5 @@ __all__ = [
     "DealProject", "DealItem", "CompetitorDeal", "DealScheme", "DealSchemeCopy",
     "LiveProject", "LiveAvatar", "LiveScript", "LiveDanmakuConfig",
     "LiveSession", "LiveSessionMetric",
+    "ProfileImageJob", "ShopProfileHistory",
 ]

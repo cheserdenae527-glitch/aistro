@@ -339,3 +339,74 @@ def _create_test_shop(client) -> str:
         headers=auth_headers(client),
     )
     return s_resp.json()["id"]
+
+# ============================================================
+# 10. 置顶笔记 / 体检重写 Schema
+# ============================================================
+
+def test_pinned_notes_schema():
+    from pydantic import ValidationError
+
+    from app.schemas.profile import (
+        HealthRewriteRequest,
+        PinnedNote,
+        ProfileUpdate,
+    )
+
+    note = PinnedNote(title="巷子口老灶火锅点单攻略", content="人均80吃撑，评论区问地址")
+    assert note.title == "巷子口老灶火锅点单攻略"
+
+    upd = ProfileUpdate(version=1, pinned_notes=[note])
+    assert upd.pinned_notes[0].content == "人均80吃撑，评论区问地址"
+
+    with pytest.raises(ValidationError):
+        PinnedNote(title="x" * 41)
+
+    rewrite = HealthRewriteRequest(
+        nickname="巷子口老灶火锅",
+        bio="人均80吃撑",
+        weaknesses=["目标用户不清晰"],
+        suggestions=["写明学生党聚餐首选"],
+    )
+    assert rewrite.weaknesses == ["目标用户不清晰"]
+    assert rewrite.suggestions == ["写明学生党聚餐首选"]
+
+def test_pinned_notes_persist(client):
+    shop_id = _create_test_shop(client)
+
+    get_resp = client.get(
+        f"/api/v1/shops/{shop_id}/profiles/xiaohongshu",
+        headers=auth_headers(client),
+    )
+    assert get_resp.status_code == 200
+    version = get_resp.json()["version"]
+
+    note = {"title": "人均80吃市井火锅", "content": "点单攻略看这条，照着吃不出错"}
+    put = client.put(
+        f"/api/v1/shops/{shop_id}/profiles/xiaohongshu",
+        json={"version": version, "pinned_notes": [note]},
+        headers=auth_headers(client),
+    )
+    assert put.status_code == 200
+    assert put.json()["pinned_notes"][0]["title"] == "人均80吃市井火锅"
+
+    get2 = client.get(
+        f"/api/v1/shops/{shop_id}/profiles/xiaohongshu",
+        headers=auth_headers(client),
+    )
+    assert get2.json()["pinned_notes"][0]["content"] == "点单攻略看这条，照着吃不出错"
+
+def test_profile_options_request_schema():
+    from pydantic import ValidationError
+
+    from app.schemas.profile import ProfileOptionsGenerateRequest
+
+    req = ProfileOptionsGenerateRequest(
+        kind="nickname", category="火锅", style="市井烟火", price_range="人均80"
+    )
+    assert req.kind == "nickname"
+
+    with pytest.raises(ValidationError):
+        ProfileOptionsGenerateRequest(
+            kind="avatar", category="火锅", style="市井烟火", price_range="人均80"
+        )

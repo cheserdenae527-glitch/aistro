@@ -6,7 +6,6 @@ from __future__ import annotations
 
 import uuid
 
-import httpx
 import pytest
 
 from app.services.amap_web import AmapWebError, _get_json, daily_quota_key, geocode

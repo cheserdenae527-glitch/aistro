@@ -48,6 +48,11 @@ class ImageOption(BaseModel):
 _EMOJI_PATTERN = regex.compile(r"\p{Extended_Pictographic}")
 
 
+class PinnedNote(BaseModel):
+    title: str = Field("", max_length=40)
+    content: str = Field("", max_length=200)
+
+
 class ProfileUpdate(BaseModel):
     """PUT /profiles — 保存草稿。version 强制。"""
 
@@ -55,6 +60,7 @@ class ProfileUpdate(BaseModel):
     bio: str | None = Field(None, max_length=100)
     avatar_gen_prompt: str | None = Field(None, max_length=1000)
     bg_gen_prompt: str | None = Field(None, max_length=1000)
+    pinned_notes: list["PinnedNote"] | None = None
     color_primary: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     color_secondary: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
     color_accent: str | None = Field(None, pattern=r"^#[0-9A-Fa-f]{6}$")
@@ -111,6 +117,7 @@ class ProfileResponse(BaseModel):
     ai_input_price: str | None = None
     ai_variants: dict | None = None
     health_check: dict | None = None
+    pinned_notes: list["PinnedNote"] | None = None
     bio_flagged: bool = False
     status: str
     version: int
@@ -211,6 +218,7 @@ class HealthCheckRequest(BaseModel):
     bio: str = ""
     avatar_prompt: str = ""
     bg_prompt: str = ""
+    pinned_notes: list["PinnedNote"] | None = None
     color_primary: str | None = None
     color_secondary: str | None = None
     color_accent: str | None = None
@@ -225,6 +233,64 @@ class HealthCheckResponse(BaseModel):
     weaknesses: list[str]
     suggestions: list[str]
     checked_at: datetime
+    snapshot: dict | None = None
+
+
+class PinnedNotesGenerateResponse(BaseModel):
+    notes: list[PinnedNote]
+
+
+class HealthRewriteRequest(BaseModel):
+    nickname: str = ""
+    bio: str = ""
+    pinned_notes: list["PinnedNote"] | None = None
+    weaknesses: list[str] = Field(default_factory=list, max_length=10)
+    suggestions: list[str] = Field(default_factory=list, max_length=10)
+    category: str = Field("", max_length=50)
+    style: str = Field("", max_length=200)
+    price_range: str = Field("", max_length=50)
+
+
+class HealthRewriteResponse(BaseModel):
+    nickname_options: list[str]
+    bio: str
+    pinned_notes: list[PinnedNote]
+    bio_flagged: bool = False
+
+
+class ProfileOptionsGenerateRequest(GenerateRequest):
+    kind: Literal["nickname", "bio"]
+
+
+class ProfileOptionsGenerateResponse(BaseModel):
+    options: list[str]
+
+
+class ProfileHistoryItem(BaseModel):
+    id: uuid.UUID
+    version: int
+    created_at: datetime
+    nickname: str | None = None
+    bio: str | None = None
+    pinned_notes: list[PinnedNote] | None = None
+    color_primary: str | None = None
+    avatar_set: bool = False
+    bg_set: bool = False
+
+
+class ImageJobCreateResponse(BaseModel):
+    job_id: uuid.UUID
+    status: str = "pending"
+
+
+class ImageJobResponse(BaseModel):
+    id: uuid.UUID
+    section: str
+    status: str
+    options: list[ImageOption] | None = None
+    error: str | None = None
+    created_at: datetime
+    finished_at: datetime | None = None
 
 
 class RemoveGalleryImageRequest(BaseModel):

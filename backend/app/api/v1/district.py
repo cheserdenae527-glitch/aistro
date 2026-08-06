@@ -324,16 +324,6 @@ async def get_snapshot_detail(
     poi_query = select(DistrictPoi).where(DistrictPoi.snapshot_id == snapshot.id)
     if not include_excluded:
         poi_query = poi_query.where(DistrictPoi.excluded_as_self.is_(False))
-    total = (
-        await db.execute(
-            select(func.count(DistrictPoi.id)).where(DistrictPoi.snapshot_id == snapshot.id)
-            if include_excluded
-            else select(func.count(DistrictPoi.id)).where(
-                DistrictPoi.snapshot_id == snapshot.id,
-                DistrictPoi.excluded_as_self.is_(False),
-            )
-        )
-    ).scalar() or 0
     result = await db.execute(
         poi_query.order_by(DistrictPoi.distance_m).offset((page - 1) * size).limit(size)
     )

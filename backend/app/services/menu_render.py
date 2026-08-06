@@ -232,7 +232,7 @@ def _render_a4(config: dict, asset_images: dict[str, bytes]) -> bytes:
 
 def render_menu(config: dict, asset_images: dict[str, bytes]) -> bytes:
     """纯函数渲染：config + asset_id -> bytes 的素材字典 -> 单页 PNG bytes。"""
-    template_id = config.get("template_id")
+    template_id = str(config.get("template_id") or "")
     if template_id == "xhs_menu_01":
         return _render_xhs(config, asset_images)
     if template_id == "a4_menu_01":
@@ -242,7 +242,7 @@ def render_menu(config: dict, asset_images: dict[str, bytes]) -> bytes:
 
 def render_menu_pages(config: dict, asset_images: dict[str, bytes]) -> list[bytes]:
     """按页渲染：XHS 每页 6 个菜品、A4 每页 12 个，返回多页 PNG。"""
-    template_id = config.get("template_id")
+    template_id = str(config.get("template_id") or "")
     items = config.get("items") or []
     page_size = {
         "xhs_menu_01": XHS_PAGE_ITEMS,

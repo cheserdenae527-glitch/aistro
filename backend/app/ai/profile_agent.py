@@ -73,8 +73,9 @@ _HEALTH_SYSTEM_PROMPT = """你是小红书主页体检师。判断用户点进�
 3. 具体结果：是否讲清能帮用户解决什么
 4. 信任材料：经验、作品、方法、边界，但绝不编造背书
 5. 转化动作：用户是否知道下一步该关注、评论、私信还是看置顶
-6. 语气一致性：昵称、简介、头像/背景描述和配色是否统一
-7. 视觉表达：配色是否协调、头像和背景图描述是否符合定位
+6. 置顶结构：置顶笔记标题是否承接新用户最关心的问题，是否包含具体结果和下一步
+7. 语气一致性：昵称、简介、置顶笔记、头像/背景描述和配色是否统一
+8. 视觉表达：配色是否协调、头像和背景图描述是否符合定位
 
 简介原则：短、具体、可判断，优先包含我是谁/做什么、帮哪类人、解决什么问题、通过什么方式、下一步动作。避免抽象价值观堆叠、过度承诺、无信息量自夸、只写情绪、同时服务太多人。
 
@@ -218,6 +219,7 @@ async def run_profile_health_check(
     bio: str,
     avatar_prompt: str,
     bg_prompt: str,
+    pinned_notes: list | None,
     color_primary: str | None,
     color_secondary: str | None,
     color_accent: str | None,
@@ -226,6 +228,11 @@ async def run_profile_health_check(
     has_bg: bool,
 ) -> dict:
     """按主页体检 7 维度分析当前预览内容，返回优点/不足/建议。"""
+    pinned_notes_text = "；".join(
+        f"{n.get('title', '')}：{n.get('content', '')}"
+        for n in (pinned_notes or [])
+        if isinstance(n, dict) and (n.get("title") or n.get("content"))
+    ) or "（空）"
     user_msg = f"""当前主页预览内容：
 - 昵称：{nickname or "（空）"}
 - 简介：{bio or "（空）"}
@@ -233,6 +240,7 @@ async def run_profile_health_check(
 - 背景图片：{"已设置" if has_bg else "未设置"}
 - 头像生图提示词：{avatar_prompt or "（空）"}
 - 背景图提示词：{bg_prompt or "（空）"}
+- 置顶笔记：{pinned_notes_text}
 - 主色：{color_primary or "（空）"}
 - 辅色：{color_secondary or "（空）"}
 - 点缀色：{color_accent or "（空）"}
@@ -274,3 +282,215 @@ async def run_profile_health_check(
         "weaknesses": _clean_list("weaknesses"),
         "suggestions": _clean_list("suggestions"),
     }
+_PINNED_NOTES_SYSTEM_PROMPT = """你是小红书主页装修设计师。为餐饮门店设计 3 条置顶笔记候选。
+
+置顶笔记原则：
+1. 承接新用户最关心的问题：这家店卖什么、为什么值得来、怎么找到/怎么下单
+2. 每条都包含具体结果和下一步动作，禁止空泛宣传
+3. 语气与昵称、简介保持一致
+4. title <= 20 字符，content <= 80 字符，全部中文
+5. 只输出 JSON（无代码块标记）：{"notes":[{"title":"...","content":"..."}]}"""
+
+
+async def generate_pinned_notes(
+    category: str, style: str, price_range: str
+) -> list[dict]:
+    """生成 3 条置顶笔记候选。"""
+    user_msg = (
+        f"门店信息：\n- 品类：{category}\n- 风格关键词：{style}\n- 人均价格：{price_range}"
+    )
+    response = await _get_client().chat.completions.create(
+        model=settings.DEEPSEEK_MODEL,
+        messages=[
+            {"role": "system", "content": _PINNED_NOTES_SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ],
+        temperature=0.8,
+        max_tokens=600,
+    )
+    raw = response.choices[0].message.content or "{}"
+    clean = _JSON_FENCE_RE.sub("", raw).strip()
+    try:
+        data = json.loads(clean)
+    except json.JSONDecodeError:
+        match = std_re.search(r"\{[\s\S]*\}", clean)
+        data = json.loads(match.group(0)) if match else {}
+
+    notes: list[dict] = []
+    for n in (data.get("notes") or [])[:3]:
+        if not isinstance(n, dict):
+            continue
+        notes.append(
+            {
+                "title": str(n.get("title") or "").strip()[:40],
+                "content": str(n.get("content") or "").strip()[:200],
+            }
+        )
+    return notes
+
+
+_HEALTH_REWRITE_SYSTEM_PROMPT = """你是小红书主页装修设计师，根据体检结论把主页改得更好。
+
+要求：
+1. 昵称：具体、有辨识度，第一眼说明卖什么或帮谁，给出 3 个候选，<= 20 字符，不允许 emoji
+2. 简介：短、具体、可判断，优先包含我是谁/做什么、帮哪类人、解决什么问题、通过什么方式、下一步动作，<= 100 字符（允许 emoji）
+3. 置顶笔记：2-3 条，承接新用户最关心的问题，title <= 20 字符，content <= 80 字符
+4. 只基于用户提供的信息改写，不编造背书，不承诺涨粉、成交或平台算法结果
+5. 只输出 JSON（无代码块标记）：{"nickname_options":["a","b","c"],"bio":"...","pinned_notes":[{"title":"...","content":"..."}]}"""
+
+
+async def rewrite_by_health_check(
+    nickname: str,
+    bio: str,
+    pinned_notes: list | None,
+    weaknesses: list[str],
+    suggestions: list[str],
+    category: str,
+    style: str,
+    price_range: str,
+) -> dict:
+    """按主页体检不足和建议重写昵称、简介和置顶笔记。"""
+    pinned_notes_text = "；".join(
+        f"{n.get('title', '')}：{n.get('content', '')}"
+        for n in (pinned_notes or [])
+        if isinstance(n, dict) and (n.get("title") or n.get("content"))
+    ) or "（空）"
+    user_msg = f"""当前主页内容：
+- 昵称：{nickname or "（空）"}
+- 简介：{bio or "（空）"}
+- 置顶笔记：{pinned_notes_text}
+
+体检结论中的不足：
+{chr(10).join("- " + w for w in weaknesses) or "（空）"}
+
+体检建议：
+{chr(10).join("- " + s for s in suggestions) or "（空）"}
+
+门店信息：
+- 品类：{category or "（空）"}
+- 风格关键词：{style or "（空）"}
+- 人均价格：{price_range or "（空）"}"""
+
+    response = await _get_client().chat.completions.create(
+        model=settings.DEEPSEEK_MODEL,
+        messages=[
+            {"role": "system", "content": _HEALTH_REWRITE_SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ],
+        temperature=0.6,
+        max_tokens=900,
+    )
+    raw = response.choices[0].message.content or "{}"
+    clean = _JSON_FENCE_RE.sub("", raw).strip()
+    try:
+        data = json.loads(clean)
+    except json.JSONDecodeError:
+        match = std_re.search(r"\{[\s\S]*\}", clean)
+        data = json.loads(match.group(0)) if match else {}
+
+    nickname_options = [
+        str(x).strip()[:20]
+        for x in (data.get("nickname_options") or [])
+        if str(x).strip() and not contains_blocked(str(x))
+    ][:3]
+
+    bio_raw = str(data.get("bio") or "").strip()[:100]
+    bio_clean, bio_flagged = filter_text(bio_raw)
+
+    notes: list[dict] = []
+    for n in (data.get("pinned_notes") or [])[:3]:
+        if not isinstance(n, dict):
+            continue
+        title = str(n.get("title") or "").strip()[:40]
+        content = str(n.get("content") or "").strip()[:200]
+        if title or content:
+            notes.append({"title": title, "content": content})
+
+    return {
+        "nickname_options": nickname_options,
+        "bio": bio_clean,
+        "pinned_notes": notes,
+        "bio_flagged": bio_flagged,
+    }
+_NICKNAME_OPTIONS_SYSTEM_PROMPT = """你是小红书主页装修设计师。为餐饮门店生成 3 个昵称候选。
+
+要求：
+1. 具体、有辨识度，第一眼说明卖什么或帮谁，避免抽象词、堆叠词、夸张承诺
+2. 与门店品类、风格关键词、人均价格匹配，语气统一
+3. 每个候选 <= 20 字符，不允许 emoji，全部中文
+4. 只输出 JSON（无代码块标记）：{"options":["a","b","c"]}"""
+
+
+async def generate_nickname_options(
+    category: str, style: str, price_range: str
+) -> list[str]:
+    """生成 3 个昵称候选。"""
+    user_msg = (
+        f"门店信息：\n- 品类：{category}\n- 风格关键词：{style}\n- 人均价格：{price_range}"
+    )
+    response = await _get_client().chat.completions.create(
+        model=settings.DEEPSEEK_MODEL,
+        messages=[
+            {"role": "system", "content": _NICKNAME_OPTIONS_SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ],
+        temperature=0.9,
+        max_tokens=400,
+    )
+    raw = response.choices[0].message.content or "{}"
+    clean = _JSON_FENCE_RE.sub("", raw).strip()
+    try:
+        data = json.loads(clean)
+    except json.JSONDecodeError:
+        match = std_re.search(r"\{[\s\S]*\}", clean)
+        data = json.loads(match.group(0)) if match else {}
+
+    return [
+        str(x).strip()[:20]
+        for x in (data.get("options") or [])
+        if str(x).strip() and not contains_blocked(str(x))
+    ][:3]
+
+
+_BIO_OPTIONS_SYSTEM_PROMPT = """你是小红书主页装修设计师。为餐饮门店生成 3 条简介候选。
+
+要求：
+1. 短、具体、可判断，优先包含“我是谁/做什么、帮哪类人、解决什么问题、通过什么方式、下一步动作”
+2. 避免抽象价值观堆叠、过度承诺、无信息量自夸、只写情绪、同时服务太多人
+3. 每条 <= 100 字符（允许 emoji 排版），与门店品类、风格关键词、人均价格匹配
+4. 只输出 JSON（无代码块标记）：{"options":["a","b","c"]}"""
+
+
+async def generate_bio_options(
+    category: str, style: str, price_range: str
+) -> list[str]:
+    """生成 3 条简介候选，剔除命中敏感词的内容。"""
+    user_msg = (
+        f"门店信息：\n- 品类：{category}\n- 风格关键词：{style}\n- 人均价格：{price_range}"
+    )
+    response = await _get_client().chat.completions.create(
+        model=settings.DEEPSEEK_MODEL,
+        messages=[
+            {"role": "system", "content": _BIO_OPTIONS_SYSTEM_PROMPT},
+            {"role": "user", "content": user_msg},
+        ],
+        temperature=0.9,
+        max_tokens=600,
+    )
+    raw = response.choices[0].message.content or "{}"
+    clean = _JSON_FENCE_RE.sub("", raw).strip()
+    try:
+        data = json.loads(clean)
+    except json.JSONDecodeError:
+        match = std_re.search(r"\{[\s\S]*\}", clean)
+        data = json.loads(match.group(0)) if match else {}
+
+    options: list[str] = []
+    for x in (data.get("options") or []):
+        text = str(x).strip()[:100]
+        if not text or contains_blocked(text):
+            continue
+        options.append(text)
+        if len(options) >= 3:
+            break
+    return options

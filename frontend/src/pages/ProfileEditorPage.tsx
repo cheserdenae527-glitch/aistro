@@ -8,13 +8,13 @@ import {
   EyeOutlined, ThunderboltOutlined, UploadOutlined, CopyOutlined,
   SaveOutlined, ScissorOutlined, PictureOutlined, EditOutlined,
   CheckOutlined, CloseOutlined, ZoomInOutlined, DeleteOutlined,
-  AuditOutlined,
+  AuditOutlined, PlusOutlined, HistoryOutlined,
 } from "@ant-design/icons";
 import type { Color } from "antd/es/color-picker";
 import CropModal from "../components/CropModal";
 import {
   profileService, type AiVariant,
-  type ColorSchemePreset, type HealthCheckResult, type ImageOption, type StyleAnalysis,
+  type ColorSchemePreset, type HealthCheckResult, type ImageOption, type PinnedNote, type ProfileHistoryItem, type StyleAnalysis,
 } from "../services/profiles";
 
 const { TextArea } = Input;
@@ -40,6 +40,7 @@ interface EditorState {
   bgOriginalUrl: string | null;
   bgPrompt: string;
   bioFlagged: boolean;
+  pinnedNotes: PinnedNote[];
 }
 
 function sameObject(a: string | null | undefined, b: string | null | undefined): boolean {
@@ -296,6 +297,17 @@ function PlatformPreview({ state }: { state: EditorState }) {
           <span>0 关注</span>
           <span>0 粉丝</span>
         </div>
+        {state.pinnedNotes.filter((n) => n.title || n.content).slice(0, 3).map((n, i) => (
+          <div key={i} style={{ margin: "0 16px 12px", padding: 8, borderRadius: 8, border: "1px solid #f0f0f0", display: "flex", gap: 8 }}>
+            <div style={{ width: 44, height: 44, borderRadius: 6, flex: "0 0 44px", background: `linear-gradient(135deg, ${state.colorPrimary}, ${state.colorSecondary})`, display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontWeight: 600, fontSize: 12 }}>
+              {state.nickname ? state.nickname.slice(0, 1) : "笔"}
+            </div>
+            <div style={{ minWidth: 0 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: state.colorText, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n.title || "置顶笔记"}</div>
+              <div style={{ fontSize: 11, color: "#999", marginTop: 2, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}>{n.content || "..."}</div>
+            </div>
+          </div>
+        ))}
       </div>
     </div>
   );
@@ -319,6 +331,7 @@ export default function ProfileEditorPage() {
     avatarUrl: null, avatarOriginalUrl: null, avatarPrompt: "",
     bgImageUrl: null, bgOriginalUrl: null, bgPrompt: "",
     bioFlagged: false,
+    pinnedNotes: [],
   });
 
   // ---- AI generation ----
@@ -348,6 +361,18 @@ export default function ProfileEditorPage() {
   const [cropping, setCropping] = useState(false);
   const [healthResult, setHealthResult] = useState<HealthCheckResult | null>(null);
   const [healthLoading, setHealthLoading] = useState(false);
+  const [pinnedNotes, setPinnedNotes] = useState<PinnedNote[]>([]);
+  const [pinnedNotesLoading, setPinnedNotesLoading] = useState(false);
+  const [rewriteLoading, setRewriteLoading] = useState(false);
+  const [rewriteNicknameOptions, setRewriteNicknameOptions] = useState<string[]>([]);
+  const [nicknameOptions, setNicknameOptions] = useState<string[]>([]);
+  const [bioOptions, setBioOptions] = useState<string[]>([]);
+  const [optionsLoading, setOptionsLoading] = useState<"nickname" | "bio" | null>(null);
+  const [baseline, setBaseline] = useState("");
+  const [historyOpen, setHistoryOpen] = useState(false);
+  const [historyItems, setHistoryItems] = useState<ProfileHistoryItem[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [restoringHistoryId, setRestoringHistoryId] = useState<string | null>(null);
 
   // ---- color presets ----
   const [colorPresets, setColorPresets] = useState<ColorSchemePreset[]>([]);
@@ -377,10 +402,23 @@ export default function ProfileEditorPage() {
         bgOriginalUrl: p.bg_original_url,
         bgPrompt: p.bg_gen_prompt || "",
         bioFlagged: p.bio_flagged,
+        pinnedNotes: p.pinned_notes || [],
       });
       setAvatarOptions(p.avatar_options || []);
       setBgOptions(p.bg_options || []);
       setHealthResult(p.health_check || null);
+      setPinnedNotes(p.pinned_notes || []);
+      setBaseline(JSON.stringify({
+        nickname: p.nickname || "",
+        bio: p.bio || "",
+        avatarPrompt: p.avatar_gen_prompt || "",
+        bgPrompt: p.bg_gen_prompt || "",
+        pinnedNotes: p.pinned_notes || [],
+        colorPrimary: p.color_primary || "#C93828",
+        colorSecondary: p.color_secondary || "#FFF0EE",
+        colorAccent: p.color_accent || "#A82015",
+        colorText: p.color_text || "#2A0A08",
+      }));
       if (p.ai_variants?.variants) {
         setVariants(p.ai_variants.variants.filter((v) => !v.filtered));
       }
@@ -396,6 +434,41 @@ export default function ProfileEditorPage() {
     profileService.getColorSchemes().then((res) => setColorPresets(res.data)).catch(() => {});
   }, [loadProfile]);
 
+  const currentDirtyKey = JSON.stringify({
+    nickname: state.nickname,
+    bio: state.bio,
+    avatarPrompt: state.avatarPrompt,
+    bgPrompt: state.bgPrompt,
+    pinnedNotes: state.pinnedNotes,
+    colorPrimary: state.colorPrimary,
+    colorSecondary: state.colorSecondary,
+    colorAccent: state.colorAccent,
+    colorText: state.colorText,
+  });
+  const dirty = baseline !== "" && baseline !== currentDirtyKey;
+
+  const healthStale = !!healthResult?.snapshot && (
+    state.nickname !== healthResult.snapshot.nickname ||
+    state.bio !== healthResult.snapshot.bio ||
+    state.avatarPrompt !== healthResult.snapshot.avatar_prompt ||
+    state.bgPrompt !== healthResult.snapshot.bg_prompt ||
+    state.colorPrimary !== healthResult.snapshot.color_primary ||
+    state.colorSecondary !== healthResult.snapshot.color_secondary ||
+    state.colorAccent !== healthResult.snapshot.color_accent ||
+    state.colorText !== healthResult.snapshot.color_text ||
+    JSON.stringify(state.pinnedNotes) !== JSON.stringify(healthResult.snapshot.pinned_notes || [])
+  );
+
+  useEffect(() => {
+    if (!dirty) return;
+    const handler = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", handler);
+    return () => window.removeEventListener("beforeunload", handler);
+  }, [dirty]);
+
   // ============================================================
   // Save draft
   // ============================================================
@@ -408,6 +481,7 @@ export default function ProfileEditorPage() {
         bio: state.bio,
         avatar_gen_prompt: state.avatarPrompt,
         bg_gen_prompt: state.bgPrompt,
+        pinned_notes: state.pinnedNotes,
         color_primary: state.colorPrimary,
         color_secondary: state.colorSecondary,
         color_accent: state.colorAccent,
@@ -418,6 +492,17 @@ export default function ProfileEditorPage() {
       });
       setVersion(res.data.version);
       setState((s) => ({ ...s, bioFlagged: res.data.bio_flagged }));
+      setBaseline(JSON.stringify({
+        nickname: state.nickname,
+        bio: state.bio,
+        avatarPrompt: state.avatarPrompt,
+        bgPrompt: state.bgPrompt,
+        pinnedNotes: state.pinnedNotes,
+        colorPrimary: state.colorPrimary,
+        colorSecondary: state.colorSecondary,
+        colorAccent: state.colorAccent,
+        colorText: state.colorText,
+      }));
       message.success("保存成功");
     } catch (e: unknown) {
       const err = e as { response?: { status?: number; data?: { detail?: string } } };
@@ -538,6 +623,17 @@ export default function ProfileEditorPage() {
     }, 1000);
   };
 
+  const waitForJob = async (jobId: string) => {
+    for (let i = 0; i < 120; i += 1) {
+      await new Promise((r) => setTimeout(r, 3000));
+      const res = await profileService.getImageJob(shopId, plat, jobId);
+      const job = res.data;
+      if (job.status === "success") return job;
+      if (job.status === "failed") throw new Error(job.error || "生图失败");
+    }
+    throw new Error("生图超时，请稍后刷新查看候选图");
+  };
+
   const handleGenImage = async (type: "avatar" | "bg") => {
     if (imgRateLimitCD > 0) return;
     const prompt = type === "avatar" ? state.avatarPrompt : state.bgPrompt;
@@ -545,21 +641,32 @@ export default function ProfileEditorPage() {
 
     const setter = type === "avatar" ? setGenAvatarLoading : setGenBgLoading;
     setter(true);
+    const msgKey = `img-${type}`;
     try {
-      const fn = type === "avatar" ? profileService.generateAvatar : profileService.generateBgImage;
-      const res = await fn(shopId, plat, prompt);
+      const createRes = await profileService.createImageJob(shopId, plat, type, prompt);
+      message.loading({
+        key: msgKey,
+        content: `${type === "avatar" ? "头像" : "背景图"}生成中，约 1-2 分钟，可先做其他操作`,
+        duration: 0,
+      });
+      const job = await waitForJob(createRes.data.job_id);
+      const options = job.options || [];
+      const url = options[0]?.url || "";
       const urlKey = type === "avatar" ? "avatarOriginalUrl" : "bgOriginalUrl";
       const urlKey2 = type === "avatar" ? "avatarUrl" : "bgImageUrl";
-      setState((s) => ({ ...s, [urlKey]: res.data.url, [urlKey2]: res.data.url }));
-      if (type === "avatar") setAvatarOptions(res.data.options || []);
-      else setBgOptions(res.data.options || []);
-      message.success(`${type === "avatar" ? "头像" : "背景图"}生成成功`);
+      setState((s) => ({ ...s, [urlKey]: url, [urlKey2]: url }));
+      if (type === "avatar") setAvatarOptions(options);
+      else setBgOptions(options);
+      message.success({ key: msgKey, content: `${type === "avatar" ? "头像" : "背景图"}生成成功` });
     } catch (e: unknown) {
-      const err = e as { response?: { status?: number; data?: { detail?: string } } };
+      message.destroy(msgKey);
+      const err = e as { response?: { status?: number; data?: { detail?: string } }; message?: string };
       if (err.response?.status === 429) {
         startImgRateLimitCountdown();
+      } else if (err.response?.status === 422) {
+        message.error("提示词包含敏感词，请修改后重试");
       } else {
-        message.error(`${type === "avatar" ? "头像" : "背景图"}生成失败`);
+        message.error(err.message || `${type === "avatar" ? "头像" : "背景图"}生成失败`);
       }
     } finally {
       setter(false);
@@ -591,25 +698,32 @@ export default function ProfileEditorPage() {
 
     const setter = type === "avatar" ? setGenAvatarRefLoading : setGenBgRefLoading;
     setter(true);
+    const msgKey = `img-ref-${type}`;
     try {
-      const fn = type === "avatar"
-        ? profileService.generateAvatarWithRef
-        : profileService.generateBgImageWithRef;
-      const res = await fn(shopId, plat, prompt, refFile);
+      const createRes = await profileService.createImageJobWithRef(shopId, plat, type, prompt, refFile);
+      message.loading({
+        key: msgKey,
+        content: `${type === "avatar" ? "头像" : "背景图"}锚点生图进行中，约 1-2 分钟`,
+        duration: 0,
+      });
+      const job = await waitForJob(createRes.data.job_id);
+      const options = job.options || [];
+      const url = options[0]?.url || "";
       const urlKey = type === "avatar" ? "avatarOriginalUrl" : "bgOriginalUrl";
       const urlKey2 = type === "avatar" ? "avatarUrl" : "bgImageUrl";
-      setState((s) => ({ ...s, [urlKey]: res.data.url, [urlKey2]: res.data.url }));
-      if (type === "avatar") setAvatarOptions(res.data.options || []);
-      else setBgOptions(res.data.options || []);
-      message.success(`${type === "avatar" ? "头像" : "背景图"}锚点生图成功`);
+      setState((s) => ({ ...s, [urlKey]: url, [urlKey2]: url }));
+      if (type === "avatar") setAvatarOptions(options);
+      else setBgOptions(options);
+      message.success({ key: msgKey, content: `${type === "avatar" ? "头像" : "背景图"}锚点生图成功` });
     } catch (e: unknown) {
-      const err = e as { response?: { status?: number; data?: { detail?: string } } };
+      message.destroy(msgKey);
+      const err = e as { response?: { status?: number; data?: { detail?: string } }; message?: string };
       if (err.response?.status === 429) {
         startImgRateLimitCountdown();
       } else if (err.response?.status === 422) {
         message.error("提示词包含敏感词，请修改后重试");
       } else {
-        message.error(`${type === "avatar" ? "头像" : "背景图"}锚点生图失败`);
+        message.error(err.message || `${type === "avatar" ? "头像" : "背景图"}锚点生图失败`);
       }
     } finally {
       setter(false);
@@ -681,6 +795,7 @@ export default function ProfileEditorPage() {
         bio: state.bio,
         avatar_prompt: state.avatarPrompt,
         bg_prompt: state.bgPrompt,
+        pinned_notes: state.pinnedNotes,
         color_primary: state.colorPrimary,
         color_secondary: state.colorSecondary,
         color_accent: state.colorAccent,
@@ -704,6 +819,145 @@ export default function ProfileEditorPage() {
     } finally {
       setHealthLoading(false);
     }
+  };
+
+  const updatePinnedNote = (index: number, key: "title" | "content", value: string) => {
+    setPinnedNotes((prev) => prev.map((n, i) => (i === index ? { ...n, [key]: value } : n)));
+  };
+
+  const removePinnedNote = (index: number) => {
+    setPinnedNotes((prev) => prev.filter((_, i) => i !== index));
+  };
+
+  const handleGeneratePinnedNotes = async () => {
+    if (rateLimitCD > 0) return;
+    setPinnedNotesLoading(true);
+    try {
+      const res = await profileService.generatePinnedNotes(shopId, plat, {
+        category: genCategory,
+        style: genStyle,
+        price_range: genPrice,
+      });
+      const notes = res.data.notes || [];
+      setPinnedNotes((prev) => [...prev, ...notes].slice(0, 3));
+      message.success(`已生成 ${notes.length} 条置顶候选`);
+    } catch (e: unknown) {
+      const err = e as { response?: { status?: number; data?: { detail?: string } } };
+      if (err.response?.status === 429) {
+        setRateLimitCD(20);
+        message.warning("操作频繁，请 20 秒后重试");
+        const timer = setInterval(() => {
+          setRateLimitCD((c) => { if (c <= 1) { clearInterval(timer); return 0; } return c - 1; });
+        }, 1000);
+      } else {
+        message.error("置顶笔记生成失败，请重试");
+      }
+    } finally {
+      setPinnedNotesLoading(false);
+    }
+  };
+
+  const handleRewriteByHealthCheck = async () => {
+    if (!healthResult || rateLimitCD > 0) return;
+    setRewriteLoading(true);
+    try {
+      const res = await profileService.rewriteByHealthCheck(shopId, plat, {
+        nickname: state.nickname,
+        bio: state.bio,
+        pinned_notes: state.pinnedNotes,
+        weaknesses: healthResult.weaknesses,
+        suggestions: healthResult.suggestions,
+        category: genCategory,
+        style: genStyle,
+        price_range: genPrice,
+      });
+      setRewriteNicknameOptions(res.data.nickname_options || []);
+      setState((s) => ({ ...s, bio: res.data.bio, bioFlagged: res.data.bio_flagged }));
+      if (res.data.pinned_notes.length) setPinnedNotes(res.data.pinned_notes);
+      message.success("已按体检建议更新简介和置顶笔记，昵称候选可点选");
+    } catch (e: unknown) {
+      const err = e as { response?: { status?: number; data?: { detail?: string } } };
+      if (err.response?.status === 429) {
+        setRateLimitCD(20);
+        message.warning("操作频繁，请 20 秒后重试");
+        const timer = setInterval(() => {
+          setRateLimitCD((c) => { if (c <= 1) { clearInterval(timer); return 0; } return c - 1; });
+        }, 1000);
+      } else {
+        message.error("应用建议失败，请重试");
+      }
+    } finally {
+      setRewriteLoading(false);
+    }
+  };
+
+  const handleGenerateOptions = async (kind: "nickname" | "bio") => {
+    if (rateLimitCD > 0) return;
+    setOptionsLoading(kind);
+    try {
+      const res = await profileService.generateProfileOptions(shopId, plat, kind, {
+        category: genCategory,
+        style: genStyle,
+        price_range: genPrice,
+      });
+      const options = res.data.options || [];
+      if (kind === "nickname") {
+        setNicknameOptions(options);
+        message.success(options.length ? "昵称候选已生成" : "昵称候选未通过内容审核");
+      } else {
+        setBioOptions(options);
+        message.success(options.length ? "简介候选已生成" : "简介候选未通过内容审核");
+      }
+    } catch (e: unknown) {
+      const err = e as { response?: { status?: number; data?: { detail?: string } } };
+      if (err.response?.status === 429) {
+        setRateLimitCD(20);
+        message.warning("操作频繁，请 20 秒后重试");
+        const timer = setInterval(() => {
+          setRateLimitCD((c) => { if (c <= 1) { clearInterval(timer); return 0; } return c - 1; });
+        }, 1000);
+      } else {
+        message.error(kind === "nickname" ? "昵称候选生成失败" : "简介候选生成失败");
+      }
+    } finally {
+      setOptionsLoading(null);
+    }
+  };
+
+  const openHistory = async () => {
+    setHistoryOpen(true);
+    setHistoryLoading(true);
+    try {
+      const res = await profileService.getHistory(shopId, plat);
+      setHistoryItems(res.data || []);
+    } catch {
+      message.error("历史版本加载失败");
+    } finally {
+      setHistoryLoading(false);
+    }
+  };
+
+  const restoreHistory = (item: ProfileHistoryItem) => {
+    Modal.confirm({
+      title: `恢复 v${item.version} 版本`,
+      content: `将用 ${new Date(item.created_at).toLocaleString("zh-CN")} 保存的内容覆盖当前草稿，确定恢复吗？`,
+      okText: "恢复",
+      cancelText: "取消",
+      onOk: async () => {
+        setRestoringHistoryId(item.id);
+        try {
+          await profileService.restoreHistory(shopId, plat, item.id);
+          message.success("已恢复，正在刷新");
+          setHistoryOpen(false);
+          await loadProfile();
+          await openHistory();
+        } catch {
+          message.error("恢复失败");
+        } finally {
+          setRestoringHistoryId(null);
+        }
+      },
+    });
   };
 
   // ============================================================
@@ -938,11 +1192,16 @@ export default function ProfileEditorPage() {
               maxLength={20}
               suffix={<Text type="secondary">{state.nickname.length}/20</Text>}
             />
-            {state.nickname.length > 0 && (
-              <div style={{ marginTop: 8 }}>
-                <Text type="secondary" style={{ fontSize: 12 }}>候选昵称：</Text>
+            <Space style={{ marginTop: 8 }}>
+              <Text type="secondary" style={{ fontSize: 12 }}>候选昵称：</Text>
+              <Button size="small" icon={<EditOutlined />} loading={optionsLoading === "nickname"} disabled={rateLimitCD > 0} onClick={() => handleGenerateOptions("nickname")}>
+                AI 建议
+              </Button>
+            </Space>
+            {(state.nickname.length > 0 || nicknameOptions.length > 0) && (
+              <div style={{ marginTop: 4 }}>
                 <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
-                  {[...new Set(variants.flatMap((v) => v.nickname_options))].slice(0, 12).map((n, i) => (
+                  {[...new Set([...nicknameOptions, ...variants.flatMap((v) => v.nickname_options)])].slice(0, 12).map((n, i) => (
                     <Tag
                       key={i}
                       color={n === state.nickname ? "blue" : undefined}
@@ -966,10 +1225,64 @@ export default function ProfileEditorPage() {
               rows={3}
               placeholder="输入简介文案（支持 emoji）"
             />
-            <div style={{ marginTop: 4, display: "flex", justifyContent: "space-between" }}>
-              <Text type="secondary" style={{ fontSize: 12 }}>{state.bio.length}/100</Text>
-              {state.bioFlagged && <Tag color="error">内容待审核</Tag>}
+            <div style={{ marginTop: 4, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <Space>
+                <Text type="secondary" style={{ fontSize: 12 }}>{state.bio.length}/100</Text>
+                {state.bioFlagged && <Tag color="error">内容待审核</Tag>}
+              </Space>
+              <Button size="small" icon={<EditOutlined />} loading={optionsLoading === "bio"} disabled={rateLimitCD > 0} onClick={() => handleGenerateOptions("bio")}>
+                AI 建议
+              </Button>
             </div>
+            {bioOptions.length > 0 && (
+              <div style={{ marginTop: 8 }}>
+                <Text type="secondary" style={{ fontSize: 12 }}>简介候选：</Text>
+                {bioOptions.map((b, i) => (
+                  <div
+                    key={i}
+                    onClick={() => setState((s) => ({ ...s, bio: b }))}
+                    style={{ marginTop: 4, padding: "6px 8px", borderRadius: 6, border: "1px solid #eee", cursor: "pointer", fontSize: 12, whiteSpace: "pre-wrap" }}
+                  >
+                    {b}
+                  </div>
+                ))}
+              </div>
+            )}
+          </Card>
+
+          {/* Pinned Notes */}
+          <Card title="置顶笔记" size="small" style={{ marginBottom: 16 }}>
+            {pinnedNotes.map((note, i) => (
+              <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8, alignItems: "flex-start" }}>
+                <div style={{ flex: 1 }}>
+                  <Input
+                    placeholder="置顶标题（20 字内）"
+                    maxLength={20}
+                    value={note.title}
+                    onChange={(e) => updatePinnedNote(i, "title", e.target.value)}
+                  />
+                  <Input
+                    placeholder="内容（80 字内）"
+                    maxLength={80}
+                    style={{ marginTop: 4 }}
+                    value={note.content}
+                    onChange={(e) => updatePinnedNote(i, "content", e.target.value)}
+                  />
+                </div>
+                <Button type="text" danger icon={<DeleteOutlined />} onClick={() => removePinnedNote(i)} />
+              </div>
+            ))}
+            <Space wrap style={{ marginTop: 4 }}>
+              <Button size="small" icon={<PlusOutlined />} onClick={() => setPinnedNotes((s) => [...s, { title: "", content: "" }])}>
+                添加置顶
+              </Button>
+              <Button size="small" icon={<EditOutlined />} loading={pinnedNotesLoading} onClick={handleGeneratePinnedNotes}>
+                AI 生成候选
+              </Button>
+            </Space>
+            <Text type="secondary" style={{ fontSize: 12, display: "block", marginTop: 6 }}>
+              最多 3 条，展示在小红书预览下方
+            </Text>
           </Card>
 
           {/* Avatar */}
@@ -1123,6 +1436,9 @@ export default function ProfileEditorPage() {
             <Button icon={<CopyOutlined />} onClick={handleCopyAll} size="large">
               一键复制全部文案
             </Button>
+            <Button icon={<HistoryOutlined />} onClick={openHistory} size="large">
+              历史版本
+            </Button>
           </Space>
         </Col>
 
@@ -1168,9 +1484,26 @@ export default function ProfileEditorPage() {
                   >
                     {rateLimitCD > 0 ? `${rateLimitCD}s 后重试` : "体检当前预览"}
                   </Button>
+                  {healthResult && (
+                    <Button
+                      size="small"
+                      type="primary"
+                      icon={<CheckOutlined />}
+                      loading={rewriteLoading}
+                      disabled={rateLimitCD > 0}
+                      onClick={handleRewriteByHealthCheck}
+                    >
+                      按建议优化
+                    </Button>
+                  )}
                 </div>
                 {healthResult && !healthLoading && (
                   <div style={{ fontSize: 12, color: "#555", lineHeight: 1.7 }}>
+                    {healthStale && (
+                      <Text type="warning" style={{ fontSize: 12, display: "block", marginBottom: 6 }}>
+                        内容已修改，建议重新体检
+                      </Text>
+                    )}
                     <div style={{ padding: "8px 10px", background: "#f6f8ff", borderRadius: 6, marginBottom: 8 }}>
                       <Text strong style={{ fontSize: 12 }}>第一眼判断：</Text>
                       <span>{healthResult.first_impression}</span>
@@ -1178,6 +1511,18 @@ export default function ProfileEditorPage() {
                     <HealthCheckBlock title="优点" color="#389e0d" items={healthResult.strengths} />
                     <HealthCheckBlock title="不足" color="#d4380d" items={healthResult.weaknesses} />
                     <HealthCheckBlock title="建议" color="#1677ff" items={healthResult.suggestions} />
+                    {rewriteNicknameOptions.length > 0 && (
+                      <div style={{ marginTop: 8 }}>
+                        <Text strong style={{ fontSize: 12 }}>优化昵称候选：</Text>
+                        <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 4 }}>
+                          {rewriteNicknameOptions.map((n, i) => (
+                            <Tag key={i} style={{ cursor: "pointer" }} color={n === state.nickname ? "blue" : undefined} onClick={() => setState((s) => ({ ...s, nickname: n }))}>
+                              {n}
+                            </Tag>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                     {healthResult.checked_at && (
                       <Text type="secondary" style={{ fontSize: 11, display: "block", marginTop: 6 }}>
                         体检时间：{new Date(healthResult.checked_at).toLocaleString("zh-CN")}
@@ -1243,6 +1588,44 @@ export default function ProfileEditorPage() {
           if (cropTarget) handleCropConfirm(cropTarget.type, dataUrl);
         }}
       />
+
+      {/* 历史版本 */}
+      <Modal
+        open={historyOpen}
+        title="历史版本"
+        onCancel={() => setHistoryOpen(false)}
+        footer={null}
+        width={640}
+      >
+        <Spin spinning={historyLoading}>
+          {historyItems.length === 0 && !historyLoading && (
+            <Text type="secondary">暂无历史版本，保存草稿后自动生成</Text>
+          )}
+          <div style={{ maxHeight: 420, overflow: "auto" }}>
+            {historyItems.map((item) => (
+              <div key={item.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #f0f0f0" }}>
+                <div style={{ minWidth: 0, flex: 1, marginRight: 12 }}>
+                  <Space size={6}>
+                    <Tag color="blue">v{item.version}</Tag>
+                    <Text style={{ fontSize: 12, color: "#999" }}>
+                      {new Date(item.created_at).toLocaleString("zh-CN")}
+                    </Text>
+                    {item.avatar_set && <Tag>头像</Tag>}
+                    {item.bg_set && <Tag>背景</Tag>}
+                  </Space>
+                  <div style={{ fontSize: 12, marginTop: 4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    <Text strong>{item.nickname || "未填昵称"}</Text>
+                    <Text type="secondary"> · {item.bio || "未填简介"}</Text>
+                  </div>
+                </div>
+                <Button size="small" type="primary" ghost loading={restoringHistoryId === item.id} onClick={() => restoreHistory(item)}>
+                  恢复
+                </Button>
+              </div>
+            ))}
+          </div>
+        </Spin>
+      </Modal>
     </div>
   );
 }

@@ -60,6 +60,53 @@ export interface HealthCheckResult {
   weaknesses: string[];
   suggestions: string[];
   checked_at?: string;
+  snapshot?: HealthSnapshot | null;
+}
+
+export interface HealthSnapshot {
+  nickname: string;
+  bio: string;
+  avatar_prompt: string;
+  bg_prompt: string;
+  pinned_notes: PinnedNote[];
+  color_primary: string | null;
+  color_secondary: string | null;
+  color_accent: string | null;
+  color_text: string | null;
+  has_avatar: boolean;
+  has_bg: boolean;
+}
+
+export interface ProfileHistoryItem {
+  id: string;
+  version: number;
+  created_at: string;
+  nickname: string | null;
+  bio: string | null;
+  pinned_notes: PinnedNote[] | null;
+  color_primary: string | null;
+  avatar_set: boolean;
+  bg_set: boolean;
+}
+
+export interface ImageJobCreateResponse {
+  job_id: string;
+  status: string;
+}
+
+export interface ImageJobResponse {
+  id: string;
+  section: string;
+  status: "pending" | "running" | "success" | "failed";
+  options: ImageOption[] | null;
+  error: string | null;
+  created_at: string;
+  finished_at: string | null;
+}
+
+export interface PinnedNote {
+  title: string;
+  content: string;
 }
 
 export interface ShopProfile {
@@ -84,6 +131,7 @@ export interface ShopProfile {
   color_preset_name: string | null;
   ai_variants: { variants: AiVariant[] } | null;
   health_check?: HealthCheckResult | null;
+  pinned_notes?: PinnedNote[] | null;
   bio_flagged: boolean;
   status: string;
   version: number;
@@ -132,6 +180,7 @@ export const profileService = {
       color_secondary: string | null;
       color_accent: string | null;
       color_text: string | null;
+      pinned_notes: PinnedNote[];
       has_avatar: boolean;
       has_bg: boolean;
     }
@@ -141,11 +190,101 @@ export const profileService = {
       data
     ),
 
+  generatePinnedNotes: (
+    shopId: string,
+    platform: string,
+    data: { category: string; style: string; price_range: string }
+  ) =>
+    api.post<{ notes: PinnedNote[] }>(
+      `/shops/${shopId}/profiles/${platform}/generate-pinned-notes`,
+      data
+    ),
+
+  generateProfileOptions: (
+    shopId: string,
+    platform: string,
+    kind: "nickname" | "bio",
+    data: { category: string; style: string; price_range: string }
+  ) =>
+    api.post<{ options: string[] }>(
+      `/shops/${shopId}/profiles/${platform}/generate-profile-options`,
+      { kind, ...data }
+    ),
+
+  rewriteByHealthCheck: (
+    shopId: string,
+    platform: string,
+    data: {
+      nickname: string;
+      bio: string;
+      pinned_notes: PinnedNote[];
+      weaknesses: string[];
+      suggestions: string[];
+      category: string;
+      style: string;
+      price_range: string;
+    }
+  ) =>
+    api.post<{
+      nickname_options: string[];
+      bio: string;
+      pinned_notes: PinnedNote[];
+      bio_flagged: boolean;
+    }>(
+      `/shops/${shopId}/profiles/${platform}/rewrite-by-health-check`,
+      data
+    ),
+
   generateAvatar: (shopId: string, platform: string, prompt: string) =>
     api.post<ImageGenerateOptionsResponse>(
       `/shops/${shopId}/profiles/${platform}/generate-avatar`,
       { prompt },
       { timeout: 180000 }
+    ),
+
+  createImageJob: (
+    shopId: string,
+    platform: string,
+    section: "avatar" | "bg",
+    prompt: string
+  ) => {
+    const path = section === "avatar" ? "generate-avatar-job" : "generate-bg-image-job";
+    return api.post<ImageJobCreateResponse>(
+      `/shops/${shopId}/profiles/${platform}/${path}`,
+      { prompt }
+    );
+  },
+
+  createImageJobWithRef: (
+    shopId: string,
+    platform: string,
+    section: "avatar" | "bg",
+    prompt: string,
+    refFile?: File | null
+  ) => {
+    const fd = new FormData();
+    fd.append("prompt", prompt);
+    if (refFile) fd.append("ref_image", refFile);
+    const path = section === "avatar"
+      ? "generate-avatar-with-ref-job"
+      : "generate-bg-image-with-ref-job";
+    return api.post<ImageJobCreateResponse>(
+      `/shops/${shopId}/profiles/${platform}/${path}`,
+      fd
+    );
+  },
+
+  getImageJob: (shopId: string, platform: string, jobId: string) =>
+    api.get<ImageJobResponse>(
+      `/shops/${shopId}/profiles/${platform}/image-jobs/${jobId}`
+    ),
+
+  getHistory: (shopId: string, platform: string) =>
+    api.get<ProfileHistoryItem[]>(`/shops/${shopId}/profiles/${platform}/history`),
+
+  restoreHistory: (shopId: string, platform: string, historyId: string) =>
+    api.post<ShopProfile>(
+      `/shops/${shopId}/profiles/${platform}/history/${historyId}/restore`
     ),
 
   generateBgImage: (shopId: string, platform: string, prompt: string) =>

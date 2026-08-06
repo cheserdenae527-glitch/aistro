@@ -103,10 +103,11 @@ class StudioPaginateAgent:
                 except (TypeError, ValueError):
                     image_index = None
                 # 越界时降级为纯文字页（无图），避免整个卡组失败
-                if image_count and not (0 <= image_index < image_count):
-                    image_index = None
-                elif not image_count:
-                    image_index = None
+                if image_index is not None:
+                    if image_count and not (0 <= image_index < image_count):
+                        image_index = None
+                    elif not image_count:
+                        image_index = None
             for b in bullets:
                 if contains_blocked(str(b)):
                     raise StudioPaginateError("生成内容包含敏感词")

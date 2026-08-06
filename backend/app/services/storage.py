@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import os
 import time
 import uuid
 from datetime import timedelta
@@ -69,6 +70,23 @@ def upload_bytes(data: bytes, content_type: str, folder: str = "profiles") -> st
     return object_name
 
 
+def upload_fileobj(fileobj, content_type: str, folder: str = "live_avatars") -> str:
+    """流式上传文件对象到 MinIO，避免整文件读入内存。"""
+    client = _get_client()
+    object_name = f"{folder}/{uuid.uuid4().hex}"
+    fileobj.seek(0, os.SEEK_END)
+    length = fileobj.tell()
+    fileobj.seek(0)
+    client.put_object(
+        settings.MINIO_BUCKET,
+        object_name,
+        fileobj,
+        length=length,
+        content_type=content_type,
+    )
+    return object_name
+
+
 def get_presigned_url(object_name: str, expires: int = 3600) -> str:
     """生成预签名下载 URL（1 小时有效期）。"""
     client = _get_client()
@@ -85,6 +103,18 @@ def safe_get_presigned_url(object_name: str, expires: int = 3600) -> str | None:
         return get_presigned_url(object_name, expires)
     except Exception:
         return None
+
+
+def safe_delete_object(object_name: str) -> None:
+    """尽力删除对象，失败或 MinIO 不可用时静默跳过，不影响业务。"""
+    if not object_name:
+        return
+    if not _storage_available():
+        return
+    try:
+        _get_client().remove_object(settings.MINIO_BUCKET, object_name)
+    except Exception:
+        pass
 
 
 def get_object_bytes(object_name: str) -> bytes:

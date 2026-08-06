@@ -167,8 +167,8 @@ export default function DistrictDetailPage() {
         setHistory(res.data.items);
         setHistoryTotal(res.data.total);
         setHistoryPage(res.data.page);
-      } catch {
-        showApiError;
+      } catch (e) {
+        showApiError(e);
       } finally {
         setHistoryLoading(false);
       }

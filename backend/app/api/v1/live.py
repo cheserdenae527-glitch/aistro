@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import asyncio
 import io
+import ipaddress
 import os
 import pickle
+import socket
 import subprocess
 import time
 import uuid
+from urllib.parse import urlparse
 from datetime import datetime, timezone
 from typing import Any
 
@@ -42,7 +45,7 @@ from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.rate_limit import peek_rate_limit, set_rate_limit
 from app.ai.doubao_image import ImageGenError, generate_avatar as doubao_generate_avatar
-from app.services.storage import get_presigned_url, upload_bytes
+from app.services.storage import get_presigned_url, upload_bytes, upload_fileobj
 from app.models.live_avatar import LiveAvatar
 from app.models.live_danmaku_config import LiveDanmakuConfig
 from app.models.live_project import LiveProject
@@ -93,6 +96,74 @@ _MAX_PAGE_SIZE = 100
 _DEFAULT_AI_LABEL = "本直播间由 AI 数字人出镜，真人运营团队值守"
 _ENGINE_SENSITIVE_KEYS = ("api_key", "secret")
 _ENGINE_TIMEOUT = httpx.Timeout(15.0, connect=5.0)
+
+
+_LOOPBACK_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
+_ENGINE_LOOPBACK_PORT = 8010
+_MAX_ENGINE_AVATAR_DIRS = 20
+_MAX_WATCH_TASKS = 10
+_WATCH_TASKS: set[asyncio.Task] = set()
+
+
+def _validate_engine_base_url(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("引擎地址需以 http:// 或 https:// 开头")
+    host = (parsed.hostname or "").lower()
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    if host not in _LOOPBACK_HOSTS or port != _ENGINE_LOOPBACK_PORT:
+        raise ValueError("引擎地址仅允许本机 8010 回环地址")
+    return value.rstrip("/")
+
+
+def _is_private_ip(ip: str) -> bool:
+    try:
+        addr = ipaddress.ip_address(ip)
+    except ValueError:
+        return True
+    return (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+    )
+
+
+def _validate_media_url_host(value: str) -> str:
+    parsed = urlparse(value)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError("素材地址需以 http:// 或 https:// 开头")
+    host = (parsed.hostname or "").lower()
+    parsed_port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    minio_parsed = urlparse(settings.MINIO_ENDPOINT)
+    minio_host = (minio_parsed.hostname or "").lower()
+    minio_port = minio_parsed.port or 9000
+    if host in _LOOPBACK_HOSTS:
+        if parsed_port != minio_port:
+            raise ValueError("素材地址仅允许 MinIO 回环端口")
+        return value
+    if minio_host and host == minio_host:
+        return value
+    try:
+        infos = socket.getaddrinfo(
+            host,
+            parsed.port or (443 if parsed.scheme == "https" else 80),
+            type=socket.SOCK_STREAM,
+        )
+    except socket.gaierror:
+        return value
+    for info in infos:
+        if _is_private_ip(str(info[4][0])):
+            raise ValueError("素材地址指向内网或保留地址")
+    return value
+
+
+async def _require_admin(current_user: User = Depends(get_current_user)) -> User:
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403, detail="需要管理员权限")
+    return current_user
 
 _PLATFORM_NAMES = {
     "douyin": "抖音",
@@ -510,8 +581,10 @@ async def test_engine_connection(
         raise HTTPException(
             status_code=400, detail="未配置本地引擎管理后台地址（engine_config.base_url）"
         )
-    if not (base_url.startswith("http://") or base_url.startswith("https://")):
-        raise HTTPException(status_code=400, detail="引擎地址需以 http:// 或 https:// 开头")
+    try:
+        base_url = _validate_engine_base_url(base_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     headers = {}
     if cfg.get("api_key"):
         headers["Authorization"] = f"Bearer {cfg['api_key']}"
@@ -660,13 +733,22 @@ async def upload_avatar_video(
 
     与 live-avatars 一致为登录用户维度；视频 ≤200MB 且为 MP4/WebM/MOV。
     """
-    data = await file.read()
-    if len(data) > _AVATAR_VIDEO_MAX_BYTES:
-        raise HTTPException(status_code=400, detail="驱动视频超过 200MB")
+    from tempfile import SpooledTemporaryFile
+
     mime = (file.content_type or "").lower()
     if mime not in _AVATAR_VIDEO_MIME:
         raise HTTPException(status_code=400, detail="仅支持 MP4/WebM/MOV 视频")
-    object_name = upload_bytes(data, mime, folder="live_avatars")
+    size = 0
+    with SpooledTemporaryFile(max_size=8 * 1024 * 1024) as tmp:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            size += len(chunk)
+            if size > _AVATAR_VIDEO_MAX_BYTES:
+                raise HTTPException(status_code=400, detail="驱动视频超过 200MB")
+            tmp.write(chunk)
+        object_name = upload_fileobj(tmp, mime, folder="live_avatars")
     return {
         "url": get_presigned_url(object_name, expires=7 * 24 * 3600),
         "object_name": object_name,
@@ -695,8 +777,11 @@ async def create_engine_avatar(
     engine_base = override or (avatar.engine_base_url or "").strip().rstrip("/")
     if not engine_base:
         raise HTTPException(status_code=400, detail="请填写引擎管理后台地址（engine_base_url）")
-    if not (engine_base.startswith("http://") or engine_base.startswith("https://")):
-        raise HTTPException(status_code=400, detail="引擎地址需以 http:// 或 https:// 开头")
+    try:
+        video_url = await asyncio.to_thread(_validate_media_url_host, video_url)
+        engine_base = _validate_engine_base_url(engine_base)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     engine_avatar_id = f"airestro_{uuid.uuid4().hex[:12]}"
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
@@ -746,7 +831,13 @@ async def create_engine_avatar(
     avatar.engine_task_id = task_id
     await db.flush()
     # 后台监控：完成后自动重启引擎用新形象（不依赖前端轮询）
-    asyncio.create_task(_watch_engine_avatar_task(task_id, engine_base, engine_avatar_id))
+    if len(_WATCH_TASKS) >= _MAX_WATCH_TASKS:
+        raise HTTPException(status_code=429, detail="后台引擎任务过多，请稍后再试")
+    task = asyncio.create_task(
+        _safe_watch_engine_avatar_task(task_id, engine_base, engine_avatar_id)
+    )
+    _WATCH_TASKS.add(task)
+    task.add_done_callback(_WATCH_TASKS.discard)
     return {"task_id": task_id, "avatar_id": engine_avatar_id}
 
 
@@ -767,6 +858,10 @@ async def get_engine_avatar_status(
             "engine_avatar_id": avatar.engine_avatar_id,
             "error_msg": "",
         }
+    try:
+        engine_base = _validate_engine_base_url(engine_base)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(30.0, connect=10.0)) as client:
             resp = await client.get(f"{engine_base}/api/avatar/task/{task_id}")
@@ -889,7 +984,6 @@ def _build_dynamic_avatar(video_bytes: bytes, workdir: str, avatar_id: str) -> s
     检测不到时沿用上一帧坐标保持稳定。最多 300 帧。
     """
     import cv2
-    import numpy as np
 
     def _to_vertical(frame):
         h, w = frame.shape[:2]
@@ -907,8 +1001,8 @@ def _build_dynamic_avatar(video_bytes: bytes, workdir: str, avatar_id: str) -> s
     import tempfile
 
     tmp = os.path.join(tempfile.gettempdir(), f"{avatar_id}.mp4")
-    with open(tmp, "wb") as f:
-        f.write(video_bytes)
+    with open(tmp, "wb") as wf:
+        wf.write(video_bytes)
     cap = cv2.VideoCapture(tmp)
     if not cap.isOpened():
         raise ValueError("无法解析驱动视频")
@@ -963,6 +1057,10 @@ def _build_dynamic_avatar(video_bytes: bytes, workdir: str, avatar_id: str) -> s
 
 async def _ensure_engine_online(engine_base: str, default_avatar: str = "wav2lip_avatar_female_model") -> bool:
     """确保引擎在线：探测失败则自动启动并等待就绪（最多约 90 秒）。"""
+    try:
+        engine_base = _validate_engine_base_url(engine_base)
+    except ValueError:
+        return False
     for attempt in range(2):
         try:
             async with httpx.AsyncClient(timeout=httpx.Timeout(5.0, connect=3.0)) as client:
@@ -991,6 +1089,10 @@ async def _watch_engine_avatar_task(
     不依赖前端轮询（前端登出/关页也不影响），避免"生成了但没切换"。
     最长监控约 10 分钟；_restart_live_engine 幂等（已在用该形象则跳过）。
     """
+    try:
+        engine_base = _validate_engine_base_url(engine_base)
+    except ValueError:
+        return
     for _ in range(120):
         await asyncio.sleep(5)
         try:
@@ -1006,6 +1108,15 @@ async def _watch_engine_avatar_task(
         if status == "failed":
             _restart_live_engine("wav2lip_avatar_female_model")
             return
+
+
+async def _safe_watch_engine_avatar_task(
+    task_id: str, engine_base: str, engine_avatar_id: str
+) -> None:
+    try:
+        await _watch_engine_avatar_task(task_id, engine_base, engine_avatar_id)
+    except Exception:
+        return
 
 
 def _prepare_engine_video(video_bytes: bytes) -> tuple[bytes, str]:
@@ -1084,13 +1195,71 @@ def _prepare_engine_video(video_bytes: bytes) -> tuple[bytes, str]:
         os.remove(tmp)
     except Exception:
         pass
-    with open(out_tmp, "rb") as f:
-        out = f.read()
+    with open(out_tmp, "rb") as rf:
+        video_data = rf.read()
     try:
         os.remove(out_tmp)
     except Exception:
         pass
-    return out, "video/mp4"
+    return video_data, "video/mp4"
+
+
+def _stop_engine_processes() -> bool:
+    """按监听端口停止本机 LiveTalking 引擎进程，跨平台。"""
+    if os.name == "nt":
+        try:
+            subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                    "Where-Object { $_.CommandLine -match 'listenport 8010' } | "
+                    "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }",
+                ],
+                timeout=30,
+            )
+            return True
+        except Exception:
+            return False
+    for cmd in (["pkill", "-f", "listenport 8010"], ["fuser", "-k", "8010/tcp"]):
+        try:
+            subprocess.run(cmd, timeout=30, capture_output=True)
+            return True
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            continue
+    return False
+
+
+def _engine_process_uses_avatar(avatar_id: str) -> bool:
+    if os.name == "nt":
+        try:
+            out = subprocess.run(
+                [
+                    "powershell",
+                    "-NoProfile",
+                    "-Command",
+                    "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
+                    "Where-Object { $_.CommandLine -match 'listenport 8010' } | "
+                    "Select-Object -First 1 -ExpandProperty CommandLine",
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            return avatar_id in out.stdout
+        except Exception:
+            return False
+    try:
+        out = subprocess.run(
+            ["pgrep", "-af", "listenport 8010"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        return avatar_id in out.stdout
+    except (FileNotFoundError, subprocess.TimeoutExpired):
+        return False
 
 
 def _release_live_engine() -> bool:
@@ -1098,21 +1267,7 @@ def _release_live_engine() -> bool:
     workdir = settings.LIVE_ENGINE_WORKDIR
     if not workdir or not os.path.isdir(workdir):
         return False
-    try:
-        subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-                "Where-Object { $_.CommandLine -match 'listenport 8010' } | "
-                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }",
-            ],
-            timeout=30,
-        )
-        return True
-    except Exception:
-        return False
+    return _stop_engine_processes()
 
 
 def _restart_live_engine(avatar_id: str) -> bool:
@@ -1122,38 +1277,9 @@ def _restart_live_engine(avatar_id: str) -> bool:
     if not workdir or not venv or not os.path.isfile(venv):
         return False
     # 幂等：当前引擎已在用该形象则跳过重启
-    try:
-        out = subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-                "Where-Object { $_.CommandLine -match 'listenport 8010' } | "
-                "Select-Object -First 1 -ExpandProperty CommandLine",
-            ],
-            capture_output=True,
-            text=True,
-            timeout=20,
-        )
-        if avatar_id in out.stdout:
-            return True
-    except Exception:
-        pass
-    try:
-        subprocess.run(
-            [
-                "powershell",
-                "-NoProfile",
-                "-Command",
-                "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-                "Where-Object { $_.CommandLine -match 'listenport 8010' } | "
-                "ForEach-Object { Stop-Process -Id $_.ProcessId -Force }",
-            ],
-            timeout=30,
-        )
-    except Exception:
-        pass
+    if _engine_process_uses_avatar(avatar_id):
+        return True
+    _stop_engine_processes()
     # 等端口 8010 释放，避免新进程因端口占用启动失败
     for _ in range(15):
         if not _port_in_use(8010):
@@ -1162,24 +1288,34 @@ def _restart_live_engine(avatar_id: str) -> bool:
     log = open(os.path.join(workdir, "lt.log"), "a", encoding="utf-8")
     err = open(os.path.join(workdir, "lt.err.log"), "a", encoding="utf-8")
     try:
-        subprocess.Popen(
-            [
-                venv,
-                "app.py",
-                "--transport",
-                "webrtc",
-                "--model",
-                "wav2lip",
-                "--avatar_id",
-                avatar_id,
-                "--listenport",
-                "8010",
-            ],
-            cwd=workdir,
-            stdout=log,
-            stderr=err,
-            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
-        )
+        cmd = [
+            venv,
+            "app.py",
+            "--transport",
+            "webrtc",
+            "--model",
+            "wav2lip",
+            "--avatar_id",
+            avatar_id,
+            "--listenport",
+            "8010",
+        ]
+        if os.name == "nt":
+            subprocess.Popen(
+                cmd,
+                cwd=workdir,
+                stdout=log,
+                stderr=err,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+        else:
+            subprocess.Popen(
+                cmd,
+                cwd=workdir,
+                stdout=log,
+                stderr=err,
+                start_new_session=True,
+            )
         return True
     except Exception:
         return False
@@ -1229,6 +1365,19 @@ async def sync_avatar_to_engine_static(
     try:
         async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=10.0)) as client:
             source_url = video_url or image_url
+            try:
+                source_url = await asyncio.to_thread(_validate_media_url_host, source_url)
+            except ValueError as exc:
+                raise HTTPException(status_code=400, detail=str(exc))
+            avatar_root = os.path.join(settings.LIVE_ENGINE_WORKDIR, "data", "avatars")
+            if os.path.isdir(avatar_root):
+                avatar_count = sum(
+                    1 for name in os.listdir(avatar_root) if name.startswith("airestro_")
+                )
+                if avatar_count >= _MAX_ENGINE_AVATAR_DIRS:
+                    raise HTTPException(
+                        status_code=429, detail="引擎形象数量过多，请清理后重试"
+                    )
             r = await client.get(source_url)
             r.raise_for_status()
             source_bytes = r.content
@@ -1256,7 +1405,7 @@ async def sync_avatar_to_engine_static(
 
 @router.post("/live-engines/release")
 async def release_live_engine(
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(_require_admin),
 ):
     """停止本地引擎，释放 GPU（结束直播/长时间不播时使用）。"""
     released = _release_live_engine()
@@ -1266,7 +1415,7 @@ async def release_live_engine(
 @router.post("/live-engines/start")
 async def start_live_engine(
     body: EngineAvatarCreateRequest | None = None,
-    current_user: User = Depends(get_current_user),
+    current_user: User = Depends(_require_admin),
 ):
     """启动本地引擎（--avatar_id 默认用引擎当前形象；可传 engine_base_url 覆盖地址）。"""
     avatar_id = ""

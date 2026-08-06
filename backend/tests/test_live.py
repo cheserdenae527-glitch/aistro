@@ -9,9 +9,11 @@ AI Agent 与频控全部 monkeypatch，不调用真实 LLM / Redis。
 """
 from __future__ import annotations
 
+import asyncio
 import io
 import os
 
+import asyncpg
 import httpx
 import pytest
 from PIL import Image
@@ -62,6 +64,21 @@ def other_headers(client, email="other@test.com") -> dict:
 def current_user_id(client) -> str:
     resp = client.get("/api/v1/auth/me", headers=auth_headers(client))
     return resp.json()["id"]
+
+
+def promote_admin(client, email="admin@test.com") -> None:
+    user_id = current_user_id(client)
+
+    async def _promote() -> None:
+        conn = await asyncpg.connect(os.environ["DATABASE_URL"].replace("+asyncpg", ""))
+        try:
+            await conn.execute(
+                "UPDATE users SET role='admin' WHERE id=$1", user_id
+            )
+        finally:
+            await conn.close()
+
+    asyncio.run(_promote())
 
 
 def _create_shop(client) -> str:
@@ -1024,7 +1041,7 @@ def test_export_persona_priority_danmaku_over_snapshot(client, monkeypatch):
         headers=headers,
     )
     # 人工精调弹幕 persona
-    put_resp = client.put(
+    client.put(
         f"/api/v1/live-projects/{project['id']}/danmaku-config",
         json={"persona": {**_PERSONA, "identity": "精调后的店长"}},
         headers=headers,
@@ -1681,12 +1698,31 @@ def test_engine_test_skip_pushes_flag(client, monkeypatch):
 
 
 def test_engine_test_base_url_override(client, monkeypatch):
-    """请求体 base_url 覆盖：项目未存配置也能用表单地址测试。"""
+    """请求体 base_url 覆盖：项目未存配置也能用回环地址测试；非回环地址被拒绝。"""
     _patch_agents(monkeypatch)
     project = _create_project(client)
     fake = _patch_engine(client, monkeypatch)
 
     resp = client.post(
+        f"/api/v1/live-projects/{project['id']}/engine-test",
+        json={
+            "base_url": "http://localhost:8010",
+            "push_persona": False,
+            "push_wordlist": False,
+        },
+        headers=auth_headers(client),
+    )
+    assert resp.status_code == 200, resp.text
+    assert resp.json()["base_url"] == "http://localhost:8010"
+    assert fake.calls[0][1] == "http://localhost:8010/health"
+    # 项目 engine_config 仍为空（未保存）
+    got = client.get(
+        f"/api/v1/live-projects/{project['id']}", headers=auth_headers(client)
+    ).json()
+    assert got["engine_config"] is None
+
+    # 非回环地址被安全策略拒绝
+    bad = client.post(
         f"/api/v1/live-projects/{project['id']}/engine-test",
         json={
             "base_url": "http://10.0.0.9:8010",
@@ -1695,14 +1731,7 @@ def test_engine_test_base_url_override(client, monkeypatch):
         },
         headers=auth_headers(client),
     )
-    assert resp.status_code == 200, resp.text
-    assert resp.json()["base_url"] == "http://10.0.0.9:8010"
-    assert fake.calls[0][1] == "http://10.0.0.9:8010/health"
-    # 项目 engine_config 仍为空（未保存）
-    got = client.get(
-        f"/api/v1/live-projects/{project['id']}", headers=auth_headers(client)
-    ).json()
-    assert got["engine_config"] is None
+    assert bad.status_code == 400, bad.text
 
 
 def test_export_persona_normalized_to_engine_format(client, monkeypatch):
@@ -1804,6 +1833,10 @@ def _stub_storage(monkeypatch, object_name="live_avatars/abc"):
     monkeypatch.setattr(
         "app.api.v1.live.upload_bytes",
         lambda data, mime, folder="live_avatars": object_name,
+    )
+    monkeypatch.setattr(
+        "app.api.v1.live.upload_fileobj",
+        lambda file_obj, mime, folder="live_avatars": object_name,
     )
     monkeypatch.setattr(
         "app.api.v1.live.get_presigned_url",
@@ -2055,7 +2088,7 @@ def test_engine_avatar_status_completed(client, monkeypatch):
         client, persona=_PERSONA,
         video_url="http://minio.local/v.mp4", engine_base_url="http://localhost:8010",
     )
-    fake = _patch_engine_avatar(client, monkeypatch, task_status="completed", task_progress=100)
+    _patch_engine_avatar(client, monkeypatch, task_status="completed", task_progress=100)
     monkeypatch.setattr("app.api.v1.live._prepare_engine_video", lambda vb: (b"prepared", "video/mp4"))
     restarted = {"v": False}
     monkeypatch.setattr("app.api.v1.live._restart_live_engine", lambda aid: restarted.update(v=True) or True)
@@ -2086,9 +2119,6 @@ def test_engine_avatar_status_idle_before_create(client, monkeypatch):
 
 def test_ai_generate_avatar_image_ok(client, monkeypatch):
     """AI 生成形象图：豆包生图 4 张 → 存 MinIO → 返回 4 个可选 URL。"""
-    from app.ai.doubao_image import ImageGenError
-    import asyncio
-
     async def fake_generate(prompt):
         png = _make_png_bytes()
         return [(png, "image/png")] * 4
@@ -2308,6 +2338,7 @@ def test_prepare_engine_video_rejects_short():
 
 
 def test_live_engine_release_endpoint(client, monkeypatch):
+    promote_admin(client)
     released = {"v": False}
     monkeypatch.setattr(
         "app.api.v1.live._release_live_engine", lambda: released.update(v=True) or True
@@ -2319,6 +2350,7 @@ def test_live_engine_release_endpoint(client, monkeypatch):
 
 
 def test_live_engine_start_endpoint(client, monkeypatch):
+    promote_admin(client)
     monkeypatch.setattr("app.api.v1.live._restart_live_engine", lambda aid: True)
     resp = client.post("/api/v1/live-engines/start", headers=auth_headers(client))
     assert resp.status_code == 200

@@ -70,6 +70,7 @@ class ShopProfile(Base):
     ai_input_price: Mapped[str | None] = mapped_column(String(50), nullable=True)
     ai_variants: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     health_check: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    pinned_notes: Mapped[list | None] = mapped_column(JSONB, nullable=True)
 
     # ---- 标记与状态 ----
     bio_flagged: Mapped[bool] = mapped_column(
