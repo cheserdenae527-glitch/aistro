@@ -10,6 +10,7 @@ from pydantic import ValidationError
 from app.core.config import settings
 from app.core.sensitive_filter import contains_blocked, filter_text
 from app.schemas.profile import AiVariant, VariantColorScheme
+from app.services.xhs_knowledge import build_knowledge_context
 
 _client: AsyncOpenAI | None = None
 
@@ -97,10 +98,17 @@ async def generate_variants(
         f"门店信息：\n- 品类：{category}\n- 风格关键词：{style}\n- 人均价格：{price_range}"
     )
 
+    kb_context = build_knowledge_context(
+        category=category, style_keywords=[style], limit=3
+    )
+    system_content = _SYSTEM_PROMPT
+    if kb_context:
+        system_content += "\n\n## 参考设计知识库（必须遵守）\n" + kb_context
+
     response = await client.chat.completions.create(
         model=settings.DEEPSEEK_MODEL,
         messages=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": user_msg},
         ],
         temperature=0.8,

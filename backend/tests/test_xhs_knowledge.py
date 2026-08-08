@@ -102,3 +102,39 @@ def test_enrich_clone_schemes_fills_missing_prompts():
     assert out["knowledge_styles"] == ["市井烟火"]
     assert "{" not in out["schemes"][0]["avatar_prompt"]
     assert "{" not in out["schemes"][0]["bg_prompt"]
+
+
+def test_generate_variants_injects_knowledge(monkeypatch):
+    import asyncio
+
+    from app.ai import profile_agent
+
+    captured = {}
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            captured["kwargs"] = kwargs
+            return type(
+                "R",
+                (),
+                {
+                    "choices": [
+                        type("Ch", (), {"message": type("M", (), {"content": '{"variants":[]}'})()})()
+                    ]
+                },
+            )()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    monkeypatch.setattr(profile_agent, "_get_client", lambda: FakeClient())
+    variants, _ = asyncio.run(
+        profile_agent.generate_variants("火锅", "市井烟火", "人均80")
+    )
+    system = captured["kwargs"]["messages"][0]["content"]
+    assert "参考设计知识库" in system
+    assert "市井烟火" in system
+    assert len(variants) == 4
