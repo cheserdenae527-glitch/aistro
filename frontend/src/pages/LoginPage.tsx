@@ -34,16 +34,8 @@ export default function LoginPage() {
  };
 
  return (
-   <div
-     style={{
-       minHeight: "100vh",
-       display: "flex",
-       justifyContent: "center",
-       alignItems: "center",
-       background: "#f0f2f5",
-     }}
-   >
-     <Card style={{ width: 400 }}>
+   <div className="login-wrap">
+     <Card className="login-card">
        <Title level={3} style={{ textAlign: "center", marginBottom: 24 }}>
          AiRestro
        </Title>

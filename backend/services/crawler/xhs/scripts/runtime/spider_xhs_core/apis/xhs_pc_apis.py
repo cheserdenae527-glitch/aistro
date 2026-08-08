@@ -249,10 +249,12 @@ class XHS_Apis():
             note_list = note_list[:require_num]
         return success, msg, note_list
 
-    def get_user_info(self, user_id: str, proxies: dict = None):
+    def get_user_info(self, user_id: str, proxies: dict = None, xsec_token: str = '', xsec_source: str = 'pc_search'):
         """
             获取用户的信息
             :param user_id: 你想要获取的用户的id
+            :param xsec_token: 用户主页 xsec_token（风控下必须携带，否则接口返回 300011）
+            :param xsec_source: xsec_token 来源，默认 pc_search
             返回用户的信息
         """
         res_json = None
@@ -261,11 +263,19 @@ class XHS_Apis():
             params = {
                 "target_user_id": user_id
             }
+            if xsec_token:
+                params["xsec_token"] = xsec_token
+                params["xsec_source"] = xsec_source
             splice_api = splice_str(api, params)
             headers, cookies, data = self._request_params(splice_api, '', 'GET')
             response = self.http.get(self.base_url + splice_api, headers=headers, cookies=cookies, proxies=self._proxies(proxies), timeout=REQUEST_TIMEOUT)
             res_json = response.json()
-            success, msg = res_json["success"], res_json["msg"]
+            if isinstance(res_json, dict) and "success" in res_json:
+                success, msg = res_json["success"], res_json.get("msg", "")
+                if success and not res_json.get("data"):
+                    success, msg = False, "用户信息为空"
+            else:
+                success, msg = False, str(res_json.get("msg", "账号异常，请稍后重试")) if isinstance(res_json, dict) else "接口返回异常"
         except Exception as e:
             success = False
             msg = _log_api_error(e)
@@ -1042,3 +1052,4 @@ class XHS_Apis():
             success = False
             msg = _log_api_error(e)
         return success, msg, new_url
+

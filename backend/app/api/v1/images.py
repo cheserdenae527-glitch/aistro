@@ -6,7 +6,7 @@ from urllib.parse import unquote, urlparse
 
 import requests
 from fastapi import APIRouter, HTTPException, Query, Request
-from fastapi.responses import Response
+from fastapi.responses import Response, StreamingResponse
 from PIL import Image
 
 from app.core.rate_limit import consume_rate_limit
@@ -76,3 +76,55 @@ async def proxy_image(
         raise
     except Exception:
         raise HTTPException(status_code=502, detail="image proxy failed")
+
+
+@router.get("/video-proxy")
+async def proxy_video(
+    request: Request,
+    url: str = Query(""),
+    download: int = Query(0),
+):
+    """代理流式转发 XHS 视频。download=0 内联播放；download=1 附件下载，不跳转页面。"""
+    if not url:
+        raise HTTPException(status_code=400, detail="url required")
+    url = unquote(url)
+    if not _is_allowed_image_url(url):
+        raise HTTPException(status_code=400, detail="url not allowed")
+    ip = request.client.host if request.client else "unknown"
+    if not await consume_rate_limit(f"video_proxy:{ip}", 30, 60):
+        raise HTTPException(status_code=429, detail="请求过于频繁")
+    try:
+        upstream_headers = {"Referer": "https://www.xiaohongshu.com/"}
+        status_code = 200
+        resp_headers = {"Cache-Control": "public, max-age=3600", "Accept-Ranges": "bytes"}
+        range_header = request.headers.get("range")
+        if range_header:
+            upstream_headers["Range"] = range_header
+        upstream = requests.get(
+            url,
+            headers=upstream_headers,
+            timeout=15,
+            allow_redirects=True,
+            stream=True,
+        )
+        upstream.raise_for_status()
+        content_type = upstream.headers.get("content-type", "") or "video/mp4"
+        if range_header and upstream.status_code == 206:
+            status_code = 206
+            resp_headers["Content-Range"] = upstream.headers.get("content-range", "")
+            resp_headers["Content-Length"] = upstream.headers.get("content-length", "")
+        elif upstream.headers.get("content-length"):
+            resp_headers["Content-Length"] = upstream.headers["content-length"]
+        if download == 1:
+            resp_headers["Content-Disposition"] = 'attachment; filename="xhs_video.mp4"'
+        return StreamingResponse(
+            upstream.iter_content(chunk_size=64 * 1024),
+            status_code=status_code,
+            media_type=content_type,
+            headers=resp_headers,
+        )
+    except HTTPException:
+        raise
+    except Exception:
+        raise HTTPException(status_code=502, detail="video proxy failed")
+

@@ -223,6 +223,7 @@ def generate_x_rap_param(api, data, app_id=None, fingerprint_hex: str = ''):
     """
     import subprocess as _sp
     import json as _json
+    _node_flags = 0x08000000 if os.name == "nt" else 0  # CREATE_NO_WINDOW
     body = data if isinstance(data, str) else _json.dumps(data or {}, ensure_ascii=False)
     argv = ['node', _RAP_CLI, api, body]
     if app_id:
@@ -235,6 +236,7 @@ def generate_x_rap_param(api, data, app_id=None, fingerprint_hex: str = ''):
         r = _sp.run(
             argv, capture_output=True, text=True,
             cwd=os.path.dirname(_RAP_CLI), timeout=30,
+            creationflags=_node_flags,
         )
         out = (r.stdout or '').strip()
         if out and out.startswith('ByQ'):

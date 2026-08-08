@@ -7,7 +7,7 @@ import os
 # 必须在导入 app 前设置，测试永远不写正式数据库。
 os.environ["DATABASE_URL"] = os.environ.get(
     "TEST_DATABASE_URL",
-    "postgresql+asyncpg://aistro:aistro@localhost:5433/aistro_test",
+    "postgresql+asyncpg://aistro:aistro@localhost:5432/aistro_test",
 )
 os.environ["REDIS_URL"] = os.environ.get(
     "TEST_REDIS_URL",
@@ -52,7 +52,7 @@ def _reset_shared_async_resources():
     from app.core.database import engine
 
     asyncio.run(engine.dispose())
-    rate_limit._pool = None
+    rate_limit._reset()
     # 进程内登录限流按模块重置，避免整套测试共享窗口触发 429
     auth_module._login_attempts.clear()
 

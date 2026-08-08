@@ -807,7 +807,6 @@ def test_menu_render_pagination_api(client):
 
 
 def test_menu_export_pdf(client):
-    from urllib.request import urlopen
 
     project = _create_project(client)
     asset = _upload_dish(client, project["id"])
@@ -827,10 +826,14 @@ def test_menu_export_pdf(client):
         headers=auth_headers(client),
     )
     assert resp.status_code == 200, resp.text
-    assert resp.json()["output_url"].startswith("http")
-    with urlopen(resp.json()["output_url"], timeout=30) as f:
-        head = f.read(4)
-    assert head == b"%PDF"
+    from urllib.parse import urlparse
+
+    url = resp.json()["output_url"]
+    assert url.startswith("http")
+    media_path = urlparse(url).path
+    media_resp = client.get(media_path)
+    assert media_resp.status_code == 200, media_resp.text
+    assert media_resp.content[:4] == b"%PDF"
 
 
 def test_menu_export_pdf_version_mismatch(client):

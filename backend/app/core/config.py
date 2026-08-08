@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -33,6 +36,26 @@ class Settings(BaseSettings):
     MINIO_SECRET_KEY: str = "minioadmin"
     MINIO_BUCKET: str = "aistro"
 
+    # --- 本地文件存储（不装 Docker 后替代 MinIO） ---
+    # 媒体文件根目录，默认 <仓库根>/data/storage
+    LOCAL_STORAGE_DIR: str = Field(
+        default_factory=lambda: str(
+            Path(__file__).resolve().parents[3] / "data" / "storage"
+        )
+    )
+    # 生成给前端/本地引擎的媒体 URL 前缀（后端自身地址）
+    PUBLIC_BASE_URL: str = "http://127.0.0.1:8000"
+
+    # --- 本地内部工具：本机免登录 ---
+    LOCAL_AUTO_LOGIN: bool = True
+    LOCAL_ADMIN_EMAIL: str = "local@aistro.local"
+    LOCAL_ADMIN_NAME: str = "本地管理员"
+
+    # --- 视频 API（设置页可配置，预留） ---
+    VIDEO_API_KEY: str = ""
+    VIDEO_API_BASE_URL: str = ""
+    VIDEO_API_MODEL: str = ""
+
     # --- AI：DeepSeek LLM + 豆包生图 ---
     DEEPSEEK_API_KEY: str = ""
     DEEPSEEK_BASE_URL: str = "https://api.deepseek.com"
@@ -41,6 +64,7 @@ class Settings(BaseSettings):
     VOLCENGINE_API_KEY: str = ""
     VOLCENGINE_BASE_URL: str = "https://ark.cn-beijing.volces.com/api/v3"
     VOLCENGINE_IMAGE_MODEL: str = "doubao-seedream-5-0-260128"
+    VOLCENGINE_VISION_MODEL: str = "doubao-seed-2-0-lite-260428"
 
     # --- 本地数字人引擎（形象同步 / 自动重启用；留空则不自动重启引擎） ---
     LIVE_ENGINE_WORKDIR: str = ""

@@ -28,6 +28,22 @@ export interface AiVariant {
   bio_flagged: boolean;
 }
 
+export interface CloneScheme {
+  id: string;
+  name: string;
+  color_scheme: {
+    primary: string;
+    secondary: string;
+    accent: string;
+    text: string;
+  };
+  style_keywords?: string[];
+  nickname_options?: string[];
+  bio?: string;
+  avatar_prompt?: string;
+  bg_prompt?: string;
+}
+
 export interface StyleAnalysis {
   vibe?: string | null;
   dominant_colors?: (string | null)[] | null;
@@ -36,6 +52,8 @@ export interface StyleAnalysis {
   avatar_style?: string | null;
   bg_style?: string | null;
   suggested_prompt?: string | null;
+  style_keywords?: string[] | null;
+  schemes?: CloneScheme[] | null;
 }
 
 export interface ImageOption {
@@ -143,7 +161,8 @@ export const profileService = {
     fd.append("image", file);
     return api.post<StyleAnalysis>(
       `/shops/${shopId}/profiles/${platform}/analyze-style`,
-      fd
+      fd,
+      { timeout: 180000 }
     );
   },
   get: (shopId: string, platform: string) =>

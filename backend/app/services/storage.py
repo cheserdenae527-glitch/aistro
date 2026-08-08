@@ -1,137 +1,139 @@
-"""文件存储服务 — MinIO 客户端封装。"""
+"""文件存储服务 — 本地文件系统实现（替代 MinIO，不依赖 Docker）。
+
+对外接口保持与原 MinIO 封装一致：
+- upload_bytes / upload_fileobj 返回 object_name（如 "profiles/<hex>"）
+- get_presigned_url / safe_get_presigned_url 返回后端媒体 URL
+- get_object_bytes / delete_object / safe_delete_object 读写本地文件
+- local_path 返回本地绝对路径，供数字人引擎等本地程序直接使用
+
+保存位置可通过设置页修改；历史目录保留，读取时按"当前目录 -> 历史目录"查找。
+历史 MinIO 数据迁移：python scripts/migrate_minio_to_local.py
+"""
 from __future__ import annotations
 
-import io
-import os
-import time
 import uuid
-from datetime import timedelta
-
-import minio
-import urllib3
-from minio import Minio
+from pathlib import Path
 
 from app.core.config import settings
-
-_client: Minio | None = None
-_storage_ok: bool | None = None
-_storage_checked_at: float = 0.0
-_STORAGE_CHECK_TTL = 5.0
+from app.services import runtime_settings
 
 
-def _get_client() -> Minio:
-    global _client
-    if _client is None:
-        # MinIO 未启动时快速失败，避免每个请求等 30 秒超时重试。
-        http_client = urllib3.PoolManager(
-            retries=0,
-            timeout=urllib3.Timeout(connect=0.5, read=2.0),
-        )
-        _client = Minio(
-            settings.MINIO_ENDPOINT,
-            access_key=settings.MINIO_ACCESS_KEY,
-            secret_key=settings.MINIO_SECRET_KEY,
-            secure=False,
-            http_client=http_client,
-        )
-        # 确保 bucket 存在
-        if not _client.bucket_exists(settings.MINIO_BUCKET):
-            _client.make_bucket(settings.MINIO_BUCKET)
-    return _client
+def _storage_roots() -> list[Path]:
+    roots: list[Path] = []
+    current = Path(settings.LOCAL_STORAGE_DIR).expanduser().resolve()
+    roots.append(current)
+    for raw in (runtime_settings.get().get("storage_dirs") or []):
+        p = Path(str(raw)).expanduser().resolve()
+        if p not in roots:
+            roots.append(p)
+    roots[0].mkdir(parents=True, exist_ok=True)
+    return roots
 
 
-def _storage_available() -> bool:
-    """短周期探测 MinIO 可用性，避免每个图片 URL 都等一次连接超时。"""
-    global _storage_ok, _storage_checked_at
-    now = time.monotonic()
-    if _storage_ok is not None and now - _storage_checked_at < _STORAGE_CHECK_TTL:
-        return _storage_ok
+def _normalize(object_name: str) -> str:
+    name = object_name.replace("\\", "/").strip("/")
+    if not name or ".." in name.split("/"):
+        raise ValueError("invalid object name")
+    return name
 
-    try:
-        _get_client().bucket_exists(settings.MINIO_BUCKET)
-        _storage_ok = True
-    except Exception:
-        _storage_ok = False
-    _storage_checked_at = now
-    return _storage_ok
+
+def write_path(object_name: str) -> Path:
+    """新文件写入路径（当前保存目录）。"""
+    name = _normalize(object_name)
+    root = _storage_roots()[0]
+    path = (root / name).resolve()
+    if not path.is_relative_to(root):
+        raise ValueError("invalid object name")
+    return path
+
+
+def find_path(object_name: str) -> Path:
+    """查找已有文件：当前目录优先，其次历史目录；找不到时返回当前目录路径。"""
+    name = _normalize(object_name)
+    for root in _storage_roots():
+        path = (root / name).resolve()
+        if path.is_relative_to(root) and path.is_file():
+            return path
+    return write_path(object_name)
+
+
+def resolve_object(object_name: str) -> Path:
+    """读取场景使用：返回实际存在的文件路径（不存在时返回当前目录路径，由调用方报 404）。"""
+    return find_path(object_name)
 
 
 def upload_bytes(data: bytes, content_type: str, folder: str = "profiles") -> str:
-    """上传字节数据到 MinIO，返回 object 路径。"""
-    client = _get_client()
+    """上传字节数据到本地存储，返回 object 路径。"""
     object_name = f"{folder}/{uuid.uuid4().hex}"
-    client.put_object(
-        settings.MINIO_BUCKET,
-        object_name,
-        io.BytesIO(data),
-        length=len(data),
-        content_type=content_type,
-    )
+    path = write_path(object_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(data)
     return object_name
 
 
 def upload_fileobj(fileobj, content_type: str, folder: str = "live_avatars") -> str:
-    """流式上传文件对象到 MinIO，避免整文件读入内存。"""
-    client = _get_client()
+    """流式上传文件对象到本地存储，避免整文件读入内存。"""
     object_name = f"{folder}/{uuid.uuid4().hex}"
-    fileobj.seek(0, os.SEEK_END)
-    length = fileobj.tell()
+    path = write_path(object_name)
+    path.parent.mkdir(parents=True, exist_ok=True)
     fileobj.seek(0)
-    client.put_object(
-        settings.MINIO_BUCKET,
-        object_name,
-        fileobj,
-        length=length,
-        content_type=content_type,
-    )
+    with path.open("wb") as out:
+        while True:
+            chunk = fileobj.read(1024 * 1024)
+            if not chunk:
+                break
+            out.write(chunk)
     return object_name
 
 
 def get_presigned_url(object_name: str, expires: int = 3600) -> str:
-    """生成预签名下载 URL（1 小时有效期）。"""
-    client = _get_client()
-    return client.presigned_get_object(
-        settings.MINIO_BUCKET, object_name, expires=timedelta(seconds=expires)
-    )
+    """返回后端媒体 URL（本地文件无需签名，expires 参数保留兼容）。"""
+    return f"{settings.PUBLIC_BASE_URL.rstrip('/')}/api/v1/media/{object_name}"
 
 
 def safe_get_presigned_url(object_name: str, expires: int = 3600) -> str | None:
-    """读取历史图片 URL，MinIO 不可用时降级为 None 而不是阻塞请求。"""
-    if not _storage_available():
+    """读取历史图片 URL，文件不存在时降级为 None 而不是报错。"""
+    if not object_name:
         return None
     try:
-        return get_presigned_url(object_name, expires)
-    except Exception:
+        path = find_path(object_name)
+    except ValueError:
         return None
+    if not path.is_file():
+        return None
+    return get_presigned_url(object_name, expires)
 
 
 def safe_delete_object(object_name: str) -> None:
-    """尽力删除对象，失败或 MinIO 不可用时静默跳过，不影响业务。"""
+    """尽力删除对象，失败或不存在时静默跳过，不影响业务。"""
     if not object_name:
         return
-    if not _storage_available():
+    try:
+        path = find_path(object_name)
+    except ValueError:
         return
     try:
-        _get_client().remove_object(settings.MINIO_BUCKET, object_name)
-    except Exception:
+        if path.is_file():
+            path.unlink()
+    except OSError:
         pass
 
 
 def get_object_bytes(object_name: str) -> bytes:
     """读取对象字节内容。"""
-    client = _get_client()
-    response = client.get_object(settings.MINIO_BUCKET, object_name)
-    try:
-        return response.read()
-    finally:
-        response.close()
-        response.release_conn()
+    return find_path(object_name).read_bytes()
 
 
 def delete_object(object_name: str) -> None:
-    """删除 MinIO 对象（不存在时静默忽略）。"""
+    """删除本地对象（不存在时静默忽略）。"""
     try:
-        client = _get_client()
-        client.remove_object(settings.MINIO_BUCKET, object_name)
-    except Exception:
+        path = find_path(object_name)
+        if path.is_file():
+            path.unlink()
+    except (ValueError, OSError):
         pass
+
+
+def local_path(object_name: str) -> Path:
+    """返回本地绝对路径（供数字人引擎等本地程序直接使用）。"""
+    return find_path(object_name)

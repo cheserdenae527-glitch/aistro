@@ -1,9 +1,10 @@
 import { Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
-import { Layout, Menu, Spin, Button, Dropdown } from "antd";
-import { ShopOutlined, DashboardOutlined, LogoutOutlined, UserOutlined, SearchOutlined, PictureOutlined, BgColorsOutlined, CommentOutlined, EditOutlined, EnvironmentOutlined, ShoppingCartOutlined, VideoCameraOutlined } from "@ant-design/icons";
+import { Menu, Spin, Button, Dropdown } from "antd";
+import { LogoutOutlined, UserOutlined, SettingOutlined } from "@ant-design/icons";
 import { lazy, Suspense, useEffect, useState } from "react";
 import { useAuthStore } from "./store/auth";
-import { getMe } from "./services/auth";
+import { getMe, localLogin } from "./services/auth";
+import SettingsDrawer from "./components/SettingsDrawer";
 
 const LoginPage = lazy(() => import("./pages/LoginPage"));
 const DashboardPage = lazy(() => import("./pages/DashboardPage"));
@@ -11,7 +12,6 @@ const MerchantsPage = lazy(() => import("./pages/MerchantsPage"));
 const ProfileIndexPage = lazy(() => import("./pages/ProfileIndexPage"));
 const ProfileEditorPage = lazy(() => import("./pages/ProfileEditorPage"));
 const CrawlJobsPage = lazy(() => import("./pages/CrawlJobsPage"));
-const SubscriptionsPage = lazy(() => import("./pages/SubscriptionsPage"));
 const MerchantDetailPage = lazy(() => import("./pages/MerchantDetailPage"));
 const DesignIndexPage = lazy(() => import("./pages/DesignIndexPage"));
 const DesignEditorPage = lazy(() => import("./pages/DesignEditorPage"));
@@ -26,7 +26,29 @@ const DealEditorPage = lazy(() => import("./pages/DealEditorPage"));
 const LiveIndexPage = lazy(() => import("./pages/LiveIndexPage"));
 const LiveEditorPage = lazy(() => import("./pages/LiveEditorPage"));
 
-const { Header, Content } = Layout;
+const MENU_ITEMS = [
+  { key: "/", label: "总看板" },
+  { key: "/merchants", label: "商家管理" },
+  { key: "/crawl", label: "爬虫管理" },
+  { key: "/profile", label: "账号装修" },
+  { key: "/design", label: "视觉设计" },
+  { key: "/studio", label: "内容工坊" },
+  { key: "/reputation", label: "口碑管理" },
+  { key: "/district", label: "商圈分析" },
+  { key: "/deals", label: "团购工坊" },
+  { key: "/live", label: "直播工坊" },
+];
+
+const TICKER_ITEMS = [
+  "本地运行 LOCAL RUN",
+  "PostgreSQL 在线",
+  "本地文件存储",
+  "免登录模式",
+  "1PX 网格",
+  "直角 90°",
+  "碳墨文字",
+  "危险红强调",
+];
 
 function ProtectedRoute({ children }: { children: React.ReactNode }) {
   const token = useAuthStore((s) => s.token);
@@ -34,68 +56,99 @@ function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
+function RegMark() {
+  return (
+    <span className="regmark" role="img" aria-label="印刷套准标记">
+      <span className="rx" />
+      <span className="ry" />
+    </span>
+  );
+}
+
 function AppLayout({ children }: { children: React.ReactNode }) {
   const navigate = useNavigate();
   const location = useLocation();
   const user = useAuthStore((s) => s.user);
   const logout = useAuthStore((s) => s.logout);
-
-  const menuItems = [
-    { key: "/", icon: <DashboardOutlined />, label: "总看板" },
-    { key: "/merchants", icon: <ShopOutlined />, label: "商家管理" },
-    { key: "/crawl", icon: <SearchOutlined />, label: "爬虫管理" },
-    { key: "/profile", icon: <PictureOutlined />, label: "账号装修" },
-    { key: "/design", icon: <BgColorsOutlined />, label: "视觉设计" },
-    { key: "/studio", icon: <EditOutlined />, label: "内容工坊" },
-    { key: "/reputation", icon: <CommentOutlined />, label: "口碑管理" },
-    { key: "/district", icon: <EnvironmentOutlined />, label: "商圈分析" },
-    { key: "/deals", icon: <ShoppingCartOutlined />, label: "团购工坊" },
-    { key: "/live", icon: <VideoCameraOutlined />, label: "直播工坊" },
-    { key: "/subscriptions", icon: <UserOutlined />, label: "博主订阅" },
-  ];
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   const selectedKey =
-    menuItems.find(
+    MENU_ITEMS.find(
       (item) =>
         location.pathname === item.key ||
         location.pathname.startsWith(`${item.key}/`)
     )?.key || location.pathname;
+
+  const pageTitle = MENU_ITEMS.find((item) => item.key === selectedKey)?.label || "工作台";
 
   const handleLogout = () => {
     logout();
     navigate("/login");
   };
 
+  const today = new Date().toLocaleDateString("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+
   return (
-    <Layout style={{ minHeight: "100vh" }}>
-      <Header style={{ display: "flex", alignItems: "center", padding: "0 24px" }}>
-        <div style={{ color: "#fff", fontSize: 18, fontWeight: "bold", marginRight: 40 }}>
-          AiRestro
+    <div className="app-shell">
+      <aside className="app-sider">
+        <div className="app-brand">
+          <div className="app-brand-word">
+            <RegMark />
+            <b>AiRestro</b>
+          </div>
+          <div className="app-brand-meta">本地工作台 · LOCAL WORKBENCH</div>
         </div>
         <Menu
-          theme="dark"
-          mode="horizontal"
+          mode="inline"
           selectedKeys={[selectedKey]}
-          items={menuItems}
+          items={MENU_ITEMS.map((item) => ({
+            key: item.key,
+            label: <span className="app-nav-label">[ {item.label} ]</span>,
+          }))}
           onClick={({ key }) => navigate(key)}
-          style={{ flex: 1, minWidth: 0 }}
         />
-        <Dropdown
-          menu={{
-            items: [
-              { key: "logout", icon: <LogoutOutlined />, label: "退出登录", onClick: handleLogout },
-            ],
-          }}
-        >
-          <Button type="text" style={{ color: "#fff" }} icon={<UserOutlined />}>
-            {user?.name || "用户"}
-          </Button>
-        </Dropdown>
-      </Header>
-      <Content style={{ padding: 24, background: "#f5f5f5" }}>
-        {children}
-      </Content>
-    </Layout>
+        <div className="app-sider-footer">NO.001 / 内部工具</div>
+      </aside>
+      <div className="app-main">
+        <header className="app-topbar">
+          <span className="app-micro">[ AiRestro / {pageTitle} ]</span>
+          <div className="app-page-title">{pageTitle}</div>
+          <div style={{ flex: 1 }} />
+          <span className="app-micro">{today}</span>
+          <Button type="text" icon={<SettingOutlined />} onClick={() => setSettingsOpen(true)} title="设置" />
+          <Dropdown
+            menu={{
+              items: [
+                { key: "logout", icon: <LogoutOutlined />, label: "退出登录", onClick: handleLogout },
+              ],
+            }}
+          >
+            <Button type="text" icon={<UserOutlined />}>
+              {user?.name || "用户"}
+            </Button>
+          </Dropdown>
+          <span className="blink" aria-hidden="true" />
+        </header>
+        <div className="app-ticker">
+          <span className="app-ticker-label">{">>> "}本地 / PRESS</span>
+          <div className="app-ticker-track">
+            <span className="app-ticker-text">
+              {TICKER_ITEMS.map((t) => `[ ${t} ]`).join(" · ")} ·&nbsp;
+            </span>
+          </div>
+        </div>
+        <main className="app-content">
+          <div key={location.pathname} className="page-enter">
+            {children}
+          </div>
+        </main>
+      </div>
+      <SettingsDrawer open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+    </div>
   );
 }
 
@@ -109,6 +162,12 @@ export default function App() {
     if (token && !user) {
       getMe()
         .then((u) => setAuth(token, u))
+        .catch(() => {})
+        .finally(() => setLoading(false));
+    } else if (!token) {
+      // 本地内部工具：自动换取本机登录态，失败时回到登录页
+      localLogin()
+        .then((res) => setAuth(res.access_token, res.user))
         .catch(() => {})
         .finally(() => setLoading(false));
     } else {
@@ -132,7 +191,7 @@ export default function App() {
       }
     >
       <Routes>
-        <Route path="/login" element={<LoginPage />} />
+        <Route path="/login" element={token ? <Navigate to="/" replace /> : <LoginPage />} />
       <Route
         path="/"
         element={
@@ -149,16 +208,6 @@ export default function App() {
           <ProtectedRoute>
             <AppLayout>
               <MerchantsPage />
-            </AppLayout>
-          </ProtectedRoute>
-        }
-      />
-      <Route
-        path="/subscriptions"
-        element={
-          <ProtectedRoute>
-            <AppLayout>
-              <SubscriptionsPage />
             </AppLayout>
           </ProtectedRoute>
         }
@@ -328,11 +377,3 @@ export default function App() {
     </Suspense>
   );
 }
-
-
-
-
-
-
-
-

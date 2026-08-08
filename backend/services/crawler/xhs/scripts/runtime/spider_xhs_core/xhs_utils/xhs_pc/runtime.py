@@ -15,6 +15,11 @@ import re
 import subprocess
 from typing import Any, Mapping, Optional
 
+if os.name == "nt":
+    _NODE_CREATION_FLAGS = 0x08000000  # CREATE_NO_WINDOW：避免 node 弹终端
+else:
+    _NODE_CREATION_FLAGS = 0
+
 
 _JS_DIR = os.path.join(os.path.dirname(__file__), 'js')
 _CORE_JS_DIR = os.path.join(
@@ -49,6 +54,7 @@ def generate_b1(
             text=True,
             timeout=timeout,
             cwd=_JS_DIR,
+            creationflags=_NODE_CREATION_FLAGS,
             encoding='utf-8',
             errors='replace',
         )
@@ -112,6 +118,7 @@ def run_signer(
             text=True,
             timeout=timeout,
             cwd=_JS_DIR,
+            creationflags=_NODE_CREATION_FLAGS,
             encoding='utf-8',
             errors='replace',
         )
@@ -175,6 +182,7 @@ def generate_websectiga(
             text=True,
             timeout=timeout,
             cwd=_JS_DIR,
+            creationflags=_NODE_CREATION_FLAGS,
             encoding='utf-8',
             errors='replace',
         )
@@ -241,6 +249,7 @@ def generate_profile_data(
             text=True,
             timeout=timeout,
             cwd=_JS_DIR,
+            creationflags=_NODE_CREATION_FLAGS,
             encoding='utf-8',
             errors='replace',
         )

@@ -24,6 +24,7 @@ from app.ai.profile_agent import (
     run_profile_health_check,
 )
 from app.ai.doubao_image import ImageGenError, generate_avatar, generate_bg_image
+from app.ai.doubao_vision import analyze_clone_style_with_fallback
 from app.ai.style_analyzer import analyze_style
 from app.core.database import async_session_factory, get_db
 from app.core.deps import get_current_user
@@ -63,6 +64,7 @@ from app.schemas.profile import (
     SelectImageRequest,
 )
 from app.services.color_presets import COLOR_PRESETS
+from app.services.image_utils import HEIF_MIMES, normalize_image_bytes
 from app.services.storage import get_object_bytes, get_presigned_url, safe_delete_object, safe_get_presigned_url, upload_bytes
 
 router = APIRouter(tags=["profiles"])
@@ -951,8 +953,8 @@ async def generate_bg_image_api(
 # POST /upload-avatar /upload-bg-image — 手动上传图片
 # ============================================================
 
-_ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp"}
-_MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10MB
+_ALLOWED_MIME = {"image/png", "image/jpeg", "image/webp", *HEIF_MIMES}
+_MAX_UPLOAD_BYTES = 20 * 1024 * 1024  # 20MB，兼容手机长截图
 
 
 async def _handle_upload(
@@ -978,16 +980,17 @@ async def _handle_upload(
     # 读取 + 大小校验
     data = await file.read()
     if len(data) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=400, detail="文件大小超过 10MB 限制")
+        raise HTTPException(status_code=400, detail="文件大小超过 20MB 限制")
 
     # PIL 二次验证
     try:
         img = Image.open(io.BytesIO(data))
         img.verify()
     except Exception:
-        raise HTTPException(status_code=400, detail="无法识别的图片格式")
+        raise HTTPException(status_code=400, detail="无法识别的图片格式，请使用 PNG/JPG/HEIC")
 
-    object_name = upload_bytes(data, file.content_type or "image/png", folder="profiles")
+    data, mime = normalize_image_bytes(data, file.content_type or "image/png")
+    object_name = upload_bytes(data, mime, folder="profiles")
 
     profile = await _get_or_create_profile(shop_id, platform, db)
     section = "avatar" if field_original == "avatar_original_url" else "bg"
@@ -1024,8 +1027,8 @@ async def _read_ref_image(
 
     data = await ref_image.read()
     if len(data) > _MAX_UPLOAD_BYTES:
-        raise HTTPException(status_code=400, detail="参考图超过 10MB")
-    return data, ref_image.content_type or "image/png"
+        raise HTTPException(status_code=400, detail="参考图超过 20MB")
+    return normalize_image_bytes(data, ref_image.content_type or "image/png")
 
 
 @router.post(
@@ -1403,10 +1406,20 @@ async def analyze_style_endpoint(
     await _verify_shop_owner(shop_id, current_user, db)
 
     data = await image.read()
-    if len(data) > 10 * 1024 * 1024:
-        raise HTTPException(status_code=400, detail="图片超过 10MB")
+    if len(data) > 20 * 1024 * 1024:
+        raise HTTPException(status_code=400, detail="图片超过 20MB")
+    data, mime = normalize_image_bytes(data, image.content_type or "image/png")
 
-    result = await analyze_style(data, image.content_type or "image/png")
+    rate_key = f"rate_limit:analyze_style:{shop_id}:{platform}"
+    if not await check_rate_limit(rate_key, ttl_seconds=20):
+        raise HTTPException(
+            status_code=429,
+            detail="操作过于频繁，请 20 秒后重试",
+        )
+
+    result = await analyze_clone_style_with_fallback(
+        data, mime
+    )
     return result
 
 # ============================================================

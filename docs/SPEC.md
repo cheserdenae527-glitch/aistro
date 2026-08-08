@@ -1,7 +1,8 @@
  # AiRestro — 餐饮商家 AI 运营工作台 设计规约
  
- > 版本：v0.1 · 2026-07-30
- > 状态：初始定稿 · 迭代中可修正
+ > 版本：v0.2 · 2026-08-07
+ > 状态：迭代中可修正
+ > 说明：爬虫管理板块的详细规约以 [SPEC-CRAWLER.md](./SPEC-CRAWLER.md) 为准
  
  ---
  
@@ -65,7 +66,7 @@
  | **ORM** | SQLAlchemy 2.0 + Alembic | 异步支持，迁移管理 |
  | **数据库** | PostgreSQL 16 | JSON 字段，全文检索 |
  | **缓存/队列** | Redis + Celery | 任务调度，定时爬虫 |
- | **对象存储** | MinIO / 阿里云 OSS | 图片和爬虫快照 |
+ | **对象存储** | MinIO / 阿里云 OSS | 图片和附件存储；爬虫快照为预留能力，当前爬虫暂未使用 |
  | **AI 模型** | OpenAI GPT-4o / 国产模型切换 | 按成本和合规切换 |
  | **部署** | Docker Compose | 环境一致 |
  | **认证** | JWT + OAuth2 | FastAPI 原生支持 |
@@ -86,6 +87,7 @@
  
  ```
  User (服务商账号) 1 ── N Merchant (商家)
+ User 1 ── N Subscription (小红书博主订阅，按用户隔离；暂未挂 shop_id)
  Merchant 1 ── N Shop (门店)
  Shop 1 ── N PlatformShop (各平台店铺绑定)
  Shop 1 ── N Review (评价)
@@ -195,7 +197,7 @@
  | id | UUID PK | |
  | shop_id | UUID FK shops | |
  | platform | enum | 爬取目标平台 |
- | job_type | enum full/incremental | 全量/增量 |
+ | job_type | enum search/note_detail/comment | 已通过迁移 a7b8c9d0e1f2 从历史枚举 full/incremental 迁移完成 |
  | status | enum pending/running/success/failed/cancelled | |
  | schedule | varchar(50) | cron 或 manual |
  | result_summary | jsonb | 结果统计 |
@@ -204,6 +206,38 @@
  | finished_at | timestamptz | |
  | created_at | timestamptz | |
  
+
+#### subscriptions
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | UUID PK | |
+| user_id | UUID FK users | 所属服务商（当前按用户隔离，未挂 shop_id） |
+| xhs_user_id | varchar(100) | 小红书博主 ID（来自搜索接口 id，需完整保存） |
+| nickname | varchar(100) | 博主昵称 |
+| avatar | text | 头像 URL |
+| note_count | int | 笔记数快照 |
+| follower_count | int | 粉丝数快照 |
+| following_count | int | 关注数快照 |
+| notified_note_count | int | 上次"有更新"提醒时的笔记数快照 |
+| last_crawled_at | timestamptz | 最后轻量快照刷新时间 |
+| created_at | timestamptz | |
+
+> `last_deep_synced_at` 字段**尚未加入表结构**——"深度详情增量同步"是规划中功能，见 SPEC-CRAWLER.md §11.6。
+
+#### subscription_snapshots
+
+| 字段 | 类型 | 说明 |
+|---|---|---|
+| id | UUID PK | |
+| subscription_id | UUID FK subscriptions | |
+| note_count | int | |
+| follower_count | int | |
+| following_count | int | |
+| crawled_at | timestamptz | |
+
+> `note_details`（笔记详情快照缓存）、`blogger_analysis_tasks`（博主分析任务）两张表是"真实数据版评分改造"设计方案的一部分，**尚未建表**，字段草案见 [SPEC-CRAWLER.md](./SPEC-CRAWLER.md) §3.3-3.4、§11。
+
  #### competitor_analyses
  
  | 字段 | 类型 | 说明 |
@@ -252,8 +286,7 @@
  | /merchants | 商家列表 |
  | /shops/:id | 门店详情（聚合数据） |
  | /shops/:id/reviews | 评价管理 |
- | /data/crawl | 爬虫任务配置 |
- | /data/crawl/:id | 爬虫任务详情 |
+ | /crawl | 爬虫管理（任务 / 搜索 / 作品 / 浏览 / 分析 / 订阅） |
  | /data/import | 手动导入 |
  | /reports | 报告中心 |
  | /reports/:id | 报告详情 |
@@ -286,24 +319,25 @@
  └─ CrossPlatformCompare（跨平台数据对比）
  ```
  
- ### 4.3 数据管理组件树
- 
- ```
- DataManagementPage
- ├─ Tab: 爬虫管理
- │   ├─ CrawlTaskTable（店铺/平台/状态/最后同步时间）
- │   ├─ NewCrawlBtn -> Drawer（选店铺+平台+调度设置）
- │   └─ CrawlLogPanel（最近日志）
- └─ Tab: 手动导入
-     ├─ ImportTypeSelector（评价CSV / 菜单CSV / 粘贴文本）
-     ├─ UploadArea（拖拽/选择文件）
-     ├─ PreviewTable（解析预览）
-     └─ ConfirmImportBtn
- ```
- 
- ---
- 
- ## 5. API 设计（关键接口）
+ ### 4.3 爬虫管理组件树（/crawl）
+
+```
+CrawlJobsPage
+├─ Tab 任务列表
+│   ├─ SearchBar（关键词 + 排序/类型/时间/条数 + 历史记录）
+│   ├─ ProgressBar + CrawlTaskTable（3 秒轮询）
+│   └─ NewCrawlModal（search / note_detail / comment）
+├─ Tab 搜索博主
+│   ├─ UserSearchBar（昵称 + 深度分析条数 0/10/20/50）
+│   └─ UserCard（查看作品 / 分析 / 订阅）
+├─ Tab 博主作品（NoteCard 网格，点击打开详情）
+├─ Tab 浏览结果（点赞/评论/收藏排序 + 保存/加载历史）
+├─ Tab 博主分析（UserAnalysisPanel：统计卡 + 折线/雷达/柱状图 + 洞察 + 笔记表）
+└─ Tab 博主订阅（SubscriptionsPage 表格）
+```
+
+---
+## 5. API 设计（关键接口）
  
  ### 5.1 聚合数据
  
@@ -318,13 +352,35 @@
  GET    /api/v1/shops/{id}/reviews/analytics        关键词/情感分布
  
  ### 5.3 爬虫管理
- 
- POST   /api/v1/crawl-jobs          创建任务
- GET    /api/v1/crawl-jobs          任务列表
- POST   /api/v1/crawl-jobs/{id}/trigger  手动触发
- GET    /api/v1/crawl-jobs/{id}/logs     日志
- 
- ### 5.4 手动导入
+
+```
+POST   /api/v1/crawl-jobs                    创建任务（search / note_detail / comment）
+GET    /api/v1/crawl-jobs                    任务列表
+GET    /api/v1/crawl-jobs/{job_id}           任务详情
+
+POST   /api/v1/notes/search-users            搜索博主
+POST   /api/v1/notes/search                  搜索笔记
+GET    /api/v1/notes/{note_id}               笔记详情
+GET    /api/v1/notes/{note_id}/comments      笔记评论
+GET    /api/v1/notes/users/{user_id}/notes   按博主 ID 取作品列表
+POST   /api/v1/notes/users/{user_id}/analysis  博主数据分析评分（现状：同步接口，分层抽样估算版，保留兼容）
+POST   /api/v1/notes/users/{user_id}/analysis-tasks         创建博主分析任务（真实数据版，异步）
+GET    /api/v1/notes/users/{user_id}/analysis-tasks/{id}   查询分析任务进度/结果
+DELETE /api/v1/notes/users/{user_id}/analysis-tasks/{id}   取消分析任务
+
+POST   /api/v1/subscriptions                 订阅博主
+GET    /api/v1/subscriptions                 订阅列表
+POST   /api/v1/subscriptions/{id}/refresh    刷新订阅数据（现状：仅轻量快照，不抓详情）
+GET    /api/v1/subscriptions/{id}/notes      订阅博主笔记
+GET    /api/v1/subscriptions/{id}/snapshots  订阅快照
+DELETE /api/v1/subscriptions/{id}            取消订阅
+
+GET    /api/v1/images/proxy?url=&size=       图片代理 / 高清放大
+GET    /api/v1/images/video-proxy?url=       视频代理播放 / 下载
+```
+
+> 博主分析详细字段、评分口径以 [SPEC-CRAWLER.md](./SPEC-CRAWLER.md) §5 为准（现状），§11 为"真实数据版评分改造"设计方案（**规划中，未开发**），此处仅列现状接口概览，不含规划中的异步任务接口。
+### 5.4 手动导入
  
  POST   /api/v1/shops/{id}/imports/preview   解析预览
  POST   /api/v1/shops/{id}/imports/{id}/confirm  确认导入
@@ -337,17 +393,17 @@
  ---
  
  ## 6. 爬虫集成策略
- 
- - 爬虫代码独立于主业务代码，放在 services/crawler/ 目录
- - 每个爬虫封装为一个 Python 模块，实现统一接口：
-   class BaseCrawler(ABC): async def crawl(target) -> CrawlResult
- - 爬虫运行在 Celery worker 中，与 Web 进程隔离
- - 爬虫产出原始 JSON -> platform_shops.raw_json -> Data Processor 结构化
- - 手工导入提供：CSV/Excel 上传解析 + 文本粘贴 AI 辅助解析 + 导入前预览确认
- 
- ---
- 
- ## 7. AI 能力清单（Phase 1）
+
+- 爬虫代码独立于主业务代码，放在 `services/crawler/` 目录，当前小红书实现位于 `services/crawler/xhs/`
+- `XhsCrawler` 封装 Spider_XHS 运行时，统一接口：search_notes / search_users / get_user_info / get_user_notes / get_note_detail / get_comments / check_cookie
+- 防风控：随机延时 + 指数退避 + 代理池轮换 + Cookie 健康检测 + 失败重试
+- 任务运行器当前为 threading 内存任务（`crawler/tasks.py`），预留 Redis/Celery 替换点
+- 爬虫产出原始 JSON -> `processor.normalize_*` 标准化 -> 供浏览 / 订阅 / 分析使用
+- 博主分析评分引擎为独立纯函数模块 `app/services/xhs_analysis.py`
+- 详细规约见 [SPEC-CRAWLER.md](./SPEC-CRAWLER.md)；手工导入为后续迭代
+
+---
+## 7. AI 能力清单（Phase 1）
  
  | 能力 | 输入 | 输出 | 技术方案 |
  |---|---|---|---|
@@ -366,21 +422,21 @@
  aistro/
    backend/
      app/
-       api/v1/          路由层
+       api/v1/          路由层（notes / subscriptions / crawl-jobs / images）
        models/          SQLAlchemy 模型
        schemas/         Pydantic 校验
-       services/        业务逻辑
-       ai/              AI 服务（抽象接口 + 各厂商实现）
-       crawler/         爬虫模块（基类 + 各平台实现）
+       services/        业务逻辑（含 xhs_analysis 评分引擎）
        core/            配置/安全/数据库
        main.py
+     services/
+       crawler/         爬虫基类 + XHS 实现（xhs/）+ processor
      alembic/          数据库迁移
      requirements.txt
      Dockerfile
    frontend/
      src/
-       pages/           Dashboard/ShopDetail/DataManagement/Reports/Settings
-       components/      通用组件
+       pages/           Dashboard/Shops/CrawlJobs/Subscriptions/Reputation/Studio...
+       components/      通用组件（NoteCard/NoteDetail/UserAnalysisPanel）
        hooks/
        services/        API 调用
        store/           状态管理
@@ -389,6 +445,9 @@
      Dockerfile
    docker-compose.yml
    docs/SPEC.md
+   docs/SPEC-CRAWLER.md
+   docs/PLAN.md
+   docs/PLAN-CRAWLER.md
    README.md
  
  ---
@@ -399,7 +458,7 @@
  - 商家管理（增删改查 + 多商家切换）
  - 多平台数据聚合展示（美团/抖音/小红书）
  - 评价管理（展示 + 筛选 + AI 回复生成 + 关键词分析）
- - 爬虫任务配置与状态查看
+ - 小红书爬虫管理：任务 / 搜索 / 博主作品 / 订阅 / 博主分析评分
  - 手动导入（CSV/粘贴 + 预解析）
  - AI 自动周报生成
  - 用户认证（JWT）

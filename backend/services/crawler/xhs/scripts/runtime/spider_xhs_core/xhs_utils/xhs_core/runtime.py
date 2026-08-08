@@ -8,6 +8,11 @@ import re
 import subprocess
 from typing import Any, Mapping
 
+if os.name == "nt":
+    _NODE_CREATION_FLAGS = 0x08000000  # CREATE_NO_WINDOW：避免 node 弹终端
+else:
+    _NODE_CREATION_FLAGS = 0
+
 
 _JS_DIR = os.path.join(os.path.dirname(__file__), 'js')
 _WEBSECTIGA_CLI = os.path.join(_JS_DIR, 'websectiga_cli.js')
@@ -30,6 +35,7 @@ def run_node_json(
             capture_output=True,
             text=True,
             cwd=os.path.dirname(argv[1]) if len(argv) > 1 else None,
+            creationflags=_NODE_CREATION_FLAGS,
             timeout=timeout,
         )
     except (OSError, subprocess.TimeoutExpired) as exc:

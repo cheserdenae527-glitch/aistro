@@ -46,6 +46,10 @@ def _save_pids(backend_pid: int, frontend_pid: int) -> None:
 def main() -> None:
     _stop_previous()
 
+    # 本地模式：不需要 Docker（Redis/MinIO 已替换为进程内缓存 + 本地文件存储）
+    (ROOT / "data" / "storage").mkdir(parents=True, exist_ok=True)
+    print("本地模式启动中：无需 Docker（PostgreSQL 使用本机服务）")
+
     env = os.environ.copy()
     env["PYTHONPATH"] = str(BACKEND_DIR / "services")
     backend_log = (ROOT / "backend.log").open("w", encoding="utf-8")

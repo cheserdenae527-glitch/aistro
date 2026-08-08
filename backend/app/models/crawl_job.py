@@ -29,7 +29,10 @@ class CrawlJob(Base):
         nullable=False,
     )
     job_type: Mapped[str] = mapped_column(
-        Enum("full", "incremental", name="crawl_job_type", create_type=True),
+        Enum(
+            "full", "incremental", "search", "note_detail", "comment",
+            name="crawl_job_type", create_type=True,
+        ),
         nullable=False,
         server_default="full",
     )

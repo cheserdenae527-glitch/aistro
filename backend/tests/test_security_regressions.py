@@ -203,8 +203,10 @@ def test_live_engine_url_validation():
         _validate_engine_base_url("http://127.0.0.1:8000")
     with pytest.raises(ValueError):
         _validate_media_url_host("http://10.0.0.1/secret")
+    # 本地存储模式下，后端媒体端口（PUBLIC_BASE_URL，默认 8000）允许
+    assert _validate_media_url_host("http://127.0.0.1:8000/secret") == "http://127.0.0.1:8000/secret"
     with pytest.raises(ValueError):
-        _validate_media_url_host("http://127.0.0.1:8000/secret")
+        _validate_media_url_host("http://127.0.0.1:9999/secret")
     with pytest.raises(ValueError):
         _validate_media_url_host("http://169.254.169.254/latest/meta-data")
 

@@ -15,11 +15,21 @@ from app.api.v1 import routers
 from app.core.config import settings
 
 
+_subscription_scheduler = None
+
+
 @asynccontextmanager
 async def lifespan(_app: FastAPI):
-    # 启动时：连接池自动由 SQLAlchemy 管理
+    global _subscription_scheduler
+    # 启动时：连接池自动由 SQLAlchemy 管理；订阅定时刷新从 subscriptions 表重建调度
+    from app.services.subscription_scheduler import SubscriptionScheduler
+
+    _subscription_scheduler = SubscriptionScheduler()
+    _subscription_scheduler.start()
     yield
-    # 关闭时：引擎清理
+    # 关闭时：停止调度器并清理引擎
+    if _subscription_scheduler is not None:
+        _subscription_scheduler.shutdown()
     from app.core.database import engine
 
     await engine.dispose()

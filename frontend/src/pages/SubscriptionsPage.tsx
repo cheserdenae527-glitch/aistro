@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Form, Input, message, Modal, Table, Typography, Popconfirm, Space, Row, Col, Spin } from 'antd';
+import { Button, Form, Input, message, Modal, Table, Typography, Popconfirm, Space, Row, Col, Spin, Tag } from 'antd';
 import { PlusOutlined, ReloadOutlined } from '@ant-design/icons';
 import { NoteCardView, type NoteCardData } from '../components/NoteCard';
 import NoteDetail from '../components/NoteDetail';
@@ -22,7 +22,16 @@ export default function SubscriptionsPage() {
 
   const handleAdd = async () => { const v = await form.validateFields(); try { await subService.create({ xhs_user_id: v.xhs_user_id, nickname: v.nickname, avatar: v.avatar }); message.success('已订阅'); setModalOpen(false); form.resetFields(); fetchSubs(); } catch (e: any) { message.error(e?.response?.data?.detail || '失败'); } };
 
-  const handleRefresh = async (id: string) => { try { await subService.refresh(id); message.success('已刷新'); fetchSubs(); } catch { message.error('刷新失败'); } };
+  const handleRefresh = async (id: string) => {
+    try {
+      const r = await subService.refresh(id);
+      const status = r.data?.refresh_status;
+      if (status === 'failed') message.error('刷新失败: ' + (r.data?.refresh_error || '未知错误'), 5);
+      else if (status === 'partial') message.warning('部分数据未更新: ' + (r.data?.refresh_error || ''), 5);
+      else message.success('已刷新');
+      fetchSubs();
+    } catch { message.error('刷新失败'); }
+  };
 
   const handleViewNotes = async (sub: Subscription) => {
     setNotesLoading(true); setViewingNickname(sub.nickname);
@@ -38,8 +47,10 @@ export default function SubscriptionsPage() {
     { title:'笔记数', dataIndex:'note_count', key:'note_count' },
     { title:'粉丝', dataIndex:'follower_count', key:'follower_count' },
     { title:'最后更新', dataIndex:'last_crawled_at', key:'last_crawled_at', render:(v:string) => v ? v.slice(0,16).replace('T',' ') : '-' },
+    { title:'有更新', key:'has_update', render:(_:any, r:Subscription) => r.note_count > (r.notified_note_count ?? 0) ? <Tag color='red'>有更新</Tag> : <Tag>无</Tag> },
     { title:'操作', key:'actions', render:(_:any, r:Subscription) => <Space>
       <Button type='link' size='small' onClick={() => handleViewNotes(r)}>笔记</Button><Button type='link' size='small' icon={<ReloadOutlined />} onClick={() => handleRefresh(r.id)}>刷新</Button>
+      {r.note_count > (r.notified_note_count ?? 0) ? <Button type='link' size='small' onClick={async () => { try { await subService.ack(r.id); message.success('已标记为已查看'); fetchSubs(); } catch { message.error('操作失败'); } }}>标记已读</Button> : null}
       <Popconfirm title='取消订阅？' onConfirm={() => handleDelete(r.id)}><Button type='link' size='small' danger>取消</Button></Popconfirm>
     </Space> },
   ];

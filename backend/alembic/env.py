@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import create_async_engine
 from app.core.config import settings
 from app.core.database import Base
 from app.models import (  # noqa: F401
-    User, Merchant, Shop, PlatformShop, Review, MenuItem, CrawlJob, Report,
+    User, Merchant, Shop, PlatformShop, Review, MenuItem, CrawlJob, CompetitorAnalysis, Report, NoteDetail, BloggerAnalysisTask,
     ManualImport, ShopProfile, DesignProject, DesignAsset, MenuDesign, DesignJob,
     MenuDesignVersion, StudioProject, StudioCopy, StudioDeck, DistrictSnapshot,
     DistrictPoi, DistrictPoiOverride, DealProject, DealItem, CompetitorDeal,

@@ -32,3 +32,13 @@ export async function getMe() {
  const res = await api.get<User>("/auth/me");
  return res.data;
 }
+
+export async function localLogin() {
+  const res = await api.post<LoginResponse>("/auth/local-login");
+  return res.data;
+}
+
+export async function updateUser(name: string, newPassword?: string) {
+  const res = await api.put<User>("/auth/me", { name, new_password: newPassword || undefined });
+  return res.data;
+}

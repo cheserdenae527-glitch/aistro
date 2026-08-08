@@ -1,0 +1,15 @@
+body { width: 300px; font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; margin: 0; padding: 12px; }
+.app { display: flex; flex-direction: column; gap: 8px; }
+h1 { font-size: 15px; margin: 0 0 4px; }
+.status { font-size: 13px; padding: 8px; border-radius: 6px; background: #f1f1f1; }
+.status.ok { background: #e6f6ec; color: #1a7f37; }
+.status.warn { background: #fff4e5; color: #b45309; }
+.status.error { background: #fde8e8; color: #b91c1c; }
+.endpoint-row { display: flex; gap: 6px; }
+.endpoint-row input { flex: 1; font-size: 12px; padding: 5px; border: 1px solid #ccc; border-radius: 5px; }
+button { font-size: 13px; padding: 7px; border: 1px solid #ccc; border-radius: 6px; background: #fafafa; cursor: pointer; }
+button.primary { background: #ff2442; color: #fff; border-color: #ff2442; }
+.result { font-size: 12px; white-space: pre-wrap; word-break: break-all; background: #f6f6f6; padding: 8px; border-radius: 6px; max-height: 180px; overflow: auto; }
+
+.blogger-row { display: flex; gap: 6px; }
+.blogger-row input { flex: 1; font-size: 12px; padding: 5px; border: 1px solid #ccc; border-radius: 5px; }

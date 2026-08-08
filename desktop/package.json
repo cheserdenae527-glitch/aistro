@@ -1,0 +1,34 @@
+{
+  "name": "aistro-desktop",
+  "version": "0.1.0",
+  "private": true,
+  "description": "AiRestro 本地工作台桌面端（脱离浏览器运行）",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "^33.0.0",
+    "electron-builder": "^24.13.3"
+  },
+  "build": {
+    "appId": "com.aistro.desktop",
+    "productName": "AiRestro工作台",
+    "files": [
+      "main.js",
+      "preload.js",
+      "../frontend/dist/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}

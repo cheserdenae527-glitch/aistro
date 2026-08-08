@@ -140,9 +140,11 @@ def _validate_media_url_host(value: str) -> str:
     minio_parsed = urlparse(settings.MINIO_ENDPOINT)
     minio_host = (minio_parsed.hostname or "").lower()
     minio_port = minio_parsed.port or 9000
+    media_parsed = urlparse(settings.PUBLIC_BASE_URL)
+    media_port = media_parsed.port or (443 if media_parsed.scheme == "https" else 80)
     if host in _LOOPBACK_HOSTS:
-        if parsed_port != minio_port:
-            raise ValueError("素材地址仅允许 MinIO 回环端口")
+        if parsed_port not in (minio_port, media_port):
+            raise ValueError("素材地址仅允许本机媒体服务回环端口")
         return value
     if minio_host and host == minio_host:
         return value

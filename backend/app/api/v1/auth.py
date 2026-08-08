@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ipaddress
+import secrets
 import threading
 import time
 
@@ -9,11 +11,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.core.deps import get_current_user
 from app.core.security import create_access_token, hash_password, verify_password
 from app.models.user import User
-from app.schemas.user import Token, UserLogin, UserRegister, UserResponse
+from app.schemas.user import Token, UserLogin, UserRegister, UserResponse, UserUpdate
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 
@@ -99,3 +102,57 @@ async def login(
 @router.get("/me", response_model=UserResponse)
 async def me(current_user: User = Depends(get_current_user)) -> UserResponse:
     return UserResponse.model_validate(current_user)
+
+
+@router.put("/me", response_model=UserResponse)
+async def update_me(
+    body: UserUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> UserResponse:
+    """更新当前用户信息：姓名、密码（本地内部工具，无需旧密码）。"""
+    if body.name:
+        current_user.name = body.name
+    if body.new_password:
+        current_user.password_hash = hash_password(body.new_password)
+    db.add(current_user)
+    await db.commit()
+    await db.refresh(current_user)
+    return UserResponse.model_validate(current_user)
+
+def _is_loopback_client(ip: str) -> bool:
+    if ip == "testclient":  # pytest TestClient
+        return True
+    try:
+        return ipaddress.ip_address(ip).is_loopback
+    except ValueError:
+        return False
+
+
+@router.post("/local-login", response_model=Token)
+async def local_login(
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+) -> Token:
+    """本地内部工具免登录：自动创建/复用本地管理员并签发 token。"""
+    if not settings.LOCAL_AUTO_LOGIN:
+        raise HTTPException(status_code=403, detail="本地免登录未开启")
+    ip = request.client.host if request.client else ""
+    if not _is_loopback_client(ip):
+        raise HTTPException(status_code=403, detail="仅允许本机免登录")
+    email = settings.LOCAL_ADMIN_EMAIL.lower()
+    result = await db.execute(select(User).where(User.email == email))
+    user = result.scalar_one_or_none()
+    if user is None:
+        user = User(
+            email=email,
+            password_hash=hash_password(secrets.token_urlsafe(24)),
+            name=settings.LOCAL_ADMIN_NAME,
+            role="admin",
+        )
+        db.add(user)
+        await db.flush()
+    access_token = create_access_token(data={"sub": str(user.id)})
+    return Token(
+        access_token=access_token, user=UserResponse.model_validate(user)
+    )

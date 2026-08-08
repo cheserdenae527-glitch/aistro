@@ -64,8 +64,6 @@ const defaultProfile = (overrides: Partial<ShopProfile> = {}): ShopProfile => ({
   bio_flagged: false,
   status: "draft",
   version: 3,
-  created_at: "2026-08-05T00:00:00Z",
-  updated_at: "2026-08-05T00:00:00Z",
   ...overrides,
 });
 
@@ -221,5 +219,44 @@ describe("ProfileEditorPage", () => {
     await waitFor(() => {
       expect(writeText).toHaveBeenCalledWith(expect.stringContaining("加微信刷单"));
     });
+  });
+
+  it("上传截图返回多个复刻方案时可点选应用", async () => {
+    mocked(profileService.analyzeStyle).mockResolvedValue({
+      data: {
+        vibe: "市井烟火",
+        dominant_colors: ["#C93828"],
+        schemes: [
+          {
+            id: "A",
+            name: "暖辣市井方案",
+            color_scheme: {
+              primary: "#C93828",
+              secondary: "#FFF0EE",
+              accent: "#A82015",
+              text: "#2A0A08",
+            },
+            style_keywords: ["复古", "烟火气"],
+            nickname_options: ["巷子口老灶火锅"],
+            bio: "人均80吃撑",
+            avatar_prompt: "红铜锅头像",
+            bg_prompt: "老巷子背景",
+          },
+        ],
+      },
+    });
+
+    renderPage();
+    await screen.findByDisplayValue("巷子口老灶火锅");
+
+    const uploadBtn = screen.getByRole("button", { name: /上传截图/ });
+    const uploadWrap = uploadBtn.closest(".ant-upload") as HTMLElement;
+    const input = uploadWrap.querySelector('input[type="file"]') as HTMLInputElement;
+    await userEvent.upload(input, new File(["x"], "home.png", { type: "image/png" }));
+
+    await screen.findByText("复刻参考方案 · 市井烟火");
+    await userEvent.click(screen.getByText("暖辣市井方案"));
+    expect(await screen.findByDisplayValue("红铜锅头像")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("巷子口老灶火锅")).toBeInTheDocument();
   });
 });

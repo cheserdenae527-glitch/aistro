@@ -13,5 +13,8 @@ from app.api.v1.maps import router as maps_router
 from app.api.v1.district import router as district_router
 from app.api.v1.deals import router as deals_router
 from app.api.v1.live import router as live_router
+from app.api.v1.media import router as media_router
+from app.api.v1.settings import router as settings_router
+from app.api.v1.browser_bridge import router as browser_bridge_router
 
-routers = [auth_router, merchants_router, shops_router, crawl_jobs_router, notes_router, images_router, subscriptions_router, profiles_router, designs_router, reviews_router, studio_router, maps_router, district_router, deals_router, live_router]
+routers = [auth_router, merchants_router, shops_router, crawl_jobs_router, notes_router, images_router, subscriptions_router, profiles_router, designs_router, reviews_router, studio_router, maps_router, district_router, deals_router, live_router, media_router, settings_router, browser_bridge_router]

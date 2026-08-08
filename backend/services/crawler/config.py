@@ -13,6 +13,20 @@ DEFAULT_CONFIG = {
     "min_delay": 2.0,
     "max_delay": 5.0,
     "max_retries": 3,
+    "subscription_refresh_interval_hours": 12,
+    "subscription_refresh_batch_size": 20,
+    "risk_min_interval": 1.0,
+    "risk_failure_threshold": 3,
+    "risk_cooldown_seconds": 180,
+    "min_follower_count": 0,
+    "min_note_count": 10,
+    "min_avg_likes": 50,
+    "analysis_batch_size": 50,
+    "analysis_batch_interval_seconds": 5,
+    "analysis_max_notes_per_task": 150,
+    "analysis_task_timeout_minutes": 45,
+    "subscription_deep_sync_min_interval_hours": 24,
+    "subscription_deep_sync_max_per_run": 200,
 }
 
 
@@ -52,3 +66,7 @@ def get_proxy_pool() -> list[dict]:
 def get_delay_settings() -> tuple[float, float, int]:
     cfg = load_config()
     return cfg.get("min_delay", 2.0), cfg.get("max_delay", 5.0), cfg.get("max_retries", 3)
+
+
+
+

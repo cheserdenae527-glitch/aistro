@@ -17,7 +17,9 @@ class Subscription(Base):
     note_count: Mapped[int] = mapped_column(sa.Integer, default=0)
     follower_count: Mapped[int] = mapped_column(sa.Integer, default=0)
     following_count: Mapped[int] = mapped_column(sa.Integer, default=0)
+    notified_note_count: Mapped[int] = mapped_column(sa.Integer, default=0, server_default="0")
     last_crawled_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
+    last_deep_synced_at: Mapped[datetime | None] = mapped_column(sa.DateTime(timezone=True), nullable=True)
     created_at: Mapped[datetime] = mapped_column(sa.DateTime(timezone=True), server_default=sa.func.now())
 
 class SubscriptionSnapshot(Base):

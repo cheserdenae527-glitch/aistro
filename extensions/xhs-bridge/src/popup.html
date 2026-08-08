@@ -1,0 +1,27 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <link rel="stylesheet" href="popup.css" />
+</head>
+<body>
+  <div class="app">
+    <h1>AiRestro XHS Bridge <span id="extVersion" class="ver"></span></h1>
+    <div id="status" class="status">加载中…</div>
+    <div class="endpoint-row">
+      <input id="endpoint" type="text" placeholder="http://127.0.0.1:8000/api/v1/bridge" />
+      <button id="saveEndpoint">保存</button>
+    </div>
+    <div class="blogger-row">
+      <input id="bloggerUrl" type="text" placeholder="博主主页链接，如 /user/profile/xxx" />
+      <button id="collectBlogger">采集博主</button>
+    </div>
+    <button id="saveNote" class="primary">保存当前笔记</button>
+    <button id="saveComments">采集评论</button>
+    <button id="collectLinks">收集本页链接</button>
+    <button id="debug">调试信息</button>
+    <div id="result" class="result"></div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>

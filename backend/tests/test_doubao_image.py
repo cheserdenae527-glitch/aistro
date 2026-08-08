@@ -178,3 +178,61 @@ def test_stream_image_urls_reports_progress(monkeypatch):
     )
     assert urls == ["u0", "u1"]
     assert calls == [(1, 4), (2, 4)]
+
+
+# ============================================================
+# 豆包视觉复刻解析
+# ============================================================
+
+def test_vision_style_normalize_result():
+    from app.ai.doubao_vision import _normalize_result, _parse_style_json
+
+    raw = (
+        '{"vibe":"市井烟火","dominant_colors":["#C93828","#FFF0EE","#A82015","#2A0A08"],'
+        '"schemes":[{"id":"A","name":"江湖红","color_scheme":{"primary":"#C93828","secondary":"#FFF0EE","accent":"#A82015","text":"#2A0A08"},'
+        '"style_keywords":["复古","烟火气"],"nickname_options":["巷子口老灶火锅"],"bio":"人均80吃撑",'
+        '"avatar_prompt":"红铜锅logo","bg_prompt":"老巷子背景"}]}'
+    )
+    data = _parse_style_json(raw)
+    result = _normalize_result(data, ["#111111"])
+    assert len(result["schemes"]) == 1
+    assert result["schemes"][0]["color_scheme"]["primary"] == "#C93828"
+    assert result["schemes"][0]["bio"] == "人均80吃撑"
+    assert result["vibe"] == "市井烟火"
+
+
+def test_vision_style_skips_invalid_scheme():
+    from app.ai.doubao_vision import _normalize_result, _parse_style_json
+
+    raw = '{"schemes":[{"id":"A","name":"坏方案","color_scheme":{"primary":"red"}}]}'
+    result = _normalize_result(_parse_style_json(raw), ["#111111"])
+    assert result["schemes"] == []
+
+
+# ============================================================
+# 手机截图（HEIC）转码
+# ============================================================
+
+def test_normalize_image_bytes_keeps_png():
+    from app.services.image_utils import normalize_image_bytes
+
+    data = _make_png_bytes()
+    out, mime = normalize_image_bytes(data, "image/png")
+    assert mime == "image/png"
+    assert out == data
+
+
+def test_normalize_image_bytes_converts_heic_to_png():
+    from PIL import Image
+    from pillow_heif import register_heif_opener
+
+    from app.services.image_utils import normalize_image_bytes
+
+    register_heif_opener()
+    buf = io.BytesIO()
+    Image.new("RGB", (64, 64), (200, 60, 40)).save(buf, format="HEIF")
+    heic_bytes = buf.getvalue()
+
+    out, mime = normalize_image_bytes(heic_bytes, "image/heic")
+    assert mime == "image/png"
+    assert Image.open(io.BytesIO(out)).format == "PNG"

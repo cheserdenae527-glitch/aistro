@@ -29,6 +29,11 @@ class UserResponse(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class UserUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=100)
+    new_password: str | None = Field(default=None, min_length=8, max_length=128)
+
+
 class Token(BaseModel):
     access_token: str
     token_type: str = "bearer"

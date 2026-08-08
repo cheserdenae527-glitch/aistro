@@ -1,17 +1,20 @@
 import { Card, Tag, Typography, Row, Col, Space, Statistic } from 'antd';
-import { HeartOutlined, MessageOutlined, StarOutlined, PictureOutlined } from '@ant-design/icons';
+import SubscribeButton from './SubscribeButton';
+import { HeartOutlined, MessageOutlined, StarOutlined, PictureOutlined, ShareAltOutlined } from '@ant-design/icons';
 const { Text, Title } = Typography;
 
 export interface NoteCardData {
   xsec_token: string;
   title: string;
-  author: { nickname: string; avatar: string };
-  stats: { liked: number; collected: number; comments: number };
+  author: { id?: string; nickname: string; avatar: string };
+  stats: { liked: number; collected: number; comments: number; shared?: number };
   image_urls: string[];
   cover_url: string;
   tags: string[];
   platform_note_id: string;
   desc: string;
+  type?: string;
+  full_stats?: boolean;
 }
 
 export function parseNote(raw: any): NoteCardData {
@@ -27,14 +30,16 @@ export function parseNote(raw: any): NoteCardData {
   }
   return {
     title: nc.display_title || nc.title || '',
-    author: { nickname: user.nickname || user.nick_name || '', avatar: user.avatar || '' },
-    stats: { liked: Number(interact.liked_count) || 0, collected: Number(interact.collected_count) || 0, comments: Number(interact.comment_count) || 0 },
+    author: { id: user.user_id || user.id || '', nickname: user.nickname || user.nick_name || '', avatar: user.avatar || '' },
+    stats: { liked: Number(interact.liked_count) || 0, collected: Number(interact.collected_count) || 0, comments: Number(interact.comment_count) || 0, shared: Number(interact.shared_count) || 0 },
     image_urls: imageUrls,
     cover_url: nc.cover?.url_default || imageUrls[0] || '',
     tags: (nc.corner_tag_info ?? []).map((t: any) => t.text),
     platform_note_id: raw.id || '',
     xsec_token: raw.xsec_token || "",
     desc: nc.desc || '',
+    type: nc.type || raw.type || '',
+    full_stats: raw.full_stats,
   };
 }
 
@@ -54,15 +59,21 @@ export function NoteCardView({ note }: { note: NoteCardData }) {
         </div>
       )}
     >
-      <Title level={5} style={{ margin: 0, fontSize: 14 }} ellipsis={{ rows: 2 }}>{note.title}</Title>
-      <Space style={{ marginTop: 8 }}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+        <Title level={5} style={{ margin: 0, fontSize: 14, flex: 1 }} ellipsis={{ rows: 2 }}>{note.title}</Title>
+        {note.type === 'video' ? <Tag color="red" style={{ fontSize: 10, margin: 0 }}>视频</Tag> : null}
+        {note.full_stats === false ? <Tag color="orange" style={{ fontSize: 10, margin: 0 }}>部分数据</Tag> : null}
+      </div>
+      <Space style={{ marginTop: 8 }} wrap>
         {note.author.avatar ? <img src={note.author.avatar} alt='' style={{ width: 20, height: 20, borderRadius: '50%' }} /> : null}
         <Text type='secondary' style={{ fontSize: 12 }}>{note.author.nickname}</Text>
+        {note.author.id ? <span onClick={(e) => e.stopPropagation()}><SubscribeButton user={{ xhs_user_id: note.author.id, nickname: note.author.nickname, avatar: note.author.avatar }} showText={false} /></span> : null}
       </Space>
       <Row gutter={8} style={{ marginTop: 8 }}>
-        <Col span={8}><Statistic value={note.stats.liked} prefix={<HeartOutlined />} valueStyle={{ fontSize: 13 }} /></Col>
-        <Col span={8}><Statistic value={note.stats.comments} prefix={<MessageOutlined />} valueStyle={{ fontSize: 13 }} /></Col>
-        <Col span={8}><Statistic value={note.stats.collected} prefix={<StarOutlined />} valueStyle={{ fontSize: 13 }} /></Col>
+        <Col span={6}><Statistic value={note.stats.liked} prefix={<HeartOutlined />} valueStyle={{ fontSize: 13 }} /></Col>
+        <Col span={6}><Statistic value={note.stats.comments} prefix={<MessageOutlined />} valueStyle={{ fontSize: 13 }} /></Col>
+        <Col span={6}><Statistic value={note.stats.collected} prefix={<StarOutlined />} valueStyle={{ fontSize: 13 }} /></Col>
+        <Col span={6}><Statistic value={note.stats.shared ?? 0} prefix={<ShareAltOutlined />} valueStyle={{ fontSize: 13 }} /></Col>
       </Row>
       {note.image_urls.length > 1 && <div style={{ marginTop:4, fontSize:11, color:"#999" }}>{note.image_urls.length + " 张图片"}</div>}
       {note.tags.length > 0 && <div style={{ marginTop: 6 }}>{note.tags.map((t, i) => <Tag key={i} style={{ fontSize: 10 }}>{t}</Tag>)}</div>}

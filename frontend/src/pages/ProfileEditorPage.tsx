@@ -14,7 +14,7 @@ import type { Color } from "antd/es/color-picker";
 import CropModal from "../components/CropModal";
 import {
   profileService, type AiVariant,
-  type ColorSchemePreset, type HealthCheckResult, type ImageOption, type PinnedNote, type ProfileHistoryItem, type StyleAnalysis,
+  type CloneScheme, type ColorSchemePreset, type HealthCheckResult, type ImageOption, type PinnedNote, type ProfileHistoryItem, type StyleAnalysis,
 } from "../services/profiles";
 
 const { TextArea } = Input;
@@ -349,6 +349,9 @@ export default function ProfileEditorPage() {
   const [avatarRefFile, setAvatarRefFile] = useState<File | null>(null);
   const [bgRefFile, setBgRefFile] = useState<File | null>(null);
   const [cloneLoading, setCloneLoading] = useState(false);
+  const [cloneSchemes, setCloneSchemes] = useState<CloneScheme[]>([]);
+  const [cloneVibe, setCloneVibe] = useState("");
+  const [cloneModalOpen, setCloneModalOpen] = useState(false);
   const [genAvatarRefLoading, setGenAvatarRefLoading] = useState(false);
   const [genBgRefLoading, setGenBgRefLoading] = useState(false);
   const [avatarOptions, setAvatarOptions] = useState<ImageOption[]>([]);
@@ -760,9 +763,16 @@ export default function ProfileEditorPage() {
     try {
       const res = await profileService.analyzeStyle(shopId, plat, file);
       const analysis: StyleAnalysis = res.data;
+
+      if (analysis.schemes?.length) {
+        setCloneSchemes(analysis.schemes);
+        setCloneVibe(analysis.vibe || "风格识别完成");
+        setCloneModalOpen(true);
+        return;
+      }
+
       const colors = (analysis.dominant_colors || [])
         .filter((c): c is string => !!c && /^#[0-9A-Fa-f]{6}$/.test(c));
-
       setState((s) => ({
         ...s,
         ...(colors.length === 4 ? {
@@ -779,11 +789,34 @@ export default function ProfileEditorPage() {
         } : {}),
       }));
       message.success(analysis.vibe ? `复刻完成：${analysis.vibe}` : "复刻完成，配色和提示词已应用");
-    } catch {
-      message.error("风格分析失败，请换一张更清晰的主页截图");
+    } catch (e: unknown) {
+      const err = e as { response?: { status?: number } };
+      if (err.response?.status === 429) {
+        message.warning("操作太频繁，请 20 秒后再试");
+      } else {
+        message.error("风格分析失败，请换一张更清晰的主页截图");
+      }
     } finally {
       setCloneLoading(false);
     }
+  };
+
+  const applyCloneScheme = (scheme: CloneScheme) => {
+    setState((s) => ({
+      ...s,
+      colorPrimary: scheme.color_scheme.primary,
+      colorSecondary: scheme.color_scheme.secondary,
+      colorAccent: scheme.color_scheme.accent,
+      colorText: scheme.color_scheme.text,
+      colorMode: "custom",
+      colorPresetName: null,
+      avatarPrompt: scheme.avatar_prompt || s.avatarPrompt,
+      bgPrompt: scheme.bg_prompt || s.bgPrompt,
+      nickname: scheme.nickname_options?.[0] || s.nickname,
+      bio: scheme.bio || s.bio,
+    }));
+    setCloneModalOpen(false);
+    message.success(`已应用复刻方案：${scheme.name}`);
   };
 
   const handleHealthCheck = async () => {
@@ -1294,7 +1327,7 @@ export default function ProfileEditorPage() {
                 border: "1px solid #eee",
               }} />
               <Upload
-                accept="image/png,image/jpeg,image/webp"
+                accept="image/png,image/jpeg,image/webp,image/heic,image/heif"
                 showUploadList={false}
                 beforeUpload={(f) => { handleUpload("avatar", f); return false; }}
               >
@@ -1362,7 +1395,7 @@ export default function ProfileEditorPage() {
                 border: "1px solid #eee",
               }} />
               <Upload
-                accept="image/png,image/jpeg,image/webp"
+                accept="image/png,image/jpeg,image/webp,image/heic,image/heif"
                 showUploadList={false}
                 beforeUpload={(f) => { handleUpload("bg", f); return false; }}
               >
@@ -1588,6 +1621,38 @@ export default function ProfileEditorPage() {
           if (cropTarget) handleCropConfirm(cropTarget.type, dataUrl);
         }}
       />
+
+      {/* 复刻参考方案 */}
+      <Modal
+        open={cloneModalOpen}
+        title={`复刻参考方案 · ${cloneVibe}`}
+        onCancel={() => setCloneModalOpen(false)}
+        footer={null}
+        width={720}
+      >
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(200px, 1fr))", gap: 12 }}>
+          {cloneSchemes.map((scheme) => (
+            <Card key={scheme.id} size="small" hoverable onClick={() => applyCloneScheme(scheme)} style={{ cursor: "pointer" }}>
+              <div style={{ display: "flex", gap: 4, marginBottom: 6 }}>
+                {[scheme.color_scheme.primary, scheme.color_scheme.secondary, scheme.color_scheme.accent, scheme.color_scheme.text].map((clr, i) => (
+                  <div key={i} style={{ width: 22, height: 22, borderRadius: 4, background: clr }} />
+                ))}
+              </div>
+              <Text strong style={{ fontSize: 13 }}>{scheme.name}</Text>
+              {scheme.style_keywords && scheme.style_keywords.length > 0 && (
+                <div style={{ marginTop: 4 }}>
+                  {scheme.style_keywords.slice(0, 3).map((k, i) => (
+                    <Tag key={i} style={{ fontSize: 10, marginBottom: 2 }}>{k}</Tag>
+                  ))}
+                </div>
+              )}
+              <Paragraph style={{ fontSize: 11, color: "#999", marginTop: 6, marginBottom: 0 }} ellipsis={{ rows: 2 }}>
+                {scheme.bio || "自动生成简介"}
+              </Paragraph>
+            </Card>
+          ))}
+        </div>
+      </Modal>
 
       {/* 历史版本 */}
       <Modal

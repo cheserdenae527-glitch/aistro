@@ -1,6 +1,6 @@
  # AiRestro 实现计划
  
- > 基于 SPEC v0.1 · 按依赖顺序排列
+ > 基于 SPEC v0.2 · 按依赖顺序排列
  
  ## 执行策略
  
@@ -44,7 +44,9 @@
  
  ### 任务清单
  
- 1. Alembic 迁移：所有表（merchants / shops / platform_shops / reviews / menu_items / crawl_jobs / reports / manual_imports）
+ 1. Alembic 迁移：所有表（merchants / shops / platform_shops / reviews / menu_items / crawl_jobs / reports / manual_imports / competitor_analyses）
+    - subscriptions / subscription_snapshots 由 M5 爬虫板块补建，已完成（见 PLAN-CRAWLER.md）
+   - [规划中] note_details / blogger_analysis_tasks 为 M5 真实数据评分改造（C9）设计方案的一部分，尚未建表
  2. 后端 CRUD API：
     - 商家管理（增删改查 + 多商家切换）
     - 门店管理（增删改查）
@@ -106,31 +108,59 @@
  ---
  
  ## M5 — Crawler Integration（爬虫集成与调度）
- 
- **目标**：爬虫调度框架 + 手动触发的爬虫任务。
- 
- ```
- 前置：M2
- 工作量：1 次对话（爬虫框架 + 1 个平台 demo）
- ```
- 
- ### 任务清单
- 
- 1. 爬虫基类 BaseCrawler 定义 + 统一接口
- 2. 美团爬虫 Demo（集成 GitHub 开源项目）
- 3. Celery worker + 任务调度
- 4. 爬虫任务创建 / 触发 / 日志查看 API
- 5. 前端爬虫管理页（任务列表 + 创建 + 日志）
- 6. Data Processor：爬虫原始 JSON 清洗入库
- 
- ### 交付物
- - 可配置并触发美团数据爬取
- - 爬取结果自动存入 platform_shops 和 reviews
- - 前端可查看任务状态和日志
- 
- ---
- 
- ## M6 — Manual Import（手动导入）
+
+**目标**：小红书爬虫管理 + 博主运营数据分析。基础版已交付并线上运行，详细见 [PLAN-CRAWLER.md](./PLAN-CRAWLER.md)。
+**状态说明**：本节严格区分"已交付"（代码已写、可运行）与"规划中"（方案已设计、未写代码）。此前版本曾把规划方案误标为已交付，本版订正，以 PLAN-CRAWLER.md 的 C1-C9 编号为准。
+
+```
+前置：M2
+工作量：基础版已交付，按板块文档持续迭代
+```
+
+### 已交付任务
+
+1. 爬虫基类 BaseCrawler + CrawlResult 统一接口
+2. XhsCrawler 封装 Spider_XHS 运行时：
+   - 搜索笔记 / 搜索博主 / 用户信息 / 用户作品 / 笔记详情 / 评论 / Cookie 检测
+   - 防风控：随机延时 + 指数退避 + 代理池轮换 + 失败重试
+3. 爬虫任务运行器（threading 内存任务，预留 Redis/Celery）：search / note_detail / comment
+4. 爬虫任务 API：创建 / 列表 / 详情
+5. Data Processor：normalize_note / normalize_comment / normalize_user + 计数解析 + published_at
+6. 笔记浏览 API（含 `GET /notes/users/{user_id}/notes` 按博主取作品）+ 图片/视频代理 + 前端浏览结果页（筛选排序 / 浏览历史）
+7. 博主搜索 / 作品 / 订阅（subscriptions + snapshots）
+8. **博主分析评分引擎（分层抽样估算版）**：当前线上运行的唯一评分实现，同步接口 `POST /notes/users/{user_id}/analysis`（见 PLAN-CRAWLER.md C7）
+9. 全局订阅按钮（博主卡片 / 作品与浏览列表 / 笔记详情 / 分析页头复用组件）+ 批量订阅状态查询 + 订阅**轻量快照**定时刷新与更新提醒（APScheduler，见 PLAN-CRAWLER.md C6）
+10. `crawl_jobs.job_type` 迁移为 search/note_detail/comment（见 PLAN-CRAWLER.md C8）
+
+### 规划中（设计已定，尚未开发——不计入已交付）
+
+- **博主真实数据评分改造**（PLAN-CRAWLER.md C9）：两段式筛选、五维评分仅消费真实样本、覆盖率可信度、异常识别、后台分析任务（异步 + 进度可见）、详情快照缓存、订阅深度详情增量同步。原始设计稿 `docs/DESIGN-BLOGGER-SCORING-REALDATA.md`，该文档明确写"方案稿，尚未改代码"，PLAN-CRAWLER.md C9 是权威的实现状态跟踪。
+
+### 待迭代
+
+- 美团 / 抖音 / 大众点评爬虫
+- Redis/Celery 持久化任务队列
+- 通用爬虫任务定时化调度（crawl_jobs 搜索/详情任务按 cron 自动执行）——仅订阅轻量刷新已实现定时化
+- 图片 / 视频批量下载入库（MinIO/OSS 当前仅预留，未接入爬虫）
+- 多平台数据统一写入 platform_shops / reviews
+- 爬虫 / 订阅 / 分析按 shop_id 关联回门店体系（当前按 user_id）
+- 博主真实数据评分改造（见上"规划中"，排期后从此处移除并标注开发中）
+
+### 技术债（已登记）
+
+- `npm run build` 被 `ProfileEditorPage.test.tsx` 类型错误阻塞，暂用 `npx vite build`，需修复后恢复
+- 历史订阅数据存在截断 `xhs_user_id`，需清洗 / 修复并加完整性校验
+- SubscriptionScheduler 为进程内 APScheduler 调度，服务重启后调度计划丢失，需接 Celery Beat 后解除
+- 采样估算精度（当前线上唯一评分方案）：`estimated` 笔记在博主发布节奏剧烈波动或存在异常点赞（刷量）场景可能偏差较大；缓解方案即"规划中"的真实数据版改造，尚未排期
+
+### 交付物
+
+- 真实小红书博主 242 篇作品完成抓取与评分（已验证，评分方式为分层抽样估算版）
+- 前端 `/crawl` 全流程可用：任务 / 搜索 / 作品 / 浏览 / 分析（同步接口）/ 订阅
+
+---
+
+## M6 — Manual Import（手动导入）
  
  **目标**：CSV/粘贴导入数据，AI 辅助解析。
  
