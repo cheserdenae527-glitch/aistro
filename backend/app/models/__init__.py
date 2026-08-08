@@ -32,6 +32,7 @@ from app.models.live_session import LiveSession
 from app.models.live_session_metric import LiveSessionMetric
 from app.models.profile_image_job import ProfileImageJob
 from app.models.shop_profile_history import ShopProfileHistory
+from app.models.xhs_knowledge_case import XhsKnowledgeCase
 
 __all__ = [
     "User", "Merchant", "Shop", "PlatformShop", "Review",
@@ -42,5 +43,5 @@ __all__ = [
     "DealProject", "DealItem", "CompetitorDeal", "DealScheme", "DealSchemeCopy",
     "LiveProject", "LiveAvatar", "LiveScript", "LiveDanmakuConfig",
     "LiveSession", "LiveSessionMetric",
-    "ProfileImageJob", "ShopProfileHistory",
+    "ProfileImageJob", "ShopProfileHistory", "XhsKnowledgeCase",
 ]
