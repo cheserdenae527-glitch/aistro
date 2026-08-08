@@ -173,3 +173,36 @@ def test_section_prompt_injects_avatar_template(monkeypatch):
     assert "头像模板" in system
     assert "背景模板" not in system
     assert prompt == "头像提示词"
+
+
+def test_clone_fallback_enriches_schemes(monkeypatch):
+    import asyncio
+
+    from app.ai import doubao_vision
+
+    async def fake_analyze(*args, **kwargs):
+        return {
+            "style_keywords": ["烟火气"],
+            "schemes": [
+                {
+                    "id": "A",
+                    "name": "暖辣市井方案",
+                    "color_scheme": {
+                        "primary": "#C93828",
+                        "secondary": "#FFF0EE",
+                        "accent": "#A82015",
+                        "text": "#2A0A08",
+                    },
+                    "avatar_prompt": "",
+                    "bg_prompt": "",
+                }
+            ],
+        }
+
+    monkeypatch.setattr(doubao_vision, "analyze_image_style", fake_analyze)
+    result = asyncio.run(
+        doubao_vision.analyze_clone_style_with_fallback(b"x", "image/png")
+    )
+    assert result["schemes"][0]["avatar_prompt"]
+    assert result["schemes"][0]["bg_prompt"]
+    assert result["knowledge_styles"] == ["市井烟火"]
