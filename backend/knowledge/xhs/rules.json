@@ -1,0 +1,12 @@
+[
+  {"id": "bg_ratio", "rule": "背景图比例 1125:420，重要信息避开左右边缘。"},
+  {"id": "avatar_size", "rule": "头像不小于 400x400，圆形裁切，主体居中。"},
+  {"id": "nickname_bio_limit", "rule": "昵称不超过 20 字且不含 emoji；简介不超过 100 字。"},
+  {"id": "palette_limit", "rule": "全页主色不超过 4 个，优先取自所选风格的配色配方。"},
+  {"id": "contrast", "rule": "文字与背景对比度足够，避免浅底浅字或深底深字。"},
+  {"id": "consistency", "rule": "头像与背景使用同一风格，气质统一。"},
+  {"id": "whitespace", "rule": "每屏留白不少于四分之一，避免元素铺满。"},
+  {"id": "avatar_zone", "rule": "背景图中头像落点区域保持简洁，避免复杂纹理干扰头像。"},
+  {"id": "decoration_limit", "rule": "风格化元素（印章、霓虹、贴纸）克制使用，单页不超过 2 类。"},
+  {"id": "avoid_template_feel", "rule": "避免模板感：布局可变化，但统一色系与字体气质。"}
+]

@@ -1,0 +1,34 @@
+{
+  "shi_jing": {
+    "avatar_template": "为{category}设计{style}风格头像：{palette}配色，{subject}主体居中偏大，暖黄灯光，背景虚化街巷，有烟火气，方形构图，无文字水印；避免冷灰调、荧光色、复杂文字。",
+    "bg_template": "为{category}设计{style}风格背景图：{palette}配色，门头、餐桌或招牌氛围，暖黄灯光，人气热闹但不杂乱，宽幅构图，头像区域保持简洁。"
+  },
+  "ri_xi": {
+    "avatar_template": "为{category}设计{style}风格头像：{palette}配色，{subject}简洁主体居中，大面积留白，低饱和，暖白底，胶片感；避免高饱和、密集元素、冷蓝灰。",
+    "bg_template": "为{category}设计{style}风格背景图：{palette}配色，原木桌面、手写菜单或窗边自然光，留白多，宽幅构图，头像区域简洁。"
+  },
+  "gao_ji": {
+    "avatar_template": "为{category}设计{style}风格头像：{palette}配色，单一{subject}主体居中，弱化装饰，低饱和中性色，锐利简洁；避免暖色堆叠、卡通、复杂插画。",
+    "bg_template": "为{category}设计{style}风格背景图：{palette}配色，纯色或大留白，细线分隔，少元素，宽幅构图，头像区域简洁。"
+  },
+  "fu_gu": {
+    "avatar_template": "为{category}设计{style}风格头像：{palette}配色，{subject}主体带年代道具，胶片颗粒质感，暖棕色调，居中构图；避免现代荧光、冷蓝、亮白底。",
+    "bg_template": "为{category}设计{style}风格背景图：{palette}配色，木桌、旧海报、暖台灯元素，层次丰富但色调统一，宽幅构图，头像区域简洁。"
+  },
+  "ins_feng": {
+    "avatar_template": "为{category}设计{style}风格头像：{palette}配色，高颜值{subject}特写，柔和粉彩，光感通透，适当道具点缀；避免暗黑、荧光、杂乱堆料。",
+    "bg_template": "为{category}设计{style}风格背景图：{palette}配色，粉彩墙面加单品，干净留白，可加品牌小字，宽幅构图，头像区域简洁。"
+  },
+  "guo_chao": {
+    "avatar_template": "为{category}设计{style}风格头像：{palette}配色，{subject}主体结合传统纹样与现代图形，红金为主，印章或书法点缀；避免廉价贴纸、元素过多、字体混杂。",
+    "bg_template": "为{category}设计{style}风格背景图：{palette}配色，屏风、窗棂或灯笼元素，稳重底色，留出信息区，宽幅构图，头像区域简洁。"
+  },
+  "nai_yu": {
+    "avatar_template": "为{category}设计{style}风格头像：{palette}配色，圆润{subject}主体，奶油色底，柔和光影，可爱但不幼稚；避免高饱和、锐利边缘、冷色。",
+    "bg_template": "为{category}设计{style}风格背景图：{palette}配色，奶油色块分区、圆角卡片感、温暖灯光，宽幅构图，头像区域简洁。"
+  },
+  "shen_ye": {
+    "avatar_template": "为{category}设计{style}风格头像：{palette}配色，{subject}剪影或酒器，暗底加霓虹光，神秘氛围，居中构图；避免高亮白底、卡通、文字对比不足。",
+    "bg_template": "为{category}设计{style}风格背景图：{palette}配色，暗色背景加局部光，吧台或酒柜元素，宽幅构图，头像区域保持可读。"
+  }
+}

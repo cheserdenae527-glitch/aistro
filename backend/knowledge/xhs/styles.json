@@ -1,0 +1,114 @@
+[
+  {
+    "id": "shi_jing", "name": "市井烟火",
+    "category_tags": ["火锅", "烧烤", "川菜", "湘菜", "江湖菜"],
+    "style_tags": ["烟火气", "热闹", "暖调", "接地气", "复古市井"],
+    "aliases": ["温馨", "热闹", "烟火", "市井"],
+    "description": "老社区街巷的烟火气，热闹亲切、接地气，适合高复购的社区餐饮。",
+    "color_palettes": [
+      {"primary": "#C93828", "secondary": "#FFF0EE", "accent": "#A82015", "text": "#2A0A08", "ratio": "主4辅3点2文1"},
+      {"primary": "#E8793A", "secondary": "#FFF3EC", "accent": "#D4520A", "text": "#2D1A0A", "ratio": "主5辅3点1文1"}
+    ],
+    "avatar_rules": "主体为人/食物特写或店招，构图居中偏大，暖光，背景虚化街巷。",
+    "bg_rules": "门头/餐桌/招牌，暖黄灯光，有人气但不杂乱，留白适中。",
+    "avoid": "冷灰调、无人物烟火感、高饱和荧光色、过度修图。"
+  },
+  {
+    "id": "ri_xi", "name": "日系清新",
+    "category_tags": ["咖啡", "甜品", "轻食", "烘焙", "Brunch"],
+    "style_tags": ["清新", "治愈", "奶油", "低饱和", "胶片"],
+    "aliases": ["温馨", "治愈", "干净", "日式"],
+    "description": "低饱和、奶油色、大面积留白的日系治愈感，适合咖啡甜品轻食。",
+    "color_palettes": [
+      {"primary": "#E8C37A", "secondary": "#FFFBF0", "accent": "#C49A3C", "text": "#4A3A1A", "ratio": "主4辅3点2文1"},
+      {"primary": "#A8C8A0", "secondary": "#F5F8F2", "accent": "#6E9A6A", "text": "#2A3A28", "ratio": "主4辅3点2文1"}
+    ],
+    "avatar_rules": "简洁手绘或食物特写，大面积留白，低饱和，暖白底。",
+    "bg_rules": "原木桌面、手写菜单、窗边自然光，留白多。",
+    "avoid": "高饱和、密集信息、冷蓝灰、黑色重边框。"
+  },
+  {
+    "id": "gao_ji", "name": "高级冷淡",
+    "category_tags": ["西餐", "日料", "高端餐饮", "酒吧"],
+    "style_tags": ["极简", "冷淡", "高级", "黑白灰", "留白"],
+    "aliases": ["简约", "高级", "克制", "性冷淡"],
+    "description": "克制的黑白灰与大量留白，低装饰、高质感，适合高端餐饮。",
+    "color_palettes": [
+      {"primary": "#6B6B6B", "secondary": "#F7F7F7", "accent": "#4A4A4A", "text": "#1A1A1A", "ratio": "主3辅4点2文1"},
+      {"primary": "#2F3E46", "secondary": "#EDF1F2", "accent": "#1F2A30", "text": "#0E1418", "ratio": "主4辅3点2文1"}
+    ],
+    "avatar_rules": "单一主体居中，弱化装饰，低饱和中性色，锐利简洁。",
+    "bg_rules": "纯色或大留白，细线分隔，少元素。",
+    "avoid": "暖色堆叠、卡通、复杂插画、过多样式。"
+  },
+  {
+    "id": "fu_gu", "name": "复古文艺",
+    "category_tags": ["咖啡", "甜品", "书店", "文创", "川菜"],
+    "style_tags": ["复古", "文艺", "胶片", "棕调", "做旧"],
+    "aliases": ["怀旧", "文艺", "旧时光", "胶片"],
+    "description": "胶片颗粒、暖棕色调、年代道具的复古文艺感。",
+    "color_palettes": [
+      {"primary": "#9B8E8A", "secondary": "#F5F2F0", "accent": "#7A6E6A", "text": "#3A3330", "ratio": "主3辅4点2文1"},
+      {"primary": "#8C5A2D", "secondary": "#F7F1E8", "accent": "#5E3D1C", "text": "#2B1F1A", "ratio": "主4辅3点2文1"}
+    ],
+    "avatar_rules": "胶片质感、颗粒感，主体带年代道具，暖棕色调。",
+    "bg_rules": "木桌、旧海报、暖台灯，层次丰富但色调统一。",
+    "avoid": "现代荧光、冷蓝、亮白底、无质感。"
+  },
+  {
+    "id": "ins_feng", "name": "ins风",
+    "category_tags": ["甜品", "咖啡", "轻食", "网红店"],
+    "style_tags": ["ins", "时尚", "粉彩", "清爽", "打卡"],
+    "aliases": ["网红", "ins", "时尚", "粉嫩"],
+    "description": "柔和粉彩、通透光感、高颜值单品的打卡友好风格。",
+    "color_palettes": [
+      {"primary": "#F2A9C4", "secondary": "#FFF7FA", "accent": "#D96C9E", "text": "#4A2230", "ratio": "主4辅3点2文1"},
+      {"primary": "#9ED4D8", "secondary": "#F4FBFB", "accent": "#4FA3A8", "text": "#16333A", "ratio": "主4辅3点2文1"}
+    ],
+    "avatar_rules": "高颜值单品特写，柔和粉彩，光感通透，适当道具点缀。",
+    "bg_rules": "粉彩墙面加单品，干净留白，可加品牌小字。",
+    "avoid": "暗黑、高对比荧光、杂乱堆料、土味贴纸风。"
+  },
+  {
+    "id": "guo_chao", "name": "国潮",
+    "category_tags": ["川菜", "湘菜", "火锅", "新中式"],
+    "style_tags": ["国潮", "新中式", "红金", "传统纹样"],
+    "aliases": ["国风", "中国风", "国潮", "传统"],
+    "description": "传统纹样与现代图形结合，红金为主色的新中式国潮。",
+    "color_palettes": [
+      {"primary": "#A82015", "secondary": "#F6E7D8", "accent": "#D9A441", "text": "#1F1410", "ratio": "主4辅3点2文1"},
+      {"primary": "#1F3A5F", "secondary": "#F0EDE6", "accent": "#C9A227", "text": "#101820", "ratio": "主4辅3点2文1"}
+    ],
+    "avatar_rules": "传统纹样加现代图形，红金为主，印章或书法元素点缀。",
+    "bg_rules": "屏风、窗棂、灯笼元素，稳重底色，留出信息区。",
+    "avoid": "廉价贴纸、元素过多、饱和度失控、字体混杂。"
+  },
+  {
+    "id": "nai_yu", "name": "奶油风",
+    "category_tags": ["甜品", "烘焙", "Brunch", "轻食"],
+    "style_tags": ["奶油", "温柔", "低饱和", "圆润", "舒适"],
+    "aliases": ["奶油", "温柔", "软糯", "舒适"],
+    "description": "奶油色块、圆润造型、柔和光影的温暖舒适风。",
+    "color_palettes": [
+      {"primary": "#F2E3D5", "secondary": "#FFFDF9", "accent": "#D9B896", "text": "#4A3A2E", "ratio": "主4辅3点2文1"},
+      {"primary": "#EAD9C8", "secondary": "#FFFBF4", "accent": "#C7A17B", "text": "#40342A", "ratio": "主4辅3点2文1"}
+    ],
+    "avatar_rules": "圆润造型、奶油色底、柔和光影，可爱但不幼稚。",
+    "bg_rules": "奶油色块分区、圆角卡片感、温暖灯光。",
+    "avoid": "高饱和、锐利边缘、冷色、信息过密。"
+  },
+  {
+    "id": "shen_ye", "name": "深夜酒馆",
+    "category_tags": ["酒吧", "居酒屋", "烧烤", "夜宵"],
+    "style_tags": ["夜", "暗调", "霓虹", "微醺", "神秘"],
+    "aliases": ["深夜", "酒吧", "暗黑", "霓虹", "微醺"],
+    "description": "暗底配局部霓虹光，神秘微醺的夜经济氛围。",
+    "color_palettes": [
+      {"primary": "#7B5EA7", "secondary": "#F5F0FA", "accent": "#5E3F89", "text": "#201838", "ratio": "主4辅3点2文1"},
+      {"primary": "#1B2A4A", "secondary": "#0F1626", "accent": "#4A7BD9", "text": "#DCE6F5", "ratio": "主4辅3点2文1"}
+    ],
+    "avatar_rules": "暗底加霓虹光，主体剪影或酒器，神秘氛围。",
+    "bg_rules": "暗色背景加局部光，吧台或酒柜元素，信息区保持可读。",
+    "avoid": "高亮白底、卡通、明亮小清新、文字对比不足。"
+  }
+]

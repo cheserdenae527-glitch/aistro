@@ -1,0 +1,22 @@
+{
+  "火锅": ["shi_jing", "guo_chao", "fu_gu"],
+  "烧烤": ["shi_jing", "shen_ye", "guo_chao"],
+  "川菜": ["shi_jing", "guo_chao", "fu_gu"],
+  "湘菜": ["shi_jing", "guo_chao"],
+  "咖啡": ["ri_xi", "gao_ji", "fu_gu"],
+  "甜品": ["nai_yu", "ri_xi", "ins_feng"],
+  "烘焙": ["nai_yu", "ri_xi", "ins_feng"],
+  "Brunch": ["ri_xi", "nai_yu", "ins_feng"],
+  "轻食": ["ri_xi", "ins_feng", "nai_yu"],
+  "日料": ["gao_ji", "ri_xi", "shen_ye"],
+  "西餐": ["gao_ji", "fu_gu"],
+  "高端餐饮": ["gao_ji", "fu_gu"],
+  "酒吧": ["shen_ye", "gao_ji"],
+  "居酒屋": ["shen_ye", "ri_xi"],
+  "夜宵": ["shen_ye", "shi_jing"],
+  "书店": ["fu_gu", "ri_xi"],
+  "文创": ["fu_gu", "guo_chao"],
+  "新中式": ["guo_chao", "fu_gu"],
+  "网红店": ["ins_feng", "nai_yu", "ri_xi"],
+  "默认": ["gao_ji"]
+}
