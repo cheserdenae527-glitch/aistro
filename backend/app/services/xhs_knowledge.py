@@ -109,7 +109,7 @@ def retrieve(
     positive = [(sc, s) for sc, s in ranked if sc[0] > 0]
     top = [s for _, s in positive[:limit]]
     if not top:
-        fallback_ids = defaults or [_DEFAULT_STYLE_ID]
+        fallback_ids = defaults or _load()["category_map"].get("默认") or [_DEFAULT_STYLE_ID]
         by_id = {s["id"]: s for s in data["styles"]}
         top = [by_id[sid] for sid in fallback_ids[:limit] if sid in by_id]
     templates = data["templates"]
@@ -183,7 +183,7 @@ def _fill_template(template: str, category: str, style_name: str, palette: dict)
 
 
 def enrich_clone_schemes(result: dict) -> dict:
-    """复刻方案校准：补齐缺失提示词并附上命中的知识风格。"""
+    """复刻方案校准：配色对齐知识风格、补齐缺失提示词并附上命中的知识风格。"""
     keywords = result.get("style_keywords") or []
     used_styles: list[str] = []
     for scheme in result.get("schemes") or []:
@@ -200,18 +200,23 @@ def enrich_clone_schemes(result: dict) -> dict:
         tpl = payload["templates"].get(style["id"])
         if not tpl:
             continue
-        filled = False
+        if style["name"] not in used_styles:
+            used_styles.append(style["name"])
+        palette = (style.get("color_palettes") or [{}])[0]
+        scheme["color_scheme"] = {
+            "primary": palette.get("primary", cs.get("primary", "")),
+            "secondary": palette.get("secondary", cs.get("secondary", "")),
+            "accent": palette.get("accent", cs.get("accent", "")),
+            "text": palette.get("text", cs.get("text", "")),
+        }
+        cs = scheme["color_scheme"]
         if not scheme.get("avatar_prompt") and tpl.get("avatar_template"):
             scheme["avatar_prompt"] = _fill_template(
                 tpl["avatar_template"], result.get("category"), style["name"], cs
             )
-            filled = True
         if not scheme.get("bg_prompt") and tpl.get("bg_template"):
             scheme["bg_prompt"] = _fill_template(
                 tpl["bg_template"], result.get("category"), style["name"], cs
             )
-            filled = True
-        if filled and style["name"] not in used_styles:
-            used_styles.append(style["name"])
     result["knowledge_styles"] = used_styles
     return result

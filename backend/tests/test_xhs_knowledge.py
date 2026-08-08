@@ -100,6 +100,7 @@ def test_enrich_clone_schemes_fills_missing_prompts():
     assert out["schemes"][0]["avatar_prompt"]
     assert out["schemes"][0]["bg_prompt"]
     assert out["knowledge_styles"] == ["市井烟火"]
+    assert out["schemes"][0]["color_scheme"]["primary"] == "#C93828"
     assert "{" not in out["schemes"][0]["avatar_prompt"]
     assert "{" not in out["schemes"][0]["bg_prompt"]
 
@@ -284,3 +285,53 @@ def test_rewrite_injects_knowledge_rules(monkeypatch):
     system = captured["kwargs"]["messages"][0]["content"]
     assert "参考设计知识库" in system
     assert result["bio"] == "新简介"
+
+
+def test_enrich_clone_schemes_calibrates_colors():
+    result = {
+        "style_keywords": ["烟火气"],
+        "schemes": [
+            {
+                "id": "A",
+                "name": "暖辣市井方案",
+                "color_scheme": {"primary": "#111111", "secondary": "#222222", "accent": "#333333", "text": "#444444"},
+                "avatar_prompt": "",
+                "bg_prompt": "",
+            }
+        ],
+    }
+    out = enrich_clone_schemes(result)
+    cs = out["schemes"][0]["color_scheme"]
+    assert cs["primary"] == "#C93828"
+    assert cs["secondary"] == "#FFF0EE"
+    assert cs["accent"] == "#A82015"
+    assert cs["text"] == "#2A0A08"
+    assert "市井烟火" in out["knowledge_styles"]
+
+
+def test_enrich_clone_schemes_reports_style_when_prompts_exist():
+    result = {
+        "style_keywords": ["烟火气"],
+        "schemes": [
+            {
+                "id": "A",
+                "name": "已有方案",
+                "color_scheme": {"primary": "#111111", "secondary": "#222222", "accent": "#333333", "text": "#444444"},
+                "avatar_prompt": "已有头像提示词",
+                "bg_prompt": "已有背景提示词",
+            }
+        ],
+    }
+    out = enrich_clone_schemes(result)
+    assert out["knowledge_styles"] == ["市井烟火"]
+    assert out["schemes"][0]["avatar_prompt"] == "已有头像提示词"
+    assert out["schemes"][0]["bg_prompt"] == "已有背景提示词"
+
+
+def test_palette_hint_adds_one_score():
+    from app.services.xhs_knowledge import _load, _score_style
+
+    style = _load()["styles"][0]  # shi_jing
+    base = _score_style(style, None, [], None, [])[0]
+    hinted = _score_style(style, None, [], "#C93828", [])[0]
+    assert hinted == base + 1
