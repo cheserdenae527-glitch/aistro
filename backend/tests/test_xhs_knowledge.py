@@ -206,3 +206,81 @@ def test_clone_fallback_enriches_schemes(monkeypatch):
     assert result["schemes"][0]["avatar_prompt"]
     assert result["schemes"][0]["bg_prompt"]
     assert result["knowledge_styles"] == ["市井烟火"]
+
+
+def test_health_check_injects_knowledge_rules(monkeypatch):
+    import asyncio
+
+    from app.ai import profile_agent
+
+    captured = {}
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            captured["kwargs"] = kwargs
+            content = '{"first_impression":"ok","strengths":["a"],"weaknesses":["b"],"suggestions":["c"]}'
+            return type(
+                "R",
+                (),
+                {
+                    "choices": [
+                        type("Ch", (), {"message": type("M", (), {"content": content})()})()
+                    ]
+                },
+            )()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    monkeypatch.setattr(profile_agent, "_get_client", lambda: FakeClient())
+    result = asyncio.run(
+        profile_agent.run_profile_health_check(
+            "昵称", "简介", "头像p", "背景p", [],
+            "#C93828", "#FFF0EE", "#A82015", "#2A0A08", True, True,
+        )
+    )
+    system = captured["kwargs"]["messages"][0]["content"]
+    assert "设计一致性参考规则" in system
+    assert "通用设计规则" in system
+    assert result["first_impression"] == "ok"
+
+
+def test_rewrite_injects_knowledge_rules(monkeypatch):
+    import asyncio
+
+    from app.ai import profile_agent
+
+    captured = {}
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            captured["kwargs"] = kwargs
+            content = '{"nickname_options":["新昵称"],"bio":"新简介","pinned_notes":[]}'
+            return type(
+                "R",
+                (),
+                {
+                    "choices": [
+                        type("Ch", (), {"message": type("M", (), {"content": content})()})()
+                    ]
+                },
+            )()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    monkeypatch.setattr(profile_agent, "_get_client", lambda: FakeClient())
+    result = asyncio.run(
+        profile_agent.rewrite_by_health_check(
+            "旧昵称", "旧简介", [], ["不足"], ["建议"], "火锅", "市井烟火", "人均80"
+        )
+    )
+    system = captured["kwargs"]["messages"][0]["content"]
+    assert "参考设计知识库" in system
+    assert result["bio"] == "新简介"

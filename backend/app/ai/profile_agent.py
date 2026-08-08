@@ -261,10 +261,15 @@ async def run_profile_health_check(
 - 点缀色：{color_accent or "（空）"}
 - 文字色：{color_text or "（空）"}"""
 
+    kb_context = build_knowledge_context(limit=2)
+    system_content = _HEALTH_SYSTEM_PROMPT
+    if kb_context:
+        system_content += "\n\n## 设计一致性参考规则（作为建议维度，不评分）\n" + kb_context
+
     response = await _get_client().chat.completions.create(
         model=settings.DEEPSEEK_MODEL,
         messages=[
-            {"role": "system", "content": _HEALTH_SYSTEM_PROMPT},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": user_msg},
         ],
         temperature=0.5,
@@ -386,10 +391,17 @@ async def rewrite_by_health_check(
 - 风格关键词：{style or "（空）"}
 - 人均价格：{price_range or "（空）"}"""
 
+    kb_context = build_knowledge_context(
+        category=category, style_keywords=[style], limit=2
+    )
+    system_content = _HEALTH_REWRITE_SYSTEM_PROMPT
+    if kb_context:
+        system_content += "\n\n## 参考设计知识库（必须遵守）\n" + kb_context
+
     response = await _get_client().chat.completions.create(
         model=settings.DEEPSEEK_MODEL,
         messages=[
-            {"role": "system", "content": _HEALTH_REWRITE_SYSTEM_PROMPT},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": user_msg},
         ],
         temperature=0.6,
