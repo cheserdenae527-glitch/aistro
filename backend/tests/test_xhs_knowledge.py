@@ -138,3 +138,38 @@ def test_generate_variants_injects_knowledge(monkeypatch):
     assert "参考设计知识库" in system
     assert "市井烟火" in system
     assert len(variants) == 4
+def test_section_prompt_injects_avatar_template(monkeypatch):
+    import asyncio
+
+    from app.ai import profile_agent
+
+    captured = {}
+
+    class FakeCompletions:
+        async def create(self, **kwargs):
+            captured["kwargs"] = kwargs
+            return type(
+                "R",
+                (),
+                {
+                    "choices": [
+                        type("Ch", (), {"message": type("M", (), {"content": "头像提示词"})()})()
+                    ]
+                },
+            )()
+
+    class FakeChat:
+        completions = FakeCompletions()
+
+    class FakeClient:
+        chat = FakeChat()
+
+    monkeypatch.setattr(profile_agent, "_get_client", lambda: FakeClient())
+    prompt = asyncio.run(
+        profile_agent.generate_section_prompt("avatar", "火锅", "市井烟火", "人均80")
+    )
+    system = captured["kwargs"]["messages"][0]["content"]
+    assert "参考设计知识库" in system
+    assert "头像模板" in system
+    assert "背景模板" not in system
+    assert prompt == "头像提示词"

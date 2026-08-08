@@ -206,10 +206,17 @@ async def generate_section_prompt(
         f"门店信息：\n- 品类：{category}\n- 风格关键词：{style}\n- 人均价格：{price_range}"
     )
 
+    kb_context = build_knowledge_context(
+        category=category, style_keywords=[style], section=section, limit=3
+    )
+    system_content = _SECTION_PROMPT_SYSTEM
+    if kb_context:
+        system_content += "\n\n## 参考设计知识库（必须遵守）\n" + kb_context
+
     response = await _get_client().chat.completions.create(
         model=settings.DEEPSEEK_MODEL,
         messages=[
-            {"role": "system", "content": _SECTION_PROMPT_SYSTEM},
+            {"role": "system", "content": system_content},
             {"role": "user", "content": user_msg},
         ],
         temperature=0.9,
