@@ -77,8 +77,8 @@ AI 生成的装修方案、提示词、复刻方案存在“设计感不足”�
 - 评分规则（第一阶段）：
   ```
   score = 0
-  品类命中（category_map 默认风格）          +3
-  styles.category_tags 命中                 +2
+  品类命中（category_map 默认风格候选）      +3（与下方 category_tags 命中互斥，不叠加）
+  styles.category_tags 命中（非默认候选）    +2
   风格关键词命中 style_tags 或 aliases      +2
   palette_hint 与任一 color_palettes 相同   +1
   排序：score 降序；同分按 category_map 默认顺序
@@ -120,7 +120,7 @@ AI 生成的装修方案、提示词、复刻方案存在“设计感不足”�
 | tags | jsonb | 标签 |
 | description | text | 案例说明 |
 | source | varchar | 案例来源（如博主主页链接/平台） |
-| authorization_status | varchar | 授权状态（未授权/已授权/仅内部参考） |
+| authorization_status | varchar | 授权状态，数据库枚举约束 `Enum(\"unauthorized\", \"authorized\", \"internal_only\")`，业务层同样校验，避免脏数据 |
 | embedding | jsonb | 向量占位（第二阶段向量检索使用，先建字段避免二次迁移） |
 | created_at | datetime | |
 
