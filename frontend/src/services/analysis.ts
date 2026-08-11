@@ -67,10 +67,11 @@ export interface ScreeningRow {
   score_suppressed: boolean;
   level: string;
   recommendation: Recommendation;
-  stage_label: StageLabel;
+  stage_label: StageLabel | '-';
   stage_confidence: Conf;
   red_flags: string[];
   collect_rate: number;
+  food_ratio: number | null;
   confidence: Conf;
 }
 

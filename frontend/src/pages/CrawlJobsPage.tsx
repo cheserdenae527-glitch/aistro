@@ -7,7 +7,9 @@ import SubscriptionsPage from './SubscriptionsPage';
 import KnowledgeBasePanel from '../components/KnowledgeBasePanel';
 import CrawlerPoolPanel from '../components/CrawlerPoolPanel';
 import UserAnalysisPanel from '../components/UserAnalysisPanel';
+import BloggerScreeningPanel from '../components/BloggerScreeningPanel';
 import SubscribeButton from '../components/SubscribeButton';
+import { listAnalysisTasks, ScreeningRow, BloggerAnalysisResult, AnalysisTaskPayload } from '../services/analysis';
 
 const { Title, Text } = Typography;
 
@@ -92,11 +94,46 @@ export default function CrawlJobsPage() {
   const [analysisStatus, setAnalysisStatus] = useState('');
   const [withComments, setWithComments] = useState(false);
 
+  // 批量筛选
+  const [screeningRows, setScreeningRows] = useState<ScreeningRow[]>([]);
+
   const fetchTasks = async () => {
     try { const res = await (await import('../services/api')).default.get('/crawl-jobs'); setTasks(res.data.running || []); }
     catch { /* silent poll */ }
   };
   useEffect(() => { fetchTasks(); const t = setInterval(fetchTasks,3000); return () => clearInterval(t); }, []);
+
+  const loadScreening = async () => {
+    const res = await listAnalysisTasks({ status: 'success', limit: 200 });
+    const items = res.items || [];
+    // 去重：每个 xhs_user_id 保留最新 finished_at 的一条
+    const latest = new Map<string, AnalysisTaskPayload>();
+    for (const t of items) {
+      const prev = latest.get(t.xhs_user_id);
+      if (!prev || (t.finished_at || '') > (prev.finished_at || '')) latest.set(t.xhs_user_id, t);
+    }
+    const rows: ScreeningRow[] = Array.from(latest.values()).map((t) => {
+      const r = (t.result || {}) as BloggerAnalysisResult;
+      return {
+        user_id: t.xhs_user_id,
+        nickname: t.nickname || '',
+        avatar: '',
+        fans: t.follower_count || 0,
+        overall_score: r.overall?.score ?? null,
+        score_suppressed: !!(r.overall_score_suppressed || r.overall?.score_suppressed),
+        level: r.overall?.level || '-',
+        recommendation: r.decision?.recommendation || 'insufficient_data',
+        stage_label: r.stage?.label || '-',
+        stage_confidence: r.stage?.confidence || 'low',
+        red_flags: (r.decision?.red_flags || []).map((f) => f.detail),
+        collect_rate: r.dimensions?.seeding_depth?.detail?.collect_rate_percent ?? 0,
+        food_ratio: r.dimensions?.verticality?.detail?.food_ratio ?? null,
+        confidence: r.confidence || 'low',
+      };
+    });
+    setScreeningRows(rows);
+  };
+  useEffect(() => { loadScreening(); }, []);
 
   const handleQuickSearch = async (query?: string) => {
     const q = query || browsingQuery;
@@ -380,6 +417,9 @@ export default function CrawlJobsPage() {
           </>
         ) : <div style={{ padding:48, textAlign:'center', color:'#999' }}>选择一个已完成的任务查看结果</div>
         },
+        { key:'screening', label: '批量筛选', children: (
+          <BloggerScreeningPanel rows={screeningRows} onRefresh={loadScreening} />
+        ) },
         { key:'analysis', label: analysisUser ? '博主分析 · ' + analysisUser.nickname : '博主分析', children: (
           <>
             <div style={{ padding: 12, textAlign: 'center' }}>
