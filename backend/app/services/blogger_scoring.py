@@ -356,18 +356,24 @@ def _score_trend(std_values: list[float], notes: list[dict]) -> dict:
 def _overall_confidence(dimensions: dict, coverage_conf: str) -> str:
     """通用置信度汇总：min(覆盖率可信度, min(五维置信度))。
 
-    特例：low 仅来自单个非核心维度，且种草深度非 low 时，整体取 medium
-    （避免单一弱信号过度拉低）。覆盖率 low 已在闸门 1 拦截，此处只会是 high/medium。
+    被跳过（score=None）或被降权的维度按 low 计（规格 §7）；缺失 confidence 键按 low 计（fail-safe）。
+    特例：low 仅来自单个非核心维度，且种草深度非 low 时，整体取 medium。
+    覆盖率 low 已在闸门 1 拦截，此处只会是 high/medium。
     """
     if coverage_conf == "low":
         return "low"
-    dim_confs = [d.get("confidence", "high") for d in dimensions.values() if d.get("score") is not None]
+    dim_confs = []
+    low_dims = []
+    for k, d in dimensions.items():
+        conf = "low" if d.get("score") is None else d.get("confidence", "low")
+        dim_confs.append(conf)
+        if conf == "low":
+            low_dims.append(k)
     if not dim_confs:
         return "low"
-    # rank 越大越不信任：min(五维置信度) = 取 rank 最大的一维（最不信任）
-    min_dim = max(dim_confs, key=lambda c: _CONF_RANK[c])
-    low_dims = [k for k, d in dimensions.items() if d.get("confidence") == "low"]
-    if min_dim == "low" and len(low_dims) == 1 and low_dims[0] in _NONCORE and dimensions["seeding_depth"].get("confidence") != "low":
+    min_dim = max(dim_confs, key=lambda c: _CONF_RANK[c])  # 最不信任
+    if min_dim == "low" and len(low_dims) == 1 and low_dims[0] in _NONCORE \
+            and dimensions.get("seeding_depth", {}).get("confidence", "high") != "low":
         return "medium"
     return max([coverage_conf, min_dim], key=lambda c: _CONF_RANK[c])
 

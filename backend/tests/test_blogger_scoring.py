@@ -429,3 +429,55 @@ def test_overall_confidence_coverage_low():
     }
     # 覆盖率 low 由闸门 1 兜底：即使五维全 high 也取 low
     assert _overall_confidence(dims, coverage_conf="low") == "low"
+
+
+def test_overall_confidence_skipped_noncore_counts_low():
+    from app.services.blogger_scoring import _overall_confidence
+
+    dims = {
+        "seeding_depth": {"score": 85.0, "confidence": "high"},
+        "verticality": {"score": 80.0, "confidence": "high"},
+        "stable_output": {"score": 75.0, "confidence": "high"},
+        "sustained_operation": {"score": 70.0, "confidence": "high"},
+        "growth_trend": {"score": None, "confidence": "low"},  # 被跳过（无快照且内容趋势不足）
+    }
+    assert _overall_confidence(dims, coverage_conf="high") == "medium"
+
+
+def test_overall_confidence_two_skipped_noncore_low():
+    from app.services.blogger_scoring import _overall_confidence
+
+    dims = {
+        "seeding_depth": {"score": 85.0, "confidence": "high"},
+        "verticality": {"score": None, "confidence": "low"},
+        "stable_output": {"score": None, "confidence": "low"},
+        "sustained_operation": {"score": 70.0, "confidence": "high"},
+        "growth_trend": {"score": 75.0, "confidence": "high"},
+    }
+    assert _overall_confidence(dims, coverage_conf="high") == "low"
+
+
+def test_overall_confidence_missing_confidence_key_fail_safe_low():
+    from app.services.blogger_scoring import _overall_confidence
+
+    dims = {
+        "seeding_depth": {"score": 85.0, "confidence": "high"},
+        "verticality": {"score": 80.0},  # 缺 confidence 键 → 按 low
+        "stable_output": {"score": 75.0, "confidence": "high"},
+        "sustained_operation": {"score": 70.0, "confidence": "high"},
+        "growth_trend": {"score": 75.0, "confidence": "high"},
+    }
+    assert _overall_confidence(dims, coverage_conf="high") == "medium"
+
+
+def test_overall_confidence_missing_seeding_depth_no_crash():
+    from app.services.blogger_scoring import _overall_confidence
+
+    dims = {
+        "verticality": {"score": 80.0, "confidence": "low"},
+        "stable_output": {"score": 75.0, "confidence": "high"},
+        "sustained_operation": {"score": 70.0, "confidence": "high"},
+        "growth_trend": {"score": 75.0, "confidence": "high"},
+    }
+    # 缺 seeding_depth：不抛 KeyError，且因非核心单 low 且无 seeding_depth（视为非 low）→ medium
+    assert _overall_confidence(dims, coverage_conf="high") == "medium"
