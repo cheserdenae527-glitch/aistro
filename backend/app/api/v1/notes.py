@@ -525,6 +525,7 @@ async def analyze_user_notes(
 class AnalysisTaskCreateRequest(BaseModel):
     nickname: str = ""
     fans: int = Field(0, ge=0)
+    with_comments: bool = False
 
 
 def _task_payload(task: BloggerAnalysisTask) -> dict:
@@ -539,6 +540,7 @@ def _task_payload(task: BloggerAnalysisTask) -> dict:
         "fetched_notes": task.fetched_notes,
         "coverage": task.coverage,
         "confidence": task.confidence,
+        "with_comments": task.with_comments,
         "result": task.result,
         "error": task.error,
         "created_at": task.created_at.isoformat() if task.created_at else None,
@@ -573,6 +575,7 @@ async def create_analysis_task(
         prescreen_passed=True,
         follower_count=prescreen.get("fans", 0) or 0,
         total_notes=prescreen.get("notes", 0) or 0,
+        with_comments=bool(body.with_comments if body else False),
     )
     db.add(task)
     await db.flush()

@@ -29,6 +29,7 @@ class BloggerAnalysisTask(Base):
     total_notes: Mapped[int] = mapped_column(sa.Integer, default=0)
     target_notes: Mapped[int] = mapped_column(sa.Integer, default=0)
     fetched_notes: Mapped[int] = mapped_column(sa.Integer, default=0)
+    with_comments: Mapped[bool] = mapped_column(sa.Boolean, default=False, server_default=sa.text("false"))
     coverage: Mapped[float | None] = mapped_column(sa.Float, nullable=True)
     confidence: Mapped[str | None] = mapped_column(String(20), nullable=True)
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

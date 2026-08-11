@@ -275,6 +275,19 @@ async def run_analysis_task(task_id: uuid.UUID) -> None:
 
         platform_result = await platform_future
         follower_history = merge_follower_history(follower_history, platform_result)
+
+        # 评论增强（可选）：with_comments 开启时抓取代表性笔记评论并分析，失败降级为无评论信号
+        comment_analysis = None
+        if real_notes and getattr(current_task, "with_comments", False):
+            try:
+                from app.services.blogger_comments import collect_comments
+
+                comment_analysis = await collect_comments(crawler, real_notes)
+                if comment_analysis is None:
+                    logger.warning("评论抓取失败或为空，回退到无评论信号 task=%s", task_id)
+            except Exception as exc:
+                logger.warning("评论分析失败，降级 task=%s: %s", task_id, exc)
+                comment_analysis = None
         result = score_blogger(
             real_notes,
             follower_count=task.follower_count or 0,
@@ -282,6 +295,7 @@ async def run_analysis_task(task_id: uuid.UUID) -> None:
             sampled=sampled,
             coverage_denominator=(sample_size if sampled else None),
             follower_history=follower_history,
+            comment_analysis=comment_analysis,
         )
         status = "partial" if partial else "success"
         await _update_task(
