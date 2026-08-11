@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Input, InputNumber, message, Select, Progress, Table, Tag, Typography, Tabs, Row, Col, Space, Avatar } from 'antd';
+import { Button, Input, InputNumber, message, Select, Switch, Progress, Table, Tag, Typography, Tabs, Row, Col, Space, Avatar } from 'antd';
 import { SearchOutlined, HistoryOutlined, UserOutlined, EyeOutlined, BarChartOutlined, DatabaseOutlined } from '@ant-design/icons';
 import { NoteCardView, parseNote, type NoteCardData } from '../components/NoteCard';
 import NoteDetail from '../components/NoteDetail';
@@ -90,6 +90,7 @@ export default function CrawlJobsPage() {
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
   const [analysisStatus, setAnalysisStatus] = useState('');
+  const [withComments, setWithComments] = useState(false);
 
   const fetchTasks = async () => {
     try { const res = await (await import('../services/api')).default.get('/crawl-jobs'); setTasks(res.data.running || []); }
@@ -160,7 +161,7 @@ export default function CrawlJobsPage() {
     setAnalysisStatus('正在创建分析任务...'); setActiveTab('analysis');
     try {
       const api = (await import('../services/api')).default;
-      const res = await api.post(`/notes/users/${u.user_id}/analysis-tasks`, { nickname: u.nickname, fans: u.fans }, { timeout: 60000 });
+      const res = await api.post(`/notes/users/${u.user_id}/analysis-tasks`, { nickname: u.nickname, fans: u.fans, with_comments: withComments }, { timeout: 60000 });
       if (res.data.passed_prescreen === false) {
         setAnalysisStatus('未通过粗筛：' + (res.data.reason || ''));
         setAnalysisLoading(false);
@@ -182,9 +183,10 @@ export default function CrawlJobsPage() {
             clearInterval(poll);
             if (t.status === 'success' || t.status === 'partial') {
               setAnalysisData(t.result);
-              setAnalysisStatus(t.status === 'partial' ? '分析完成（部分数据）' : '分析完成');
+              const commentsOn = withComments && t.result?.dimensions?.seeding_depth?.detail?.comment_signal_low_conf === false;
+              setAnalysisStatus(commentsOn ? '分析完成（已启用评论意向分析）' : (t.status === 'partial' ? '分析完成（部分数据）' : '分析完成'));
               setAnalysisProgress(100);
-              message.success(t.status === 'partial' ? '分析完成（部分数据）' : '分析完成');
+              message.success(commentsOn ? '分析完成（已启用评论意向分析）' : (t.status === 'partial' ? '分析完成（部分数据）' : '分析完成'));
             } else {
               setAnalysisStatus('分析失败');
               message.error('分析失败：' + (t.error || t.status), 6);
@@ -379,6 +381,10 @@ export default function CrawlJobsPage() {
         },
         { key:'analysis', label: analysisUser ? '博主分析 · ' + analysisUser.nickname : '博主分析', children: analysisLoading ? (
           <div style={{ padding: 24, textAlign: 'center' }}>
+            <Space style={{ marginBottom: 12 }}>
+              <Switch checked={withComments} onChange={setWithComments} checkedChildren="评论分析开" unCheckedChildren="评论分析关" />
+              <Text type="secondary">深度诊断可开启评论意向分析（抓取代表笔记评论，更准但更慢）</Text>
+            </Space>
             <Progress percent={analysisProgress} status="active" style={{ maxWidth: 480, margin: '0 auto' }} />
             <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>{analysisStatus || '正在分析...'}</Text>
           </div>
