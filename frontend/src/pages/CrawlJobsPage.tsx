@@ -184,9 +184,10 @@ export default function CrawlJobsPage() {
             if (t.status === 'success' || t.status === 'partial') {
               setAnalysisData(t.result);
               const commentsOn = withComments && t.result?.dimensions?.seeding_depth?.detail?.comment_signal_low_conf === false;
-              setAnalysisStatus(commentsOn ? '分析完成（已启用评论意向分析）' : (t.status === 'partial' ? '分析完成（部分数据）' : '分析完成'));
+              const doneMsg = commentsOn ? '分析完成（已启用评论意向分析）' : (t.status === 'partial' ? '分析完成（部分数据）' : '分析完成');
+              setAnalysisStatus(doneMsg);
               setAnalysisProgress(100);
-              message.success(commentsOn ? '分析完成（已启用评论意向分析）' : (t.status === 'partial' ? '分析完成（部分数据）' : '分析完成'));
+              message.success(doneMsg);
             } else {
               setAnalysisStatus('分析失败');
               message.error('分析失败：' + (t.error || t.status), 6);
@@ -379,16 +380,22 @@ export default function CrawlJobsPage() {
           </>
         ) : <div style={{ padding:48, textAlign:'center', color:'#999' }}>选择一个已完成的任务查看结果</div>
         },
-        { key:'analysis', label: analysisUser ? '博主分析 · ' + analysisUser.nickname : '博主分析', children: analysisLoading ? (
-          <div style={{ padding: 24, textAlign: 'center' }}>
-            <Space style={{ marginBottom: 12 }}>
-              <Switch checked={withComments} onChange={setWithComments} checkedChildren="评论分析开" unCheckedChildren="评论分析关" />
-              <Text type="secondary">深度诊断可开启评论意向分析（抓取代表笔记评论，更准但更慢）</Text>
-            </Space>
-            <Progress percent={analysisProgress} status="active" style={{ maxWidth: 480, margin: '0 auto' }} />
-            <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>{analysisStatus || '正在分析...'}</Text>
-          </div>
-        ) : <UserAnalysisPanel user={analysisUser} data={analysisData} onOpenNote={(n) => setDetailNote(n)} /> },
+        { key:'analysis', label: analysisUser ? '博主分析 · ' + analysisUser.nickname : '博主分析', children: (
+          <>
+            <div style={{ padding: 12, textAlign: 'center' }}>
+              <Space>
+                <Switch checked={withComments} disabled={analysisLoading} onChange={setWithComments} checkedChildren="评论分析开" unCheckedChildren="评论分析关" />
+                <Text type="secondary">深度诊断可开启评论意向分析（抓取代表笔记评论，更准但更慢）</Text>
+              </Space>
+            </div>
+            {analysisLoading ? (
+              <div style={{ padding: 24, textAlign: 'center' }}>
+                <Progress percent={analysisProgress} status="active" style={{ maxWidth: 480, margin: '0 auto' }} />
+                <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>{analysisStatus || '正在分析...'}</Text>
+              </div>
+            ) : <UserAnalysisPanel user={analysisUser} data={analysisData} onOpenNote={(n) => setDetailNote(n)} />}
+          </>
+        ) },
         { key:'subscriptions', label:'博主订阅', children: <SubscriptionsPage /> },
         { key:'knowledge', label:'知识库', children: <KnowledgeBasePanel /> },
         { key:'pool', label:'采集配置', children: <CrawlerPoolPanel /> },

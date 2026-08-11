@@ -29,6 +29,10 @@ function fmtNum(v: number | null | undefined, digits = 0): string {
   return Number(v).toLocaleString('zh-CN', { maximumFractionDigits: digits });
 }
 
+function safeValue(v: number | string | null | undefined): number | string {
+  return v == null ? '-' : v;
+}
+
 function fmtDate(v: string | null | undefined): string {
   if (!v) return '-';
   const d = new Date(v);
@@ -73,23 +77,23 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
   ];
 
   const sd = (data.dimensions?.seeding_depth?.detail || {});
-  const v = (data.dimensions?.verticality?.detail || {});
+  const vert = (data.dimensions?.verticality?.detail || {});
   const so = (data.dimensions?.sustained_operation?.detail || {});
   const gt = (data.dimensions?.growth_trend?.detail || {});
   const statCards = [
     { title: '已验证样本', value: cov.fetched_notes, suffix: `/${cov.sample_size || cov.total_notes || 0}`, color: '#1677ff' },
-    { title: '覆盖率', value: cov.coverage_rate ? (cov.coverage_rate * 100).toFixed(1) : 0, suffix: '%', color: '#1677ff' },
+    { title: '覆盖率', value: cov.coverage_rate != null ? (cov.coverage_rate * 100).toFixed(1) : undefined, suffix: '%', color: '#1677ff' },
     { title: '种草深度', value: data.dimensions?.seeding_depth?.score, suffix: '', color: '#eb2f96' },
     { title: '内容垂直度', value: data.dimensions?.verticality?.score, suffix: '', color: '#52c41a' },
     { title: '稳定产出', value: data.dimensions?.stable_output?.score, suffix: '', color: '#fa8c16' },
     { title: '持续经营', value: data.dimensions?.sustained_operation?.score, suffix: '', color: '#722ed1' },
     { title: '增长趋势', value: data.dimensions?.growth_trend?.score, suffix: '', color: '#13c2c2' },
     { title: '篇均收藏率', value: sd.collect_rate_percent, suffix: '%', color: '#f5222d' },
-    { title: '美食占比', value: v.food_ratio != null ? (v.food_ratio * 100).toFixed(0) : undefined, suffix: '%', color: '#52c41a' },
+    { title: '美食占比', value: vert.food_ratio != null ? (vert.food_ratio * 100).toFixed(0) : '-', suffix: '%', color: '#52c41a' },
     { title: '最新发布距今', value: so.freshness_days, suffix: '天', color: '#fa541c' },
   ];
   if (gt.has_snapshot && gt.growth_rate != null) {
-    statCards.push({ title: '涨粉率(月)', value: (gt.growth_rate * 100).toFixed(1), suffix: '%', color: '#13c2c2' });
+    statCards.push({ title: '涨粉率(月)', value: safeValue((gt.growth_rate * 100).toFixed(1)), suffix: '%', color: '#13c2c2' });
   }
 
   return (
@@ -111,7 +115,9 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
           </div>
         </Space>
         <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-          {overall ? (
+          {data.overall_score_suppressed || overall?.score_suppressed ? (
+            <Tag color="red">已抑制评分</Tag>
+          ) : overall ? (
             <>
               <div style={{ fontSize: 40, fontWeight: 700, lineHeight: 1.1, color: '#1677ff' }}>{overall.score}</div>
               <Tag color={overall.level === '卓越' ? 'magenta' : overall.level === '优秀' ? 'gold' : overall.level === '良好' ? 'green' : 'default'} style={{ marginTop: 4 }}>{overall.level}</Tag>
@@ -136,7 +142,7 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
         {statCards.map((c) => (
           <Col key={c.title} xs={12} sm={8} md={6} lg={4}>
             <Card size="small" styles={{ body: { padding: '12px 16px' } }}>
-              <Statistic title={c.title} value={c.value} suffix={c.suffix} valueStyle={{ color: c.color, fontWeight: 600 }} />
+              <Statistic title={c.title} value={safeValue(c.value)} suffix={c.suffix} valueStyle={{ color: c.color, fontWeight: 600 }} />
             </Card>
           </Col>
         ))}
