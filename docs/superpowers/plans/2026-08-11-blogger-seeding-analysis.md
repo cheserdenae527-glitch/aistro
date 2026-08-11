@@ -97,7 +97,7 @@ DEFAULT_SCORING_CONFIG: dict = {
             "探店", "美食", "好吃", "打卡", "菜单", "套餐", "口味", "推荐", "人气",
             "排队", "新店", "必吃", "餐厅", "小吃", "甜品", "咖啡", "奶茶", "火锅", "烧烤",
         ],
-        "points": [(0.8, 100), (0.6, 70), (0.4, 40), (0.2, 10)],
+        "points": [(0.2, 10), (0.4, 40), (0.6, 70), (0.8, 100)],
     },
     "viral": {"median_multiplier": 3.0, "abs_min": 200, "points": [(0.2, 100), (0.1, 70), (0.08, 40), (0.0, 0)]},
     "stability": {"gap_days": 14, "cliff_drop": 0.5, "cliff_penalty": 25},
@@ -269,27 +269,20 @@ def is_food_note(note: dict) -> bool:
     return any(kw in text for kw in _keywords())
 
 
-def _interp(points: list[tuple[float, float]], x: float) -> float:
-    if x <= points[-1][0]:
-        return points[-1][1]
-    if x >= points[0][0]:
-        return points[0][1]
-    for (x0, y0), (x1, y1) in zip(points, points[1:]):
-        if x0 <= x <= x1:
-            if x1 == x0:
-                return y1
-            return y0 + (y1 - y0) * (x - x0) / (x1 - x0)
-    return points[-1][1]
-
-
 def food_verticality(notes: list[dict]) -> dict:
-    """返回垂直度评分结果。points 锚点按 (比例, 分) 降序：≥80→100, 60→70, 40→40, <20→10。"""
+    """返回垂直度评分结果。复用 blogger_scoring._interpolate（升序锚点，与 C9 一致）。
+
+    函数内 import 避免与 blogger_scoring 顶层相互导入（blogger_scoring 顶层
+    会 import food_verticality，这里在调用时才取 _interpolate）。
+    """
+    from app.services.blogger_scoring import _interpolate
+
     judged = [n for n in notes if _note_text(n).strip()]
     food = sum(1 for n in judged if is_food_note(n))
     judged_count = len(judged)
     ratio = food / judged_count if judged_count else 0.0
-    points = load_scoring_config()["verticality"]["points"]  # [(0.8,100),(0.6,70),(0.4,40),(0.2,10)]
-    score = round(_interp(points, ratio), 1)
+    points = load_scoring_config()["verticality"]["points"]  # [(0.2,10),(0.4,40),(0.6,70),(0.8,100)] 升序
+    score = round(_interpolate(points, ratio), 1)
     confidence = "high" if judged_count >= len(notes) * 0.8 else "low"
     return {
         "score": score,
@@ -1135,6 +1128,7 @@ def score_blogger(
         return base
 
     tier = _tier_for(follower_count)
+    gate_cfg = load_scoring_config()["gate"]
     # 兼容字段（前端过渡期保留；新前端切走后移除）
     grass = _score_grass_planting(real, follower_count, tier)
     growth = _score_growth_potential(real, follower_count, now, follower_history)
@@ -1178,11 +1172,11 @@ def score_blogger(
             st = n["stats"]
             liked = int(st.get("liked", 0) or 0)
             extra = int(st.get("collected", 0) or 0) + int(st.get("comments", 0) or 0) + int(st.get("shared", 0) or 0)
-            if liked >= median_likes * 3 and (extra / liked if liked else 0) < FAKE_RATIO_THRESHOLD:
+            if liked >= median_likes * 3 and (extra / liked if liked else 0) < float(gate_cfg["fake_extra_ratio"]):
                 fake_hits += 1
     fake_ratio = fake_hits / len(real) if real else 0.0
     collect_inversion = _collect_like_inversion_hit(real, follower_count, tier)
-    if fake_ratio > VOTE_BAN_RATIO or collect_inversion:
+    if fake_ratio > float(gate_cfg["fake_ratio"]) or collect_inversion:
         base["anomalies"].append({"type": "fake_engagement", "level": "block", "detail": "疑似刷量（赞藏倒挂或互动结构异常）"})
         base["overall"] = None
         base["overall_score_suppressed"] = True
@@ -1209,7 +1203,7 @@ def score_blogger(
         desc = "粉丝互动倒挂，等级封顶待观察"
 
     # 闸门 4：发布停滞（有意叠加：维度已在新鲜度吃亏，等级再降一档）
-    if sustained["freshness_days"] is not None and sustained["freshness_days"] > STALE_DAYS:
+    if sustained["freshness_days"] is not None and sustained["freshness_days"] > int(gate_cfg["stale_days"]):
         base["anomalies"].append({"type": "stale", "level": "downgrade", "detail": "最新笔记发布时间超过60天"})
         level = _downgrade_level(level)
         base["insights"].append("账号可能已停更")
@@ -1677,12 +1671,12 @@ export interface ScreeningRow {
   stage_label: StageLabel;
   stage_confidence: Conf;
   red_flags: string[];
-  avg_collects: number;
+  collect_rate: number;
   confidence: Conf;
 }
 
-export async function fetchAnalysisTask(taskId: string): Promise<any> {
-  return (await api.get(`/notes/users/${localStorage.getItem('analysisUserId') || ''}/analysis-tasks/${taskId}`)).data;
+export async function fetchAnalysisTask(userId: string, taskId: string): Promise<any> {
+  return (await api.get(`/notes/users/${userId}/analysis-tasks/${taskId}`)).data;
 }
 
 export async function createAnalysisTask(userId: string, payload: { nickname: string; fans: number; with_comments?: boolean }): Promise<any> {
@@ -1860,7 +1854,7 @@ export default function BloggerScreeningPanel({ rows, onRefresh }: { rows: Scree
       render: (v: string) => { const t = REC_TAG[v] || { color: 'default', label: v }; return <Tag color={t.color}>{t.label}</Tag>; } },
     { title: '阶段', dataIndex: 'stage_label', key: 'stage_label', width: 110,
       render: (v: string, r: ScreeningRow) => <Tag>{v}{r.stage_confidence === 'low' ? '（推断）' : ''}</Tag> },
-    { title: '篇均收藏', dataIndex: 'avg_collects', key: 'avg_collects', width: 90, render: (v: number) => v?.toLocaleString('zh-CN') ?? '-' },
+    { title: '收藏率', dataIndex: 'collect_rate', key: 'collect_rate', width: 90, render: (v: number) => v != null ? `${v}%` : '-' },
     { title: '红旗', dataIndex: 'red_flags', key: 'red_flags', render: (v: string[]) => v?.length ? v.map((f, i) => <Tag color="red" key={i}>{f}</Tag>) : <Text type="secondary">无</Text> },
   ];
 
@@ -1908,7 +1902,7 @@ const loadScreening = async () => {
       stage_label: r.stage?.label || '-',
       stage_confidence: r.stage?.confidence || 'low',
       red_flags: (r.decision?.red_flags || []).map((f: any) => f.detail),
-      avg_collects: r.dimensions?.seeding_depth?.detail?.collect_rate_percent ?? 0,
+      collect_rate: r.dimensions?.seeding_depth?.detail?.collect_rate_percent ?? 0,
       confidence: r.confidence || 'low',
     };
   }));
