@@ -164,3 +164,26 @@ def test_comment_participation_mapping_ascending():
     now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
     notes = [_mk(i, now - timedelta(days=i), 0, 0, 0, 0) for i in range(5)]
     assert _comment_participation(notes) == 0.0
+
+
+def test_tier_for_carries_tier_name():
+    from app.services.blogger_scoring import _tier_for
+
+    assert _tier_for(2000)["tier_name"] == "T1"
+    assert _tier_for(50000)["tier_name"] == "T2"
+    assert _tier_for(500000)["tier_name"] == "T3"
+    assert _tier_for(2_000_000)["tier_name"] == "T4"
+
+
+def test_grass_planting_uses_merged_tier_not_identity():
+    # 回归：_tier_for 返回合并副本后，草评分层必须读 tier_name 而非对象身份。
+    # 同粉丝、同笔记、仅分层不同：身份匹配回归会让两者都误落 T1 而得分相等。
+    from app.services.blogger_scoring import _score_grass_planting, _tier_for
+
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    notes = [_mk(i, now - timedelta(days=i * 2), 3000, 1600, 300, 200) for i in range(30)]
+    fans = 2_000_000
+    t4 = _score_grass_planting(notes, fans=fans, tier=_tier_for(fans))
+    t1 = _score_grass_planting(notes, fans=fans, tier=_tier_for(2000))
+    assert t4["score"] is not None and t1["score"] is not None
+    assert t4["score"] != t1["score"]

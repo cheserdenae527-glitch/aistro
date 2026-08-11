@@ -91,11 +91,13 @@ def _tier_for(fans: int) -> dict:
     for key, t in tiers.items():
         if fans >= int(t["min"]) and (t.get("max") is None or fans < int(t["max"])):
             merged = dict(t)
+            merged["tier_name"] = key
             legacy = TIERS.get(key, {})
             merged.setdefault("points", legacy.get("points", []))
             merged.setdefault("min_healthy", legacy.get("min_healthy", t.get("min_healthy_rate", 0.0)))
             return merged
     merged = dict(tiers["T1"])
+    merged["tier_name"] = "T1"
     merged.setdefault("points", TIERS["T1"].get("points", []))
     merged.setdefault("min_healthy", TIERS["T1"].get("min_healthy", tiers["T1"].get("min_healthy_rate", 0.0)))
     return merged
@@ -215,7 +217,7 @@ def _score_seeding_depth(
     """
     cutoff = now - timedelta(days=ANALYSIS_WINDOW_DAYS)
     recent = [n for n in notes if _parse_dt(n["published_at"]) is not None and _parse_dt(n["published_at"]) >= cutoff]
-    recent = recent or notes
+    recent = recent or notes  # 无近90天笔记时回退全量（停更由闸门4兜底）
     if not recent or fans <= 0:
         return {"score": 0.0, "confidence": "high", "detail": {
             "collect_rate_percent": 0.0, "collect_like_ratio": 0.0, "share_rate_percent": 0.0,
@@ -390,7 +392,7 @@ def _score_grass_planting(notes: list[dict], fans: int, tier: dict) -> dict:
     collect_ratio = total_collects / total_likes if total_likes > 0 else 0.0
     collect_rate = total_collects / fans / len(notes) * 100.0
     share_rate = total_shares / fans / len(notes) * 100.0
-    tier_name = next((k for k, v in TIERS.items() if v is tier), "T1")
+    tier_name = str(tier.get("tier_name") or "T1")
     collect_ratio_score = _interpolate(GRASS_COLLECT_RATIO_POINTS, collect_ratio)
     collect_rate_score = _interpolate(GRASS_COLLECT_RATE_POINTS[tier_name], collect_rate)
     share_rate_score = _interpolate(GRASS_SHARE_RATE_POINTS[tier_name], share_rate)
