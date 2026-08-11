@@ -21,9 +21,28 @@ def test_food_verticality_ratio_and_score():
     assert res["detail"]["food_notes"] == 10
     # 实现按 4 位小数舍入（与 food_verticality 的 detail 契约一致）
     assert res["detail"]["food_ratio"] == round(10 / 14, 4)
-    # 71.4% 落在 60→70 与 80→100 之间线性插值区间
-    assert 70 <= res["score"] <= 100
+    # 71.4% 位于升序锚点 (0.6→70) 与 (0.8→100) 之间，线性插值得分 87.1
+    assert res["score"] == 87.1
     assert res["confidence"] == "high"
+
+
+def test_food_verticality_all_non_food_floor():
+    notes = [_note(title="穿搭分享"), _note(title="旅行日记"), _note(title="护肤日常")]
+    res = food_verticality(notes)
+    assert res["detail"]["judged_notes"] == 3
+    assert res["detail"]["food_notes"] == 0
+    assert res["detail"]["food_ratio"] == 0.0
+    assert res["score"] == 10.0  # 低于最低锚点 0.2 → 取下限 10
+    assert res["confidence"] == "high"
+
+
+def test_food_verticality_empty_notes_low_confidence():
+    res = food_verticality([])
+    assert res["detail"]["judged_notes"] == 0
+    assert res["detail"]["food_notes"] == 0
+    assert res["detail"]["food_ratio"] == 0.0
+    assert res["score"] == 10.0
+    assert res["confidence"] == "low"  # 无可判定笔记 → 置信度降为低
 
 
 def test_food_verticality_low_judged_notes_low_confidence():

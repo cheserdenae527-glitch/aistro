@@ -16,12 +16,13 @@ def _note_text(note: dict) -> str:
     return " ".join(parts)
 
 
-def is_food_note(note: dict) -> bool:
+def is_food_note(note: dict, keywords: list[str] | None = None) -> bool:
     """标题/正文/标签任一命中美食关键词即判定为餐饮相关；无文本则 False。"""
     text = _note_text(note).strip()
     if not text:
         return False
-    return any(kw in text for kw in _keywords())
+    kws = keywords if keywords is not None else _keywords()
+    return any(kw in text for kw in kws)
 
 
 def food_verticality(notes: list[dict]) -> dict:
@@ -32,13 +33,21 @@ def food_verticality(notes: list[dict]) -> dict:
     """
     from app.services.blogger_scoring import _interpolate
 
-    judged = [n for n in notes if _note_text(n).strip()]
-    food = sum(1 for n in judged if is_food_note(n))
-    judged_count = len(judged)
+    cfg = load_scoring_config()["verticality"]
+    kws = cfg["food_keywords"]
+    points = cfg["points"]  # [(0.2,10),(0.4,40),(0.6,70),(0.8,100)] 升序
+    food = 0
+    judged_count = 0
+    for n in notes:
+        text = _note_text(n).strip()
+        if not text:
+            continue
+        judged_count += 1
+        if any(kw in text for kw in kws):
+            food += 1
     ratio = food / judged_count if judged_count else 0.0
-    points = load_scoring_config()["verticality"]["points"]  # [(0.2,10),(0.4,40),(0.6,70),(0.8,100)] 升序
     score = round(_interpolate(points, ratio), 1)
-    confidence = "high" if judged_count >= len(notes) * 0.8 else "low"
+    confidence = "high" if judged_count > 0 and judged_count >= len(notes) * 0.8 else "low"
     return {
         "score": score,
         "confidence": confidence,
