@@ -263,6 +263,18 @@ def _map_comment_participation(ratio: float) -> float:
     return _interpolate(points, ratio)
 
 
+def _comment_analysis_detail(comment_analysis: dict | None) -> dict:
+    """评论增强信号明细：意向/水评/负面占比 + 样本量；未开启时为空。"""
+    if comment_analysis is None:
+        return {}
+    return {
+        "intent_ratio": round(float(comment_analysis.get("intent_ratio", 0.0)), 4),
+        "spam_ratio": round(float(comment_analysis.get("spam_ratio", 0.0)), 4),
+        "negative_ratio": round(float(comment_analysis.get("negative_ratio", 0.0)), 4),
+        "comment_sample": int(comment_analysis.get("sample", 0) or 0),
+    }
+
+
 def _score_seeding_depth(
     notes: list[dict],
     fans: int,
@@ -279,9 +291,11 @@ def _score_seeding_depth(
     recent = [n for n in notes if _parse_dt(n["published_at"]) is not None and _parse_dt(n["published_at"]) >= cutoff]
     recent = recent or notes  # 无近90天笔记时回退全量（停更由闸门4兜底）
     if not recent or fans <= 0:
-        return {"score": 0.0, "confidence": "high", "detail": {
+        detail = {
             "collect_rate_percent": 0.0, "collect_like_ratio": 0.0, "share_rate_percent": 0.0,
-            "comment_signal": 0.0, "comment_signal_low_conf": True}}
+            "comment_signal": 0.0, "comment_signal_low_conf": True}
+        detail.update(_comment_analysis_detail(comment_analysis))
+        return {"score": 0.0, "confidence": "high", "detail": detail}
 
     total_collect = sum(int(n["stats"].get("collected", 0) or 0) for n in recent)
     total_share = sum(int(n["stats"].get("shared", 0) or 0) for n in recent)
@@ -312,16 +326,18 @@ def _score_seeding_depth(
     total_w = sum(sub_weights.values())
     score = (collect_score * sub_weights["collect"] + share_score * sub_weights["share"]
              + comment_score * sub_weights["comment"]) / total_w
+    detail = {
+        "collect_rate_percent": round(collect_rate_percent, 3),
+        "collect_like_ratio": round(collect_like_ratio, 3),
+        "share_rate_percent": round(share_rate_percent, 3),
+        "comment_signal": round(comment_score, 1),
+        "comment_signal_low_conf": comment_low_conf,
+    }
+    detail.update(_comment_analysis_detail(comment_analysis))
     return {
         "score": round(score, 1),
         "confidence": "high",
-        "detail": {
-            "collect_rate_percent": round(collect_rate_percent, 3),
-            "collect_like_ratio": round(collect_like_ratio, 3),
-            "share_rate_percent": round(share_rate_percent, 3),
-            "comment_signal": round(comment_score, 1),
-            "comment_signal_low_conf": comment_low_conf,
-        },
+        "detail": detail,
     }
 
 
@@ -1012,15 +1028,26 @@ def score_blogger(
                 fake_hits += 1
     fake_ratio = fake_hits / len(real) if real else 0.0
     collect_inversion = follower_count > 0 and _collect_like_inversion_hit(real, follower_count, tier)
-    if fake_ratio > float(gate_cfg["fake_ratio"]) or collect_inversion:
-        base["anomalies"].append({"type": "fake_engagement", "level": "block", "detail": "疑似刷量（赞藏倒挂或互动结构异常）"})
+    spam_flag = bool(
+        comment_analysis
+        and float(comment_analysis.get("spam_ratio", 0.0)) >= float(gate_cfg["spam_ratio_threshold"])
+    )
+    if fake_ratio > float(gate_cfg["fake_ratio"]) or collect_inversion or spam_flag:
+        spam_only = spam_flag and not (
+            fake_ratio > float(gate_cfg["fake_ratio"]) or collect_inversion
+        )
+        base["anomalies"].append({
+            "type": "fake_engagement", "level": "block",
+            "detail": "疑似刷量（水评占比过高）" if spam_only else "疑似刷量（赞藏倒挂或互动结构异常）",
+        })
         base["overall"] = None
         base["overall_score_suppressed"] = True
         base["grass_planting"] = None
         base["growth_potential"] = None
         base["decision"] = {
             "recommendation": "not_recommended", "summary": "疑似刷量，不建议合作",
-            "reasons": ["互动结构异常（高赞低藏或赞藏比倒挂）"], "red_flags": [
+            "reasons": ["评论区水评占比过高"] if spam_only else ["互动结构异常（高赞低藏或赞藏比倒挂）"],
+            "red_flags": [
                 {"type": "fake_engagement", "level": "block", "detail": "疑似刷量"}],
             "low_quality": True,
             "status": "blocked", "quadrant": "一票否决", "grass_level": None, "growth_level": None,

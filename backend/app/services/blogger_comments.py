@@ -11,8 +11,10 @@ def analyze_comments(comments: list[dict]) -> dict:
     spam_kw = cfg["spam_keywords"]
     neg_kw = cfg["negative_keywords"]
     texts = [str(c.get("content") or "") for c in comments]
+    texts = [t for t in texts if t]
     if not texts:
         return {"intent_ratio": 0.0, "spam_ratio": 0.0, "negative_ratio": 0.0, "sample": 0}
+    # 三类信号可重叠：一条评论可能同时命中意向与水评，因此占比之和可 >1
     intent = sum(1 for t in texts if any(k in t for k in intent_kw))
     spam = sum(1 for t in texts if any(k in t for k in spam_kw))
     neg = sum(1 for t in texts if any(k in t for k in neg_kw))
@@ -29,7 +31,7 @@ async def collect_comments(crawler, notes: list[dict], note_limit: int | None = 
     """抓取代表性笔记（爆文 + 最新 + 随机）的评论并分析；失败降级返回 None。
 
     返回结构供 score_blogger 的 comment_analysis 使用：
-    {"intent_ratio": float, "spam_ratio": float, "negative_ratio": float}
+    {"intent_ratio": float, "spam_ratio": float, "negative_ratio": float, "sample": int}
     """
     import asyncio
     import random
@@ -41,10 +43,17 @@ async def collect_comments(crawler, notes: list[dict], note_limit: int | None = 
         return None
     weighted = [(_weighted_for_comments(n), n) for n in notes]
     weighted.sort(key=lambda x: x[0], reverse=True)
-    picked = [n for _, n in weighted[: max(3, note_limit // 2)]]
-    rest = [n for _, n in weighted[max(3, note_limit // 2):]]
+    top_n = min(max(3, note_limit // 2), len(weighted))
+    picked = [n for _, n in weighted[:top_n]]
+    # 保证最新一篇进入样本（未在权重头部时补入，并用身份比较避免内容相同误判）
+    newest = max(notes, key=lambda n: str(n.get("published_at") or ""), default=None)
+    if newest is not None and all(n is not newest for n in picked):
+        picked.insert(0, newest)
+    rest = [n for _, n in weighted[top_n:]]
+    if newest is not None:
+        rest = [n for n in rest if n is not newest]
     if rest:
-        picked.extend(random.sample(rest, min(note_limit - len(picked), len(rest))))
+        picked.extend(random.sample(rest, max(0, min(note_limit - len(picked), len(rest)))))
     all_comments: list[dict] = []
     for n in picked[:note_limit]:
         note_id = n.get("platform_note_id") or n.get("id") or ""

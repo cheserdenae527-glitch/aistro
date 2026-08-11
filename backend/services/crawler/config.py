@@ -67,7 +67,7 @@ DEFAULT_CONFIG = {
         },
         "gate": {
             "stale_days": 60, "fake_ratio": 0.20, "fake_extra_ratio": 0.005,
-            "collect_like_ratio_floor": 0.2, "growth_spike": 0.20,
+            "collect_like_ratio_floor": 0.2, "spam_ratio_threshold": 0.5, "growth_spike": 0.20,
             "growth_interaction_drop": 0.2, "t1_growth_spike": 0.35,
         },
         "stage": {"cold_start_fans": 5000, "mature_fans": 10000, "large_fans": 100000},

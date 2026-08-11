@@ -169,6 +169,26 @@ def test_seeding_depth_comment_reweight():
     assert with_comments["score"] != base["score"]
 
 
+def test_seeding_depth_comment_detail_ratios():
+    from app.services.blogger_scoring import _score_seeding_depth, _tier_for
+
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    notes = [_mk(i, now - timedelta(days=i * 2), 3000, 1600, 300, 200) for i in range(30)]
+    res = _score_seeding_depth(
+        notes, fans=50000, tier=_tier_for(50000), now=now,
+        comment_analysis={"intent_ratio": 0.6, "spam_ratio": 0.2, "negative_ratio": 0.1, "sample": 50},
+    )
+    d = res["detail"]
+    assert d["intent_ratio"] == 0.6
+    assert d["spam_ratio"] == 0.2
+    assert d["negative_ratio"] == 0.1
+    assert d["comment_sample"] == 50
+    assert d["comment_signal_low_conf"] is False
+    # 默认未开启评论分析时，不暴露评论占比字段
+    base = _score_seeding_depth(notes, fans=50000, tier=_tier_for(50000), now=now)
+    assert "intent_ratio" not in base["detail"]
+
+
 def test_comment_participation_mapping_ascending():
     from app.services.blogger_scoring import _comment_participation, _map_comment_participation
 
@@ -508,6 +528,23 @@ def test_gate_collect_like_inversion_blocks():
     assert res["overall_score_suppressed"] is True
     assert res["decision"]["recommendation"] == "not_recommended"
     assert any(a["type"] == "fake_engagement" and a["level"] == "block" for a in res["anomalies"])
+
+
+def test_fake_engagement_spam_comment_flag_blocks():
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    # 互动结构正常，仅水评占比超阈值触发闸门 2
+    notes = [_mk(i, now - timedelta(days=i * 2), 3000, 1200, 300, 200) for i in range(40)]
+    for n in notes:
+        n["tags"] = ["探店", "美食"]
+    res = score_blogger(
+        notes, follower_count=50000, total_notes=40, now=now,
+        comment_analysis={"intent_ratio": 0.1, "spam_ratio": 0.9, "negative_ratio": 0.0, "sample": 100},
+    )
+    assert res["overall"] is None
+    assert res["overall_score_suppressed"] is True
+    assert res["decision"]["recommendation"] == "not_recommended"
+    assert any(a["type"] == "fake_engagement" and a["detail"] == "疑似刷量（水评占比过高）" for a in res["anomalies"])
+    assert res["decision"]["reasons"] == ["评论区水评占比过高"]
 
 
 def test_growth_trend_no_snapshot_overall_medium():

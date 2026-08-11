@@ -50,6 +50,7 @@ DEFAULT_SCORING_CONFIG: dict = {
         "fake_ratio": 0.20,
         "fake_extra_ratio": 0.005,
         "collect_like_ratio_floor": 0.2,
+        "spam_ratio_threshold": 0.5,
         "growth_spike": 0.20,
         "growth_interaction_drop": 0.2,
         "t1_growth_spike": 0.35,
