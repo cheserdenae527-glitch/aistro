@@ -101,7 +101,7 @@
 - **展示信号**：输出到 `dimensions.seeding_depth.detail.collect_like_ratio`，供人查看"干货 vs 泛娱乐"结构；
 - **闸门红旗**：赞藏比中位数 <0.2 时触发刷量嫌疑判定（§6 闸门 2），而不是加分项。
 
-**评论信号降权**：评论分析默认关闭时，"评论参与度"与真正"意向词占比"语义相差较大，该子项置 `confidence: low` 且权重 ×0.5 后与其余两项重新归一化（即 收藏≈51% / 分享≈34% / 评论≈15%）；开启评论分析后恢复全权重。
+**评论信号降权**：评论分析默认关闭时，"评论参与度"与真正"意向词占比"语义相差较大，该子项置 `confidence: low`（`detail.comment_signal_low_conf=true`）且权重 ×0.5 后与其余两项重新归一化（即 收藏≈51% / 分享≈34% / 评论≈15%）；开启评论分析后恢复全权重。**子项级 confidence 仅用于该子项在 UI 上单独展示（标注"近似口径"），不参与维度级 `seeding_depth.confidence` 与总分置信度汇总**；维度级置信度由数据充分性（真实样本数、可判定性）决定，与评论分析开关无关。
 
 **边界**：收藏/分享中位数为 0 时该项按 0 计，由闸门兜底（刷量/倒挂）。
 
@@ -242,7 +242,8 @@
 - **闸门命中时**：闸门 1 → `recommendation=insufficient_data`；闸门 2 → `recommendation=not_recommended`、`low_quality=true`。两者 `overall.score = null`、`overall.score_suppressed = true`；前端不得用 score 参与排序（排最末）。
 
 **置信度汇总规则（通用，各维度小节不再单独定义）**：
-- 维度置信度 ∈ {high, medium, low}；被跳过/降权的维度按 low 计（如增长趋势无快照、垂直度可判定样本不足、评论子项降权）。
+- 维度置信度 ∈ {high, medium, low}；被跳过/降权的维度按 low 计（如增长趋势无快照、垂直度可判定样本不足）。
+- **子项级 confidence 与维度级 confidence 是两层**：`detail` 内的子项标记（如 `comment_signal_low_conf`）仅用于该子项 UI 展示，不参与维度/总分汇总；参与汇总的只有五个维度各自的 `confidence`。
 - `overall.confidence = min(覆盖率可信度, min(五维度置信度))`；覆盖率可信度按 §3 映射（高/中/低 → high/medium/low）。
 - 特例：若 low 仅来自单个非核心维度（垂直度/稳定产出/持续经营/增长趋势），且「种草深度」为 high/medium，则整体取 medium（避免单一弱信号过度拉低）。
 - `grass_planting` / `growth_potential` 旧字段：保留输出但由新五维/阶段替代语义（兼容前端），后续前端切新字段后移除。
