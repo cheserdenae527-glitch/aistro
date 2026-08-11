@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import copy
+import logging
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_SCORING_CONFIG: dict = {
     "weights": {
@@ -73,4 +76,5 @@ def load_scoring_config() -> dict:
         raw = load_config().get("blogger_scoring") or {}
         return _deep_merge(DEFAULT_SCORING_CONFIG, raw)
     except Exception:
+        logger.warning("blogger_scoring 配置读取失败，回退默认值", exc_info=True)
         return copy.deepcopy(DEFAULT_SCORING_CONFIG)
