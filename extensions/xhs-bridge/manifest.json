@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "AiRestro XHS Bridge",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "真实会话采集小红书笔记并直连本地 AiRestro 后端（自建实现，学习 Beav 机制）",
   "permissions": ["activeTab", "scripting", "storage", "tabs"],
   "host_permissions": [

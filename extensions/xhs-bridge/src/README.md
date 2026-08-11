@@ -27,3 +27,4 @@
 | 滚动/验证页工具 | `src/captureRuntime.js` |
 | 串行上报 + 随机间隔 | `src/background.js`（阶段 4 扩展为批量队列） |
 | 互动指标 | 拦截 feed 响应读 `interact_info`（liked/collected/comment/shared 齐全） |
+| 响应体通道 | postMessage 携带 `result` + background 从 MAIN world 兜底读取（对齐 Beav 机制） |

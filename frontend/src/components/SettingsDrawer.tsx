@@ -55,11 +55,15 @@ export default function SettingsDrawer({ open, onClose }: { open: boolean; onClo
   const [imageKey, setImageKey] = useState("");
   const [imageBase, setImageBase] = useState("");
   const [imageModel, setImageModel] = useState("");
+  const [visionKey, setVisionKey] = useState("");
+  const [visionBase, setVisionBase] = useState("");
+  const [visionModel, setVisionModel] = useState("");
   const [videoKey, setVideoKey] = useState("");
   const [videoBase, setVideoBase] = useState("");
   const [videoModel, setVideoModel] = useState("");
   const [clearText, setClearText] = useState(false);
   const [clearImage, setClearImage] = useState(false);
+  const [clearVision, setClearVision] = useState(false);
   const [clearVideo, setClearVideo] = useState(false);
   const [name, setName] = useState("");
   const [password, setPassword] = useState("");
@@ -82,11 +86,15 @@ export default function SettingsDrawer({ open, onClose }: { open: boolean; onClo
         setImageKey("");
         setImageBase(s.image.base_url);
         setImageModel(s.image.model);
+        setVisionKey("");
+        setVisionBase(s.vision.base_url);
+        setVisionModel(s.vision.model);
         setVideoKey("");
         setVideoBase(s.video.base_url);
         setVideoModel(s.video.model);
         setClearText(false);
         setClearImage(false);
+        setClearVision(false);
         setClearVideo(false);
         setName(user?.name || "");
         setPassword("");
@@ -119,6 +127,11 @@ export default function SettingsDrawer({ open, onClose }: { open: boolean; onClo
         api_key: clearImage ? "" : imageKey || undefined,
         base_url: imageBase || undefined,
         model: imageModel || undefined,
+      };
+      body.vision = {
+        api_key: clearVision ? "" : visionKey || undefined,
+        base_url: visionBase || undefined,
+        model: visionModel || undefined,
       };
       body.video = {
         api_key: clearVideo ? "" : videoKey || undefined,
@@ -189,6 +202,18 @@ export default function SettingsDrawer({ open, onClose }: { open: boolean; onClo
         setModel={setImageModel}
         clear={clearImage}
         setClear={setClearImage}
+      />
+      <ApiSection
+        title="视觉模型 · 豆包 Seed"
+        status={settings?.vision}
+        apiKey={visionKey}
+        setApiKey={setVisionKey}
+        baseUrl={visionBase}
+        setBaseUrl={setVisionBase}
+        model={visionModel}
+        setModel={setVisionModel}
+        clear={clearVision}
+        setClear={setClearVision}
       />
       <ApiSection
         title="视频 API（预留）"

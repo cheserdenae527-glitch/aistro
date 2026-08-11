@@ -4,6 +4,12 @@
 
 import json
 import os
+from urllib.parse import quote
+
+from dotenv import load_dotenv
+
+_ENV_PATH = os.path.join(os.path.dirname(__file__), "..", "..", ".env")
+load_dotenv(_ENV_PATH)
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "xhs", "scripts", "crawler_config.json")
 
@@ -58,7 +64,35 @@ def get_cookie() -> str:
     return ""
 
 
+def get_tunnel_proxy() -> dict | None:
+    """构造站大爷隧道代理（HTTP 入口），配置齐全时返回 requests 风格 proxies。"""
+    username = os.getenv("XHS_TUNNEL_USERNAME", "").strip()
+    password = os.getenv("XHS_TUNNEL_PASSWORD", "").strip()
+    host = os.getenv("XHS_TUNNEL_HOST", "").strip()
+    port = os.getenv("XHS_TUNNEL_HTTP_PORT", "").strip() or os.getenv("XHS_TUNNEL_PORT", "").strip()
+    if not (username and password and host and port):
+        return None
+    user_part = username
+    period = os.getenv("XHS_TUNNEL_PERIOD", "").strip()
+    if period:
+        user_part += f"-period-{period}"
+    pool = os.getenv("XHS_TUNNEL_POOL", "").strip()
+    if pool:
+        user_part += f"-pool-{pool}"
+    region = os.getenv("XHS_TUNNEL_REGION", "").strip().lstrip("-")
+    if region:
+        user_part += f"-{region}"
+    sid = os.getenv("XHS_TUNNEL_SID", "").strip()
+    if sid:
+        user_part += f"-sid-{sid}"
+    url = f"http://{quote(user_part, safe='-')}:{quote(password, safe='')}@{host}:{port}"
+    return {"http": url, "https": url}
+
+
 def get_proxy_pool() -> list[dict]:
+    tunnel = get_tunnel_proxy()
+    if tunnel:
+        return [tunnel]
     cfg = load_config()
     return cfg.get("proxies", [])
 

@@ -49,3 +49,10 @@ desktop/release/
 
 # 本地运行数据（媒体文件 + 运行时设置，含密钥，不入库）
 /data/
+
+# 本地爬虫请求日志（含 xsec_token 等敏感内容，不入库）
+/backend/services/crawler/xhs/scripts/crawl_request_log.jsonl
+# 第三方嵌套仓库（自带 .git，不入库）
+/RedCrack/
+# 运行时状态
+/.last_task_id.txt

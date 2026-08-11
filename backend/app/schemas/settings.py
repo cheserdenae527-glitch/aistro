@@ -16,6 +16,7 @@ class SettingsUpdate(BaseModel):
     storage_dir: str | None = Field(default=None, max_length=1024)
     text: ApiKeyUpdate | None = None
     image: ApiKeyUpdate | None = None
+    vision: ApiKeyUpdate | None = None
     video: ApiKeyUpdate | None = None
 
 
@@ -30,4 +31,5 @@ class SettingsResponse(BaseModel):
     storage: dict
     text: ApiKeyStatus
     image: ApiKeyStatus
+    vision: ApiKeyStatus
     video: ApiKeyStatus

@@ -123,7 +123,7 @@ def normalize_note(note: dict) -> dict[str, Any]:
             "liked": _parse_count(interact.get("liked_count", 0)),
             "collected": _parse_count(interact.get("collected_count", 0)),
             "comments": _parse_count(interact.get("comment_count", 0)),
-            "shared": _parse_count(interact.get("shared_count", 0)),
+            "shared": _parse_count(interact.get("shared_count", interact.get("share_count", 0))),
         },
         "tags": [t.get("text", "") for t in (nc.get("corner_tag_info", []) or [])],
         "published_at": _parse_published_at(note),

@@ -64,7 +64,7 @@ class Settings(BaseSettings):
     VOLCENGINE_API_KEY: str = ""
     VOLCENGINE_BASE_URL: str = "https://ark.cn-beijing.volces.com/api/v3"
     VOLCENGINE_IMAGE_MODEL: str = "doubao-seedream-5-0-260128"
-    VOLCENGINE_VISION_MODEL: str = "doubao-seed-2-0-lite-260428"
+    VOLCENGINE_VISION_MODEL: str = "doubao-seed-2-1-pro-260628"
 
     # --- 本地数字人引擎（形象同步 / 自动重启用；留空则不自动重启引擎） ---
     LIVE_ENGINE_WORKDIR: str = ""
@@ -87,6 +87,16 @@ class Settings(BaseSettings):
     AMAP_SECURITY_JS_CODE: str = ""
     # 账号级日配额熔断阈值（默认 8000 次/日，按 Asia/Shanghai 自然日）
     AMAP_DAILY_QUOTA_LIMIT: int = 8000
+
+    # --- 站大爷隧道代理（小红书爬虫） ---
+    XHS_TUNNEL_USERNAME: str = ""
+    XHS_TUNNEL_PASSWORD: str = ""
+    XHS_TUNNEL_HOST: str = ""
+    XHS_TUNNEL_HTTP_PORT: str = ""
+    XHS_TUNNEL_PERIOD: str = "60"
+    XHS_TUNNEL_POOL: str = "enh"
+    XHS_TUNNEL_REGION: str = ""
+    XHS_TUNNEL_SID: str = ""
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

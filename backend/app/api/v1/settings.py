@@ -54,6 +54,11 @@ async def get_settings(
             data.get("volcengine_base_url", ""),
             data.get("volcengine_image_model", ""),
         ),
+        vision=_status(
+            data.get("volcengine_api_key", ""),
+            data.get("volcengine_base_url", ""),
+            data.get("volcengine_vision_model", ""),
+        ),
         video=_status(
             data.get("video_api_key", ""),
             data.get("video_api_base_url", ""),
@@ -71,8 +76,14 @@ async def update_settings(
     patch: dict = {}
     if body.storage_dir is not None:
         patch["storage_dir"] = body.storage_dir
+
+    def merge(mapping: dict) -> None:
+        for key, value in mapping.items():
+            if value is not None:
+                patch[key] = value
+
     if body.text is not None:
-        patch.update(
+        merge(
             {
                 "deepseek_api_key": body.text.api_key,
                 "deepseek_base_url": body.text.base_url,
@@ -80,15 +91,23 @@ async def update_settings(
             }
         )
     if body.image is not None:
-        patch.update(
+        merge(
             {
                 "volcengine_api_key": body.image.api_key,
                 "volcengine_base_url": body.image.base_url,
                 "volcengine_image_model": body.image.model,
             }
         )
+    if body.vision is not None:
+        merge(
+            {
+                "volcengine_api_key": body.vision.api_key,
+                "volcengine_base_url": body.vision.base_url,
+                "volcengine_vision_model": body.vision.model,
+            }
+        )
     if body.video is not None:
-        patch.update(
+        merge(
             {
                 "video_api_key": body.video.api_key,
                 "video_api_base_url": body.video.base_url,
@@ -114,6 +133,11 @@ async def update_settings(
             data.get("volcengine_api_key", ""),
             data.get("volcengine_base_url", ""),
             data.get("volcengine_image_model", ""),
+        ),
+        vision=_status(
+            data.get("volcengine_api_key", ""),
+            data.get("volcengine_base_url", ""),
+            data.get("volcengine_vision_model", ""),
         ),
         video=_status(
             data.get("video_api_key", ""),

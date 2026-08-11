@@ -35,17 +35,20 @@
     try { return JSON.parse(s); } catch (_) { return null; }
   }
 
+  const MAX_PAYLOAD_BYTES = 3 * 1024 * 1024;
+
   function remember(url, method, body, result) {
     if (!url || !result) return;
     const store = window[STORE];
     store.push({ url: String(url), method: String(method || 'GET').toUpperCase(), body: body || null, result, capturedAt: Date.now() });
     while (store.length > MAX_RESPONSES) store.shift();
     window[STORE] = store;
-    window.postMessage({
-      source: 'aistro-xhs-bridge',
-      type: 'api-response',
-      payload: { url: String(url), method: String(method || 'GET').toUpperCase(), capturedAt: Date.now() },
-    }, '*');
+    const payload = { url: String(url), method: String(method || 'GET').toUpperCase(), capturedAt: Date.now() };
+    try {
+      const size = JSON.stringify(result).length;
+      if (size <= MAX_PAYLOAD_BYTES) payload.result = result;
+    } catch (_) {}
+    window.postMessage({ source: 'aistro-xhs-bridge', type: 'api-response', payload }, '*');
   }
 
   function requestUrl(input) {

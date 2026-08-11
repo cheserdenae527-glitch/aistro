@@ -176,6 +176,13 @@ async def refresh_subscription(db: AsyncSession, sub: Subscription) -> dict:
 
     payload = SubscriptionResponse.model_validate(sub).model_dump()
     payload["notes"] = _notes[:50]
+    if _notes:
+        try:
+            from app.services.knowledge_base import sync_notes
+            await sync_notes(db, sub.user_id, _notes, source="subscription")
+            await db.flush()
+        except Exception as exc:
+            errors.append(f"知识库：{_friendly_msg(str(exc))}")
     if not user_ok and not notes_ok:
         payload["refresh_status"] = "failed"
         payload["refresh_error"] = "；".join(errors) or "刷新失败"

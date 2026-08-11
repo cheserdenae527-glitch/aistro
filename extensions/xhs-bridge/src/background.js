@@ -1,8 +1,31 @@
 // AiRestro XHS Bridge — 后台（串行任务 + 上报本地后端）
 // 阶段 3 最小闭环：保存当前笔记 / 采集评论 / 收集本页链接。
-const EXT_VERSION = 'v4.1';
+const EXT_VERSION = 'v4.9';
 const DEFAULT_ENDPOINT = 'http://127.0.0.1:8000/api/v1/bridge';
 const SETTINGS_KEY = 'aistroBridgeSettings';
+
+// 互动指标完整判定：四项字段任一缺失即视为不完整（列表接口常只返回点赞数）
+function statsFieldsComplete(interact) {
+  const it = interact || {};
+  return ['liked_count', 'collected_count', 'comment_count', 'shared_count', 'share_count']
+    .every((k) => it[k] !== undefined && it[k] !== null && it[k] !== '');
+}
+
+function enrichNoteStats(note, feed) {
+  if (!feed || !feed.ok || !feed.note_card || !feed.note_card.interact_info) return false;
+  const fi = feed.note_card.interact_info;
+  if (!note.note_card || typeof note.note_card !== 'object') note.note_card = {};
+  const nc = note.note_card;
+  nc.interact_info = {
+    liked_count: parseCountText(fi.liked_count),
+    collected_count: parseCountText(fi.collected_count),
+    comment_count: parseCountText(fi.comment_count),
+    shared_count: parseCountText(fi.shared_count || fi.share_count),
+  };
+  nc.stats_source = 'feed';
+  note.capture_has_full_stats = true;
+  return true;
+}
 const INTERVAL_MIN_MS = 1500;
 const INTERVAL_MAX_MS = 3500;
 
@@ -153,6 +176,9 @@ async function postJson(url, payload) {
   return res.json();
 }
 
+function sendProgress(p) {
+  try { chrome.runtime.sendMessage({ type: "bridge:progress", ...(p || {}) }).catch(() => {}); } catch (_) {}
+}
 async function xsecSourceFromUrl(url) {
   try { return new URL(url || '').searchParams.get('xsec_source') || 'pc_user'; } catch (_) { return 'pc_user'; }
 }
@@ -208,6 +234,14 @@ async function sendToTab(tabId, type, options) {
 }
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message && message.type === "aistro-progress") {
+    chrome.runtime.sendMessage({ type: "bridge:progress", phase: message.phase, current: message.current, total: message.total, label: message.label }).catch(() => {});
+    sendResponse({ ok: true });
+    return;
+  }
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   void (async () => {
     try {
       if (!message || typeof message.type !== 'string') { sendResponse({ success: false, error: 'bad message' }); return; }
@@ -227,6 +261,25 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         return;
       }
 
+      if (message.type === 'bridge:read-captured') {
+        const tabId = sender && sender.tab && sender.tab.id;
+        if (!tabId) { sendResponse({ success: false, error: 'no active tab context' }); return; }
+        try {
+          const [r] = await chrome.scripting.executeScript({
+            target: { tabId },
+            world: 'MAIN',
+            func: () => {
+              const store = window.__AISTRO_XHS_CAPTURE__;
+              return Array.isArray(store) ? store.slice(-200) : [];
+            },
+          });
+          sendResponse({ success: true, records: r && r.result ? r.result : [] });
+        } catch (e) {
+          sendResponse({ success: false, error: String((e && e.message) || e) });
+        }
+        return;
+      }
+
       if (message.type === 'bridge:save-current-note') {
         const tab = await getActiveTab();
         if (!isXhsTab(tab)) { sendResponse({ success: false, error: '请在笔记页使用' }); return; }
@@ -234,24 +287,18 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const extracted = await sendToTab(tab.id, 'xhs:extract-note');
         const note = extracted.note;
         const nc = note && note.note_card || {};
-        const st = nc.interact_info || {};
-        const needsFeed = !(parseCountText(st.liked_count) > 0 || parseCountText(st.collected_count) > 0 || parseCountText(st.comment_count) > 0);
+        // 只要四项（赞/藏/评/分享）缺任一就主动 feed 补全，不能只凭点赞有值判定完整
+        const needsFeed = note.capture_has_full_stats !== true || !statsFieldsComplete(nc.interact_info);
         let feed = null;
         if (needsFeed) {
           // MAIN world 里签名拉 feed 补齐互动指标（兜底主动请求）
           feed = await fetchFeedMainWorld(tab.id, note.id, note.xsec_token, xsecSourceFromUrl(note.source_url));
-          if (feed && feed.ok && feed.note_card && feed.note_card.interact_info) {
-            const fi = feed.note_card.interact_info;
-            nc.interact_info = {
-              liked_count: parseCountText(fi.liked_count),
-              collected_count: parseCountText(fi.collected_count),
-              comment_count: parseCountText(fi.comment_count),
-              shared_count: parseCountText(fi.shared_count || fi.share_count),
-            };
-            nc.stats_source = 'feed';
+          if (enrichNoteStats(note, feed)) {
+            nc.interact_info = note.note_card.interact_info;
           }
         }
         await sleep(randomIntBetween(settings.intervalMinMs, settings.intervalMaxMs));
+          sendProgress({ label: '正在同步笔记到知识库...' });
         const result = await postJson(settings.endpoint + '/notes', { note });
         sendResponse({
           success: true,
@@ -276,6 +323,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const settings = await settingsStore.get();
         const extracted = await sendToTab(tab.id, 'xhs:extract-comments');
         await sleep(randomIntBetween(settings.intervalMinMs, settings.intervalMaxMs));
+          sendProgress({ label: '正在同步评论到知识库...' });
         const result = await postJson(settings.endpoint + '/comments', { comments: extracted.comments, noteId: extracted.noteId });
         sendResponse({ success: true, count: extracted.comments.length, result });
         return;
@@ -311,9 +359,20 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           sendResponse({ success: false, error: '未捕获到笔记（请在扩展加载后刷新博主主页再试）', userId: extracted.userId });
           return;
         }
-        await sleep(randomIntBetween(settings.intervalMinMs, settings.intervalMaxMs));
+        // 列表接口常只返回点赞数，这里对缺收藏/评论/分享的笔记逐个 feed 补全（有界数量，避免风控）
+        let enrichedCount = 0;
+        const enrichLimit = Math.min(20, notes.length);
+        for (const note of notes) {
+          if (enrichedCount >= enrichLimit) break;
+          if (note.capture_has_full_stats === true || statsFieldsComplete((note.note_card || {}).interact_info)) continue;
+          if (!note.id || !note.xsec_token) continue;
+          const feed = await fetchFeedMainWorld(tab.id, note.id, note.xsec_token, xsecSourceFromUrl(note.source_url));
+          if (enrichNoteStats(note, feed)) enrichedCount += 1;
+          await sleep(randomIntBetween(settings.intervalMinMs, settings.intervalMaxMs));
+          sendProgress({ label: `正在补全笔记互动数据 ${enrichedCount}/${enrichLimit}` });
+        }
         const result = await postJson(settings.endpoint + '/batch', { notes });
-        sendResponse({ success: true, userId: extracted.userId, total: notes.length, withStats: extracted.withStats, result });
+        sendResponse({ success: true, userId: extracted.userId, total: notes.length, withStats: extracted.withStats, enrichedCount, result });
         return;
       }
 
@@ -347,3 +406,5 @@ async function checkEndpoint(endpoint) {
     return false;
   }
 }
+
+

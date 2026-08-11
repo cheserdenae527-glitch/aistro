@@ -86,13 +86,29 @@ class BrowserHttpClient:
         impersonate: str = DEFAULT_IMPERSONATE,
         accept_encoding: str = DEFAULT_ACCEPT_ENCODING,
         http_version: str = DEFAULT_HTTP_VERSION,
+        close_after_request: Optional[bool] = None,
     ) -> None:
         self.proxies = proxies
         self.impersonate = str(impersonate)
         self.accept_encoding = str(accept_encoding)
         self.http_version = str(http_version)
+        self.close_after_request = (
+            close_after_request
+            if close_after_request is not None
+            else self._is_zdaye_tunnel(proxies)
+        )
+        self._open_session()
+
+    @staticmethod
+    def _is_zdaye_tunnel(proxies: Optional[dict] = None) -> bool:
+        for value in (proxies or {}).values():
+            if "zdtps.com" in str(value).lower():
+                return True
+        return False
+
+    def _open_session(self) -> None:
         self.session = curl_requests.Session(
-            proxies=proxies,
+            proxies=self.proxies,
             impersonate=self.impersonate,
             default_headers=False,
             discard_cookies=True,
@@ -147,18 +163,25 @@ class BrowserHttpClient:
             wire_headers['content-type'] = None
 
         request_proxies = self.proxies if proxies is None else proxies
-        return self.session.request(
-            str(method).upper(),
-            str(url),
-            headers=wire_headers,
-            proxies=request_proxies,
-            impersonate=self.impersonate,
-            default_headers=False,
-            discard_cookies=True,
-            http_version=self.http_version,
-            accept_encoding=self.accept_encoding,
-            **kwargs,
-        )
+        stream = bool(kwargs.get("stream"))
+        try:
+            response = self.session.request(
+                str(method).upper(),
+                str(url),
+                headers=wire_headers,
+                proxies=request_proxies,
+                impersonate=self.impersonate,
+                default_headers=False,
+                discard_cookies=True,
+                http_version=self.http_version,
+                accept_encoding=self.accept_encoding,
+                **kwargs,
+            )
+        finally:
+            if self.close_after_request and not stream:
+                self.session.close()
+                self._open_session()
+        return response
 
     def get(self, url: str, **kwargs):
         return self.request('GET', url, **kwargs)

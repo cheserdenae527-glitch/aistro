@@ -62,10 +62,12 @@
     const maxRounds = Math.max(1, Number(options.maxRounds || 28));
     const stallLimit = Math.max(1, Number(options.stallLimit || 5));
     const waitMs = Number(options.waitMs || 520);
+      const onProgress = typeof options.onProgress === 'function' ? options.onProgress : null;
     const rootResolver = typeof options.rootResolver === 'function' ? options.rootResolver : () => document;
     const diagnostics = [];
     let root = rootResolver();
     let nodes = collectVisibleNodes(selectors, root);
+        if (onProgress) { try { onProgress({ round, count: nodes.length, targetCount }); } catch (_) {} }
     let prevCount = nodes.length;
     let prevSig = nodeSignature(nodes);
     let stalled = 0;

@@ -37,6 +37,7 @@ from app.models.note_detail import NoteDetail
 from app.models.analysis_task import BloggerAnalysisTask
 from app.models.crawl_request_log import CrawlRequestLog
 from app.models.xhs_knowledge_case import XhsKnowledgeCase
+from app.models.knowledge_entry import KnowledgeEntry
 
 __all__ = [
     "User", "Merchant", "Shop", "PlatformShop", "Review",
@@ -47,5 +48,6 @@ __all__ = [
     "DealProject", "DealItem", "CompetitorDeal", "DealScheme", "DealSchemeCopy",
     "LiveProject", "LiveAvatar", "LiveScript", "LiveDanmakuConfig",
     "LiveSession", "LiveSessionMetric",
-    "ProfileImageJob", "ShopProfileHistory", "NoteDetail", "BloggerAnalysisTask", "CrawlRequestLog", "XhsKnowledgeCase",
+    "ProfileImageJob", "ShopProfileHistory", "NoteDetail", "BloggerAnalysisTask", "CrawlRequestLog", "XhsKnowledgeCase", "KnowledgeEntry",
 ]
+

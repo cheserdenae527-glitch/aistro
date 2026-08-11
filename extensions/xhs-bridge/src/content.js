@@ -1,18 +1,50 @@
 // AiRestro XHS Bridge — 内容提取器 v4
 // 数据源：被动拦截 → INITIAL_STATE → 兜底主动 feed（页面内 mnsv2 签名）→ DOM
 (() => {
-  const EXT_VERSION = 'v4.5';
+  if (window.__AISTRO_XHS_CONTENT_LOADED__) return;
+  window.__AISTRO_XHS_CONTENT_LOADED__ = true;
+  const EXT_VERSION = 'v4.9';
   const CAPTURE_STORE = '__AISTRO_XHS_CAPTURE__';
   const localCapture = [];
+
+  function normalizeRecord(p) {
+    return {
+      url: String((p && p.url) || ''),
+      method: String((p && p.method) || 'GET').toUpperCase(),
+      body: (p && p.body) || null,
+      result: (p && p.result) || null,
+      capturedAt: Number((p && p.capturedAt) || Date.now()),
+    };
+  }
 
   window.addEventListener('message', (event) => {
     if (event.source !== window) return;
     if (event.data && event.data.source === 'aistro-xhs-bridge' && event.data.type === 'api-response') {
-      const p = event.data.payload || {};
-      localCapture.push(p);
+      const rec = normalizeRecord(event.data.payload);
+      if (!rec.url) return;
+      localCapture.push(rec);
       while (localCapture.length > 200) localCapture.shift();
     }
   });
+
+  async function refreshCapturedFromMain() {
+    try {
+      if (!chrome.runtime || typeof chrome.runtime.sendMessage !== 'function') return;
+      const res = await chrome.runtime.sendMessage({ type: 'bridge:read-captured' });
+      const records = res && Array.isArray(res.records) ? res.records : [];
+      if (!records.length) return;
+      const existing = new Set(localCapture.map((r) => r.url + '|' + r.method + '|' + r.capturedAt));
+      for (const item of records) {
+        const rec = normalizeRecord(item);
+        if (!rec.url) continue;
+        const key = rec.url + '|' + rec.method + '|' + rec.capturedAt;
+        if (existing.has(key)) continue;
+        existing.add(key);
+        localCapture.push(rec);
+      }
+      while (localCapture.length > 200) localCapture.shift();
+    } catch (_) {}
+  }
 
   function rt() { return window.__AISTRO_CAPTURE_RUNTIME__ || null; }
   function normalizeText(v) { return String(v || '').replace(/\s+/g, ' ').trim(); }
@@ -68,9 +100,10 @@
     try { return new URL(location.href).searchParams.get('xsec_source') || 'pc_user'; } catch (_) { return 'pc_user'; }
   }
 
+  // MAIN world 的 window 属性在 ISOLATED world 读不到（Beav 同款限制），
+  // 记录统一来自 postMessage 响应体 + background 的主世界兜底读取。
   function getCapturedRecords() {
-    const mainStore = Array.isArray(window[CAPTURE_STORE]) ? window[CAPTURE_STORE] : [];
-    return mainStore.concat(localCapture);
+    return localCapture.slice();
   }
 
   // ── 兜底主动 feed：页面内 mnsv2 签名（对照 Beav seccoreSign）──
@@ -287,6 +320,42 @@
     return null;
   }
 
+  function findNoteTokenFromCapture(noteId) {
+    if (!noteId) return '';
+    for (const record of getCapturedRecords().slice().reverse()) {
+      if (!record.result) continue;
+      const token = findNoteItemToken(record.result, noteId, 0);
+      if (token) return token;
+    }
+    return '';
+  }
+
+  function findNoteItemToken(obj, noteId, depth) {
+    if (!obj || typeof obj !== 'object' || depth > 8) return '';
+    if (Array.isArray(obj)) {
+      for (const item of obj) {
+        const token = findNoteItemToken(item, noteId, depth + 1);
+        if (token) return token;
+      }
+      return '';
+    }
+    const nc = obj.note_card || obj.noteCard;
+    const id = String(obj.id || obj.note_id || obj.noteId || (nc && (nc.note_id || nc.noteId || nc.id)) || '');
+    if (id === String(noteId)) {
+      const token = String(obj.xsec_token || obj.xsecToken || (nc && (nc.xsec_token || nc.xsecToken)) || '');
+      if (token) return token;
+    }
+    for (const key of Object.keys(obj)) {
+      if (key === 'note_card' || key === 'noteCard') continue;
+      const value = obj[key];
+      if (value && typeof value === 'object') {
+        const token = findNoteItemToken(value, noteId, depth + 1);
+        if (token) return token;
+      }
+    }
+    return '';
+  }
+
   function unwrapEntry(entry) {
     if (entry && typeof entry === 'object' && entry.note && typeof entry.note === 'object') return entry.note;
     return entry;
@@ -373,16 +442,18 @@
   function domFallback() {
     // 作者信息限定在笔记容器内找，避免匹配到全局导航头像（曾导致作者 ID 取错）
     const noteRoot = document.querySelector('#noteContainer, .note-container, .note-detail-mask, .note-content') || document;
+    const metaContent = (sel) => { const el = document.querySelector(sel); return el ? String(el.content || el.getAttribute('content') || '').trim() : ''; };
     const title =
       (document.querySelector('#detail-title') || {}).innerText ||
       (document.querySelector('.note-title') || {}).innerText ||
       (document.querySelector('.title') || {}).innerText ||
-      (document.querySelector('meta[property="og:title"]') || {}).content ||
+      metaContent('meta[property="og:title"]') ||
       document.title || '';
     const descEls = Array.from(document.querySelectorAll('#detail-desc .note-text, .desc .note-text, .note-content .note-text'));
-    const desc = descEls.map((el) => normalizeText(el.innerText || '')).filter(Boolean).join('\n\n');
+    let desc = descEls.map((el) => normalizeText(el.innerText || '')).filter(Boolean).join('\n\n');
+    if (!desc) desc = metaContent('meta[property="og:description"]') || metaContent('meta[name="description"]');
     const authorEl = noteRoot.querySelector('.author .username, .author-wrapper .username, .username');
-    const author = normalizeText((authorEl || {}).innerText || '');
+    const author = normalizeText((authorEl || {}).innerText || metaContent('meta[name="author"]') || '');
     const authorLink = noteRoot.querySelector('.author a[href*="/user/"], .author-wrapper a[href*="/user/"], a[href*="/user/profile/"]');
     const authorHref = (authorLink || {}).href || '';
     const authorIdMatch = authorHref.match(/\/user\/profile\/([^/?#]+)/);
@@ -392,14 +463,31 @@
       const src = img.currentSrc || img.src || '';
       if (src && /^https?:\/\//.test(src) && !seen.has(src)) { seen.add(src); images.push(src); }
     }
+    for (const sel of ['meta[property="og:image"]', 'meta[property="og:image:url"]', 'meta[name="twitter:image"]']) {
+      const v = metaContent(sel);
+      if (v && /^https?:\/\//.test(v) && !seen.has(v)) { seen.add(v); images.push(v); }
+    }
     let videoUrl = '';
     const videoEl = document.querySelector('video[mediatype="video"], .xgplayer video, video');
     if (videoEl) { const s = videoEl.currentSrc || videoEl.src || ''; if (/^https?:\/\//.test(s)) videoUrl = s; }
+    if (!videoUrl) {
+      for (const sel of ['meta[property="og:video"]', 'meta[property="og:video:url"]', 'meta[property="og:video:secure_url"]']) {
+        const v = metaContent(sel);
+        if (v && /^https?:\/\//.test(v)) { videoUrl = v; break; }
+      }
+    }
     return { title, desc, author, authorId: authorIdMatch ? authorIdMatch[1] : '', images, videoUrl };
   }
 
   function hasAnyCount(interact) {
     return interact && (Number(interact.liked_count) > 0 || Number(interact.collected_count) > 0 || Number(interact.comment_count) > 0);
+  }
+
+  function statsInteractComplete(rawNc) {
+    const nc = rawNc && rawNc.noteCard ? rawNc.noteCard : rawNc || {};
+    const it = nc.interact_info || {};
+    return ['liked_count', 'collected_count', 'comment_count', 'shared_count', 'share_count']
+      .every((k) => it[k] !== undefined && it[k] !== null && it[k] !== '');
   }
 
   function mapNoteCard(rawNc, statsSource) {
@@ -432,8 +520,9 @@
   }
 
   async function buildNotePayload() {
+    await refreshCapturedFromMain();
     const noteId = getCurrentNoteId();
-    const xsecToken = getXsecToken();
+    const xsecToken = getXsecToken() || findNoteTokenFromCapture(noteId);
     const xsecSource = getXsecSource();
     const sourceUrl = location.href;
 
@@ -447,11 +536,17 @@
       statsSource = rawNc ? 'state' : null;
     }
 
-    // 3) 互动指标补齐：拦截/状态里没有 → 兜底主动 feed（页面内签名）
-    if (rawNc && !hasAnyCount(rawNc.interact_info)) {
+    // 3) 互动指标补齐：只要四项（赞/藏/评/分享）缺任一字段就主动 feed 补全，
+    //    不能只凭"点赞有值"就认为完整（列表接口经常只返回 liked_count）。
+    let statsFull = statsInteractComplete(rawNc);
+    if (rawNc && !statsFull) {
       try {
         const feedNc = await fetchFeedNoteCard(noteId, xsecToken, xsecSource);
-        if (feedNc && feedNc.interact_info && hasAnyCount(feedNc.interact_info)) {
+        if (feedNc && statsInteractComplete(feedNc)) {
+          rawNc = Object.assign({}, rawNc, feedNc, { interact_info: feedNc.interact_info });
+          statsSource = 'feed';
+          statsFull = true;
+        } else if (feedNc && feedNc.interact_info && hasAnyCount(feedNc.interact_info)) {
           rawNc = Object.assign({}, rawNc, feedNc, { interact_info: feedNc.interact_info });
           statsSource = 'feed';
         }
@@ -462,6 +557,7 @@
       return {
         id: noteId, xsec_token: xsecToken, source_url: sourceUrl,
         capture_channel: 'aistro-bridge',
+        capture_has_full_stats: statsFull,
         note_card: mapNoteCard(rawNc, statsSource || 'none'),
       };
     }
@@ -471,6 +567,7 @@
     return {
       id: noteId, xsec_token: xsecToken, source_url: sourceUrl,
       capture_channel: 'aistro-bridge',
+      capture_has_full_stats: false,
       note_card: {
         display_title: dom.title, title: dom.title, desc: dom.desc,
         type: dom.videoUrl ? 'video' : 'normal',
@@ -485,6 +582,7 @@
   }
 
   async function debugState() {
+    await refreshCapturedFromMain();
     const noteId = getCurrentNoteId();
     const state = readInitialState();
     const detailMap = state && state.note && state.note.noteDetailMap;
@@ -504,6 +602,7 @@
       captureNoteFields: captureNc ? Object.keys(captureNc) : [],
       user: captureNc ? captureNc.user : (stateNc ? stateNc.user : null),
       interactInfoPresent: Boolean(captureNc ? captureNc.interact_info : (stateNc ? stateNc.interact_info : false)),
+      captureHasFullStats: statsInteractComplete(captureNc || stateNc),
       imageListCount: captureNc ? extractImages(captureNc).length : (stateNote ? extractImages(stateNote).length : 0),
       videoFromCapture: extractVideo(captureNc || {}),
       mnsv2Available: typeof window.mnsv2 === 'function',
@@ -568,6 +667,7 @@
           note_card: nc,
           source_url: 'https://www.xiaohongshu.com/explore/' + source,
           capture_channel: 'aistro-bridge',
+          capture_has_full_stats: statsInteractComplete(nc),
         });
       }
     }
@@ -575,6 +675,7 @@
   }
 
   async function collectBlogger() {
+    await refreshCapturedFromMain();
     const userId = (location.pathname.match(/\/user\/profile\/([^/?#]+)/) || [])[1] || '';
     if (!userId) return { success: false, error: '当前不是博主主页' };
     const runtime = rt();
@@ -582,6 +683,11 @@
       // 有界滚动：页面自己加载 user_posted 翻页，被动拦截拿到带互动指标的笔记
       await runtime.scrollAndTrack(['a[href*="/explore/"], a[href*="/discovery/item/"]'], {
         targetCount: 200, maxRounds: 12, stallLimit: 3, waitMs: 600,
+          onProgress: (p) => {
+            try {
+              chrome.runtime.sendMessage({ type: 'aistro-progress', phase: 'blogger', current: p.count, total: p.targetCount, label: '正在滚动采集博主作品' });
+            } catch (_) {}
+          },
       });
     }
     const fromCapture = collectBloggerNotesFromCapture(userId);
@@ -590,7 +696,7 @@
     for (const n of fromCapture) merged.set(n.id, n);
     for (const l of links) {
       if (!merged.has(l.noteId)) {
-        merged.set(l.noteId, { id: l.noteId, xsec_token: '', note_card: {}, source_url: l.url, capture_channel: 'aistro-bridge' });
+        merged.set(l.noteId, { id: l.noteId, xsec_token: '', note_card: {}, source_url: l.url, capture_channel: 'aistro-bridge', capture_has_full_stats: false });
       }
     }
     const notes = Array.from(merged.values());
@@ -621,11 +727,55 @@
     return links;
   }
 
+  function normalizeBlockText(value) {
+    return String(value || '').replace(/\r/g, '').replace(/\n{3,}/g, '\n\n').trim();
+  }
+
+  function pickCommentText(node) {
+    const selectors = ['.content', '.comment-content', '.note-text', '[class*="content"]'];
+    for (const selector of selectors) {
+      const el = node.querySelector(selector);
+      const candidate = normalizeBlockText(el ? (el.innerText || el.textContent || '') : '');
+      if (candidate && candidate.length > 2) return candidate;
+    }
+    return normalizeBlockText(node.innerText || node.textContent || '');
+  }
+
+  function pickCommentAuthor(node) {
+    const selectors = ['.author .name', '.user-name', '.username', '.name', '[class*="author"]', '[class*="name"]'];
+    for (const selector of selectors) {
+      const text = normalizeText((node.querySelector(selector) || {}).textContent || '');
+      if (text && text.length <= 32 && !/赞|回复|展开|更多/.test(text)) return text;
+    }
+    return '';
+  }
+
+  function pickCommentMeta(node) {
+    const text = normalizeText(node.innerText || node.textContent || '');
+    const createdAt = (text.match(/\d{1,2}-\d{1,2}|\d{4}-\d{1,2}-\d{1,2}|昨天|今天|刚刚|\d+\s*(分钟|小时|天)前/) || [])[0] || '';
+    const locationRaw = normalizeText((node.querySelector('.date .location, [class*="location"]') || {}).textContent || '') ||
+      (text.match(/IP属地[:：]?\s*[\u4e00-\u9fa5A-Za-z]+/) || [])[0] || '';
+    const location = locationRaw.replace(/^IP属地[:：]?/, '');
+    const likeText = normalizeText((node.querySelector('.like-wrapper .count, [class*="like"] [class*="count"]') || {}).textContent || '');
+    const replyText = normalizeText((node.querySelector('.reply .count, [class*="reply"] [class*="count"]') || {}).textContent || '');
+    return { createdAt, location, likes: parseCountText(likeText), replies: parseCountText(replyText) };
+  }
+
   async function extractComments() {
     const runtime = rt();
     if (!runtime) return { success: false, error: 'capture runtime not loaded' };
-    const itemSelectors = ['.comment-item', '.comment-container', '.list-item', '[class*="comment-item"]'];
+    const itemSelectors = ['.comment-item', '.comment-container', '.list-item', '[class*="comment-item"]', '[class*="commentItem"]'];
     const rootSelectors = ['.comments-container', '.comments-el', '.comment-list', '[class*="comments"]'];
+    for (let round = 0; round < 3; round += 1) {
+      let clicked = 0;
+      for (const btn of document.querySelectorAll('button, [role="button"], .show-more, .more, [class*="show-more"]')) {
+        const t = normalizeText(btn.textContent || '');
+        if (!/展开|全部回复|查看更多|更多回复|条回复/.test(t)) continue;
+        try { btn.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true, view: window })); clicked += 1; } catch (_) {}
+      }
+      if (!clicked) break;
+      await runtime.sleep(400);
+    }
     const { nodes, diagnostics } = await runtime.scrollAndTrack(itemSelectors, {
       rootResolver: () => document.querySelector(rootSelectors.join(',')) || document,
       targetCount: 200, maxRounds: 28, stallLimit: 5, waitMs: 520,
@@ -633,11 +783,37 @@
     const comments = [];
     const seen = new Set();
     for (const node of nodes) {
-      const text = runtime.normalizeText(node.innerText || node.textContent || '');
-      if (!text || seen.has(text)) continue;
+      const text = normalizeBlockText(pickCommentText(node));
+      if (!text || text.length < 2 || seen.has(text)) continue;
       seen.add(text);
-      const author = runtime.normalizeText((node.querySelector('.name, .author, [class*="name"]') || {}).innerText || '');
-      comments.push({ id: node.getAttribute('data-id') || node.getAttribute('data-comment-id') || '', author, content: text });
+      const rawId = normalizeText(node.getAttribute('id') || '').replace(/^comment-/, '');
+      const parentWrapper = node.closest('.parent-comment');
+      const parentItem = parentWrapper && parentWrapper.querySelector(':scope > .comment-item');
+      const parentCommentId = parentItem && parentItem !== node
+        ? normalizeText(parentItem.getAttribute('id') || '').replace(/^comment-/, '')
+        : '';
+      const meta = pickCommentMeta(node);
+      const authorLink = node.querySelector('.author a[href*="/user/profile"], a[href*="/user/profile"]');
+      const avatarImg = node.querySelector('.avatar img, [class*="avatar"] img');
+      comments.push({
+        id: rawId || undefined,
+        platformCommentId: rawId || undefined,
+        parentCommentId: parentCommentId || undefined,
+        rootCommentId: parentCommentId || rawId || undefined,
+        level: parentCommentId ? 1 : 0,
+        author: {
+          nickname: pickCommentAuthor(node),
+          userId: normalizeText(authorLink ? (authorLink.getAttribute('data-user-id') || '') : ''),
+          profileUrl: authorLink ? (authorLink.href || '') : '',
+          avatarUrl: avatarImg ? (avatarImg.src || avatarImg.getAttribute('data-src') || '') : '',
+        },
+        content: text,
+        text,
+        likes: meta.likes,
+        replies: meta.replies,
+        createdAt: meta.createdAt,
+        location: meta.location,
+      });
       if (comments.length >= 200) break;
     }
     return { success: true, noteId: getCurrentNoteId(), comments, diagnostics };
@@ -660,3 +836,5 @@
     return true;
   });
 })();
+
+

@@ -13,8 +13,7 @@ if errorlevel 1 (
   echo [1/3] PostgreSQL 未运行，尝试自动启动...
   net start postgresql-x64-17 >nul 2>&1
   if errorlevel 1 (
-    echo       自动启动失败，请手动打开"服务"窗口，启动 postgresql-x64-17 后再试。
-    echo       或运行: net start postgresql-x64-17 （需要管理员权限）
+    echo       自动启动失败，请手动打开服务窗口，启动 postgresql-x64-17 后再试。
     pause
     exit /b 1
   )
@@ -40,5 +39,5 @@ start "" http://localhost:3000
 echo.
 echo 工作台已打开：http://localhost:3000
 echo 后端接口文档：http://localhost:8000/docs
-echo 关闭本窗口不影响服务运行；停止服务请运行 stop_services.bat 或重启电脑。
+echo 关闭本窗口不影响服务运行。
 pause

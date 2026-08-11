@@ -66,6 +66,7 @@ def test_settings_get_and_update(client, tmp_path):
             "base_url": "https://ark.cn-beijing.volces.com/api/v3",
             "model": "doubao-image",
         },
+        "vision": {"api_key": None, "base_url": None, "model": "doubao-seed-2-1-pro-260628"},
         "video": {"api_key": "video-key-abcdef", "base_url": "", "model": ""},
     }
     resp = client.put("/api/v1/settings", json=body, headers=headers)
@@ -75,6 +76,7 @@ def test_settings_get_and_update(client, tmp_path):
     assert data["text"]["preview"] is not None
     assert "sk-test-1234567890" not in str(data)
     assert data["image"]["configured"] is False
+    assert data["vision"]["model"] == "doubao-seed-2-1-pro-260628"
     assert data["video"]["configured"] is True
     assert (tmp_path / "settings.json").exists()
 

@@ -12,6 +12,13 @@
     resultEl.className = 'result';
   }
 
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg && msg.type === 'bridge:progress') {
+      const total = msg.total ? ` ${msg.current}/${msg.total}` : '';
+      setResult((msg.label || '采集进度') + total + '...');
+    }
+  });
+
   async function send(type, extra) {
     return new Promise((resolve) => {
       chrome.runtime.sendMessage({ type, ...(extra || {}) }, (res) => resolve(res || { success: false, error: 'no response' }));
@@ -46,7 +53,8 @@
     const res = await send('bridge:collect-blogger', { bloggerUrl });
     if (!res.success) { setResult('失败：' + (res.error || '')); return; }
     const r = res.result || {};
-    setResult('博主 ' + res.userId + '\n笔记 ' + res.total + ' 条（含互动指标 ' + res.withStats + ' 条）\n' + JSON.stringify(r, null, 2));
+    const kbText = r.knowledge_synced === undefined ? '（后端未返回同步状态）' : (r.knowledge_synced ? '是' : '否');
+    setResult('博主 ' + res.userId + '\n笔记 ' + res.total + ' 条（含互动指标 ' + res.withStats + ' 条）\n知识库同步：' + kbText + '\n' + JSON.stringify(r, null, 2));
   });
 
   $('saveNote').addEventListener('click', async () => {
@@ -54,8 +62,9 @@
     const res = await send('bridge:save-current-note');
     if (!res.success) { setResult('失败：' + (res.error || '')); return; }
     const r = res.result || {};
-    const feedLine = res.feed ? ('feed: ' + JSON.stringify(res.feed)) : '';
-    setResult('已保存 ' + res.noteId + '\n' + JSON.stringify(r, null, 2) + (feedLine ? ('\n' + feedLine) : ''));
+    const kbText = r.knowledge_synced === undefined ? '（后端未返回同步状态）' : (r.knowledge_synced ? '是' : '否');
+    const feedLine = res.feed && res.feed.used ? ('feed ' + (res.feed.ok ? 'OK' : '未取到') + (res.feed.reason ? ' · ' + res.feed.reason : '')) : '';
+    setResult('已保存 ' + res.noteId + '\n知识库同步：' + kbText + '\n' + JSON.stringify(r, null, 2) + (feedLine ? ('\n' + feedLine) : ''));
   });
 
   $('saveComments').addEventListener('click', async () => {

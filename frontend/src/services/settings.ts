@@ -11,6 +11,7 @@ export interface SettingsResponse {
  storage: { current_dir: string; dirs: string[]; default_dir: string };
  text: ApiKeyStatus;
  image: ApiKeyStatus;
+ vision: ApiKeyStatus;
  video: ApiKeyStatus;
 }
 
@@ -24,6 +25,7 @@ export interface SettingsUpdate {
  storage_dir?: string;
  text?: ApiKeyUpdate;
  image?: ApiKeyUpdate;
+ vision?: ApiKeyUpdate;
  video?: ApiKeyUpdate;
 }
 

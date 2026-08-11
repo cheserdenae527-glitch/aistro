@@ -259,7 +259,17 @@ async def run_analysis_task(task_id: uuid.UUID) -> None:
             result=result,
             finished_at=datetime.now(timezone.utc),
             error=None,
+
         )
+
+        if status in ("success", "partial") and real_notes:
+            try:
+                async with async_session_factory() as session:
+                    from app.services.knowledge_base import sync_notes
+                    await sync_notes(session, task.user_id, real_notes, source="analysis")
+                    await session.commit()
+            except Exception as exc:
+                logger.warning("知识库同步失败 task=%s: %s", task_id, exc)
     except Exception as exc:
         logger.exception("分析任务失败 task=%s: %s", task_id, exc)
         await _update_task(task_id, status="failed", error=str(exc), finished_at=datetime.now(timezone.utc))

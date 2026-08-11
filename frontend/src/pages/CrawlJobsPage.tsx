@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react';
 import { Button, Input, InputNumber, message, Select, Progress, Table, Tag, Typography, Tabs, Row, Col, Space, Avatar } from 'antd';
-import { SearchOutlined, HistoryOutlined, UserOutlined, EyeOutlined, BarChartOutlined } from '@ant-design/icons';
+import { SearchOutlined, HistoryOutlined, UserOutlined, EyeOutlined, BarChartOutlined, DatabaseOutlined } from '@ant-design/icons';
 import { NoteCardView, parseNote, type NoteCardData } from '../components/NoteCard';
 import NoteDetail from '../components/NoteDetail';
 import SubscriptionsPage from './SubscriptionsPage';
+import KnowledgeBasePanel from '../components/KnowledgeBasePanel';
 import UserAnalysisPanel from '../components/UserAnalysisPanel';
 import SubscribeButton from '../components/SubscribeButton';
 
@@ -200,6 +201,17 @@ export default function CrawlJobsPage() {
     }
   };
 
+  const saveNotesToKnowledge = async (notes: any[], source: string) => {
+    if (!notes?.length) { message.info('没有可加入的笔记'); return; }
+    try {
+      const api = (await import('../services/api')).default;
+      const res = await api.post('/knowledge/notes', { notes, source });
+      message.success(`已加入知识库 ${res.data?.synced || 0} 条`);
+    } catch (err: any) {
+      message.error('加入知识库失败：' + (err?.response?.data?.detail || err?.message || ''), 5);
+    }
+  };
+
   const showNoteResults = (task: any) => {
     if (task.result?.data && Array.isArray(task.result.data)) {
       setSelectedNotes(task.result.data.map((d:any) => parseNote(d)));
@@ -322,9 +334,15 @@ export default function CrawlJobsPage() {
             <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>{viewNotesStatus || '正在获取博主作品...'}</Text>
           </div>
         ) : userNotes.length > 0 ? (
-          <Row gutter={[16,16]}>
-            {userNotes.map((n,i) => <Col key={i} xs={24} sm={12} md={8} lg={6}><div onClick={() => setDetailNote(n)} style={{cursor:'pointer'}}><NoteCardView note={n} /></div></Col>)}
-          </Row>
+          <>
+            <div style={{ marginBottom: 12, display: 'flex', gap: 8, alignItems: 'center' }}>
+              <Text type="secondary">共 {userNotes.length} 篇</Text>
+              <Button size="small" type="primary" ghost icon={<DatabaseOutlined />} onClick={() => saveNotesToKnowledge(userNotes, 'user_notes')}>加入知识库</Button>
+            </div>
+            <Row gutter={[16,16]}>
+              {userNotes.map((n,i) => <Col key={i} xs={24} sm={12} md={8} lg={6}><div onClick={() => setDetailNote(n)} style={{cursor:'pointer'}}><NoteCardView note={n} /></div></Col>)}
+            </Row>
+          </>
         ) : <div style={{ padding:48, textAlign:'center', color:'#999' }}>搜索博主后点击"查看作品"</div> },
         { key:'results', label: '浏览结果 ' + (selectedNotes ? selectedNotes.length + ' 条' : ''), children: selectedNotes ? (
           <>
@@ -350,6 +368,7 @@ export default function CrawlJobsPage() {
                 setSelectedNotes(saved.map((d:any) => d));
                 message.success('已加载 ' + saved.length + ' 条历史');
               }}>{'历史记录'}</Button>
+              <Button size='small' icon={<DatabaseOutlined />} onClick={() => saveNotesToKnowledge(selectedNotes || [], 'search')}>加入知识库</Button>
             </div>
             <Row gutter={[16,16]}>{selectedNotes.map((n,i) => <Col key={i} xs={24} sm={12} md={8} lg={6}><div onClick={() => setDetailNote(n)} style={{cursor:'pointer'}}><NoteCardView note={n} /></div></Col>)}</Row>
           </>
@@ -362,6 +381,7 @@ export default function CrawlJobsPage() {
           </div>
         ) : <UserAnalysisPanel user={analysisUser} data={analysisData} onOpenNote={(n) => setDetailNote(n)} /> },
         { key:'subscriptions', label:'博主订阅', children: <SubscriptionsPage /> },
+        { key:'knowledge', label:'知识库', children: <KnowledgeBasePanel /> },
       ]} />
       <NoteDetail open={!!detailNote} note={detailNote} onClose={() => setDetailNote(null)} />
     </div>

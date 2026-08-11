@@ -20,12 +20,14 @@ class PcHttpClient(BrowserHttpClient):
         *,
         proxies: Optional[dict] = None,
         impersonate: str = PC_IMPERSONATE,
+        close_after_request: Optional[bool] = None,
     ) -> None:
         super().__init__(
             proxies=proxies,
             impersonate=impersonate,
             accept_encoding=PC_ACCEPT_ENCODING,
             http_version=PC_HTTP_VERSION,
+            close_after_request=close_after_request,
         )
 
 
