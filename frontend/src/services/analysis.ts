@@ -34,7 +34,8 @@ export interface BloggerDimension {
 export interface BloggerAnalysisResult {
   note_count: number;
   real_note_count: number;
-  coverage: { total_notes: number; fetched_notes: number; coverage_rate: number; sampled: boolean };
+  sampled: boolean;                                   // 顶层，匹配后端
+  coverage: { total_notes: number; sample_size: number; fetched_notes: number; coverage_rate: number };
   confidence: Conf;
   dimensions: Record<'seeding_depth' | 'verticality' | 'stable_output' | 'sustained_operation' | 'growth_trend', BloggerDimension>;
   overall: { score: number | null; level: string; description: string; score_suppressed: boolean } | null;
