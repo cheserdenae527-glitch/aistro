@@ -226,3 +226,29 @@ def test_stable_output_cliff_only():
     res = _score_stable_output(older + recent, now=now)
     assert res["detail"]["cliff_detected"] is True
     assert res["detail"]["gap_days"] == 0  # 无 ≥14 天空白期
+
+
+def test_growth_trend_with_snapshot():
+    from app.services.blogger_scoring import _score_growth_trend, _tier_for
+
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    notes = [_mk(i, now - timedelta(days=i * 2), 3000, 1200, 300, 200) for i in range(30)]
+    history = [
+        {"snapshot_at": (now - timedelta(days=35)).isoformat(), "fans": 45000},
+        {"snapshot_at": (now - timedelta(days=5)).isoformat(), "fans": 50000},
+    ]
+    res = _score_growth_trend(notes, fans=50000, now=now, follower_history=history, tier=_tier_for(50000))
+    # 35 天涨 11% → 月化约 9.4%，接近 T2 基准 9% → 中高分
+    assert res["detail"]["has_snapshot"] is True
+    assert res["detail"]["growth_rate"] > 0.05
+    assert res["confidence"] in ("high", "medium")
+
+
+def test_growth_trend_no_snapshot_low_conf():
+    from app.services.blogger_scoring import _score_growth_trend, _tier_for
+
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    notes = [_mk(i, now - timedelta(days=i * 2), 3000, 1200, 300, 200) for i in range(30)]
+    res = _score_growth_trend(notes, fans=50000, now=now, follower_history=None, tier=_tier_for(50000))
+    assert res["detail"]["has_snapshot"] is False
+    assert res["confidence"] == "low"

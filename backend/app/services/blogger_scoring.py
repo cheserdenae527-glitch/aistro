@@ -507,7 +507,7 @@ def _score_update_stability(notes: list[dict], now: datetime) -> dict:
     }
 
 
-def _score_growth_trend(notes: list[dict], fans: int) -> dict:
+def _score_data_trend(notes: list[dict], fans: int) -> dict:
     timed = sorted(
         (n for n in notes if _parse_dt(n.get("published_at")) is not None),
         key=lambda n: _parse_dt(n.get("published_at")),
@@ -559,6 +559,71 @@ def _score_follower_growth(history: list[dict]) -> float | None:
     growth_rate = (last_fans - first_fans) / first_fans
     score = _interpolate([(-0.2, 0), (0.0, 40), (0.1, 70), (0.3, 100)], growth_rate)
     return round(score, 1)
+
+
+def _latest_growth_rate(history: list[dict] | None) -> float | None:
+    """取最近两次快照的粉丝增长率（30 天内）；不足两次或间隔 >60 天返回 None。"""
+    if not history or len(history) < 2:
+        return None
+    items = []
+    for h in history:
+        dt = _parse_dt(h.get("snapshot_at") or h.get("date") or h.get("created_at"))
+        fans = int(h.get("fans", 0) or 0)
+        if dt and fans > 0:
+            items.append((dt, fans))
+    items.sort()
+    if len(items) < 2:
+        return None
+    (dt_prev, fans_prev), (dt_last, fans_last) = items[-2], items[-1]
+    days = (dt_last - dt_prev).days
+    if days <= 0 or days > 60:
+        return None
+    if fans_prev <= 0:
+        return None
+    rate = (fans_last - fans_prev) / fans_prev
+    return rate * 30.0 / days  # 月化
+
+
+def _score_growth_trend(
+    notes: list[dict],
+    fans: int,
+    now: datetime,
+    follower_history: list[dict] | None,
+    tier: dict,
+) -> dict:
+    """增长趋势：有快照 → 涨粉分×0.7 + 内容趋势×0.3；无快照 → 仅内容趋势，confidence=low。
+
+    无快照时不引入阶段分，避免与阶段判定的同源互动趋势信号重复计算（见设计 §4.5）。
+    """
+    std_values = _type_standardized(notes)
+    trend = _score_trend(std_values, notes)
+    content_score = None if trend["skipped"] else trend["score"]
+    content_reason = None if not trend["skipped"] else trend["reason"]
+
+    growth_rate = _latest_growth_rate(follower_history)
+    if growth_rate is None:
+        if content_score is None:
+            return {"score": None, "confidence": "low", "detail": {
+                "growth_rate": None, "has_snapshot": False, "trend_ratio": None,
+                "reason": content_reason or "样本不足以计算内容趋势", "weight_halved": True}}
+        return {"score": content_score, "confidence": "low", "detail": {
+            "growth_rate": None, "has_snapshot": False, "trend_ratio": trend["ratio"],
+            "reason": "无涨粉快照，仅按内容趋势计分", "weight_halved": True}}
+
+    baseline = float(tier.get("growth_baseline", 0.08))
+    points = load_scoring_config()["growth"]["points"]  # [(0.0,15),(0.5,45),(1.0,75),(1.2,100)] 升序
+    growth_score = _interpolate(points, growth_rate / baseline if baseline else 0.0)
+    if content_score is None:
+        score = growth_score
+        conf = "high"
+        detail = {"growth_rate": round(growth_rate, 4), "has_snapshot": True, "trend_ratio": None,
+                  "reason": "内容趋势样本不足，仅按涨粉计分"}
+    else:
+        score = growth_score * 0.7 + content_score * 0.3
+        conf = "high"
+        detail = {"growth_rate": round(growth_rate, 4), "has_snapshot": True,
+                  "trend_ratio": trend["ratio"], "reason": None}
+    return {"score": round(score, 1), "confidence": conf, "detail": detail}
 
 
 def _summarize_follower_history(history: list[dict] | None) -> dict | None:
@@ -622,7 +687,7 @@ def _score_growth_potential(notes: list[dict], fans: int, now: datetime, followe
         components["follower_growth"] = {"score": None, "detail": {"note": "暂无粉丝历史快照，该子项不计分"}}
     components["content_system"] = _score_content_system(notes)
     components["update_stability"] = _score_update_stability(notes, now)
-    trend = _score_growth_trend(notes, fans)
+    trend = _score_data_trend(notes, fans)
     if trend["score"] is None:
         del weights["data_trend"]
         components["data_trend"] = {"score": None, "detail": {"note": trend["note"]}}
