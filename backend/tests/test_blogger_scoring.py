@@ -289,3 +289,40 @@ def test_latest_growth_rate_monthlyizes():
         {"fans": 10500, "snapshot_at": "2026-08-01T00:00:00+08:00"},
     ]
     assert _latest_growth_rate(history) == pytest.approx(0.10)
+
+def test_classify_stage_with_snapshot_growth():
+    from app.services.blogger_scoring import _classify_stage
+
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    notes = [_mk(i, now - timedelta(days=i * 2), 3000, 1200, 300, 200) for i in range(30)]
+    history = [
+        {"snapshot_at": (now - timedelta(days=35)).isoformat(), "fans": 45000},
+        {"snapshot_at": (now - timedelta(days=5)).isoformat(), "fans": 50000},
+    ]
+    res = _classify_stage(fans=50000, notes=notes, now=now, follower_history=history)
+    assert res["label"] in ("成长", "成熟")
+    assert res["confidence"] in ("high", "medium")
+
+
+def test_classify_stage_no_snapshot_low_conf():
+    from app.services.blogger_scoring import _classify_stage
+
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    notes = [_mk(i, now - timedelta(days=i * 2), 3000, 1200, 300, 200) for i in range(30)]
+    res = _classify_stage(fans=2000, notes=notes, now=now, follower_history=None)
+    assert res["confidence"] == "low"
+    assert res["label"] == "冷启动"  # 粉丝 < 5000
+
+
+def test_classify_stage_decline():
+    from app.services.blogger_scoring import _classify_stage
+
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    # 最新笔记 80 天前 → 停更倾向
+    notes = [_mk(i, now - timedelta(days=80 + i * 2), 3000, 1200, 300, 200) for i in range(10)]
+    history = [
+        {"snapshot_at": (now - timedelta(days=40)).isoformat(), "fans": 52000},
+        {"snapshot_at": (now - timedelta(days=5)).isoformat(), "fans": 50000},
+    ]
+    res = _classify_stage(fans=50000, notes=notes, now=now, follower_history=history)
+    assert res["label"] == "衰退"

@@ -631,6 +631,58 @@ def _score_growth_trend(
     return {"score": round(score, 1), "confidence": conf, "detail": detail}
 
 
+
+def _weekly_notes(notes: list[dict], now: datetime) -> float:
+    cutoff = now - timedelta(days=90)
+    recent = [n for n in notes if _parse_dt(n["published_at"]) is not None and _parse_dt(n["published_at"]) >= cutoff]
+    return round(len(recent) / 13.0, 2)  # 90 天 ≈ 13 周
+
+
+def _classify_stage(fans: int, notes: list[dict], now: datetime, follower_history: list[dict] | None) -> dict:
+    """账号阶段：冷启动 / 成长 / 成熟 / 衰退。独立输出标签，不参与加权。
+
+    有 ≥2 次快照 → 涨粉率 vs 分层基准 + 更新频率，置信 high/medium；
+    无快照 → 粉丝量级 + 更新频率 + 互动趋势推断，置信度恒为 low。
+    """
+    cfg = load_scoring_config()
+    tier = _tier_for(fans)
+    baseline = float(tier.get("growth_baseline", 0.08))
+    weekly = _weekly_notes(notes, now)
+    growth_rate = _latest_growth_rate(follower_history)
+    latest_dt = None
+    for n in notes:
+        dt = _parse_dt(n["published_at"])
+        if dt and (latest_dt is None or dt > latest_dt):
+            latest_dt = dt
+    stale = latest_dt is not None and (now - latest_dt).days > int(cfg["gate"]["stale_days"])
+
+    if growth_rate is not None:
+        if growth_rate <= 0 or (growth_rate < baseline * 0.3 and weekly < 1.0):
+            label, conf = "衰退", "medium"
+        elif growth_rate >= baseline:
+            label, conf = "成长", "high"
+        elif fans >= 10000 and weekly >= 1.0:
+            label, conf = "成熟", "medium"
+        else:
+            label, conf = "冷启动", "medium"
+        if stale and label in ("成长", "成熟"):
+            label, conf = "衰退", "medium"
+        evidence = [f"近30天涨粉 {growth_rate * 100:.1f}%", f"周均发布 {weekly}"]
+    else:
+        # 无快照：仅推断，恒 low
+        if stale:
+            label = "衰退"
+        elif fans < int(cfg["stage"]["cold_start_fans"]):
+            label = "冷启动"
+        elif weekly >= 1.0 and fans >= 100000:
+            label = "成熟"
+        else:
+            label = "成长" if weekly >= 1.0 else "冷启动"
+        conf = "low"
+        evidence = [f"粉丝 {fans}", f"周均发布 {weekly}", "无涨粉快照，阶段为推断"]
+    return {"label": label, "confidence": conf, "evidence": evidence}
+
+
 def _summarize_follower_history(history: list[dict] | None) -> dict | None:
     """汇总粉丝历史来源与增长信息，供前端展示和成长潜力子项明细使用。"""
     if not history:
