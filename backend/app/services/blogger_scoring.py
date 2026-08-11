@@ -10,6 +10,8 @@ import statistics
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.services.scoring_config import load_scoring_config
+
 CN_TZ = timezone(timedelta(hours=8))
 
 # 加权互动：点赞成本最低、最容易刷，权重最低；分享最难伪造，权重最高
@@ -84,11 +86,19 @@ def _interpolate(points: list[tuple[float, float]], x: float) -> float:
 
 
 def _tier_for(fans: int) -> dict:
-    for tier in TIERS.values():
-        if fans >= tier["min"] and (tier["max"] is None or fans < tier["max"]):
-            return tier
-    # 粉丝 <1000 的账号按 T1（尾部）口径评分，避免误落到 T4 顶部阈值
-    return TIERS["T1"]
+    """粉丝分层：从 scoring_config 读取，并合并旧 TIERS 的 points/min_healthy。"""
+    tiers = load_scoring_config()["tiers"]
+    for key, t in tiers.items():
+        if fans >= int(t["min"]) and (t.get("max") is None or fans < int(t["max"])):
+            merged = dict(t)
+            legacy = TIERS.get(key, {})
+            merged.setdefault("points", legacy.get("points", []))
+            merged.setdefault("min_healthy", legacy.get("min_healthy", t.get("min_healthy_rate", 0.0)))
+            return merged
+    merged = dict(tiers["T1"])
+    merged.setdefault("points", TIERS["T1"].get("points", []))
+    merged.setdefault("min_healthy", TIERS["T1"].get("min_healthy", tiers["T1"].get("min_healthy_rate", 0.0)))
+    return merged
 
 
 def _real_notes(notes: list[dict]) -> list[dict]:
