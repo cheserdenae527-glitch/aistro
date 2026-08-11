@@ -631,11 +631,14 @@ def _score_growth_trend(
     return {"score": round(score, 1), "confidence": conf, "detail": detail}
 
 
-
 def _weekly_notes(notes: list[dict], now: datetime) -> float:
     cutoff = now - timedelta(days=90)
-    recent = [n for n in notes if _parse_dt(n["published_at"]) is not None and _parse_dt(n["published_at"]) >= cutoff]
-    return round(len(recent) / 13.0, 2)  # 90 天 ≈ 13 周
+    recent = 0
+    for n in notes:
+        dt = _parse_dt(n.get("published_at"))
+        if dt is not None and dt >= cutoff:
+            recent += 1
+    return round(recent / 13.0, 2)  # 90 天 ≈ 13 周
 
 
 def _classify_stage(fans: int, notes: list[dict], now: datetime, follower_history: list[dict] | None) -> dict:
@@ -651,35 +654,43 @@ def _classify_stage(fans: int, notes: list[dict], now: datetime, follower_histor
     growth_rate = _latest_growth_rate(follower_history)
     latest_dt = None
     for n in notes:
-        dt = _parse_dt(n["published_at"])
+        dt = _parse_dt(n.get("published_at"))
         if dt and (latest_dt is None or dt > latest_dt):
             latest_dt = dt
-    stale = latest_dt is not None and (now - latest_dt).days > int(cfg["gate"]["stale_days"])
+    days = (now - latest_dt).days if latest_dt is not None else None
+    stale = days is not None and days > int(cfg["gate"]["stale_days"])
 
     if growth_rate is not None:
+        # 0.3×baseline 处刻意取严格 <：恰好达标视为「维持存量」而非衰退，避免临界样本误判
         if growth_rate <= 0 or (growth_rate < baseline * 0.3 and weekly < 1.0):
             label, conf = "衰退", "medium"
         elif growth_rate >= baseline:
             label, conf = "成长", "high"
-        elif fans >= 10000 and weekly >= 1.0:
+        elif fans >= int(cfg["stage"]["mature_fans"]) and weekly >= 1.0:
             label, conf = "成熟", "medium"
         else:
             label, conf = "冷启动", "medium"
         if stale and label in ("成长", "成熟"):
             label, conf = "衰退", "medium"
-        evidence = [f"近30天涨粉 {growth_rate * 100:.1f}%", f"周均发布 {weekly}"]
+        evidence = [f"月化涨粉 {growth_rate * 100:.1f}%", f"周均发布 {weekly}"]
+        if stale:
+            evidence.append(f"最新笔记发布距今 {days} 天（停更）")
     else:
-        # 无快照：仅推断，恒 low
+        # 无快照：仅推断，恒 low；冷启动仅限粉丝 < cold_start_fans
         if stale:
             label = "衰退"
         elif fans < int(cfg["stage"]["cold_start_fans"]):
             label = "冷启动"
-        elif weekly >= 1.0 and fans >= 100000:
+        elif weekly >= 1.0 and fans >= int(cfg["stage"]["large_fans"]):
             label = "成熟"
+        elif weekly >= 1.0:
+            label = "成长"
         else:
-            label = "成长" if weekly >= 1.0 else "冷启动"
+            label = "成熟"  # 粉丝达标但低频、未停更：存量成熟账号
         conf = "low"
-        evidence = [f"粉丝 {fans}", f"周均发布 {weekly}", "无涨粉快照，阶段为推断"]
+        evidence = [f"粉丝 {fans}", f"周均发布 {weekly}", "近 60 天无有效涨粉快照，阶段为推断"]
+        if stale:
+            evidence.append(f"最新笔记发布距今 {days} 天（停更）")
     return {"label": label, "confidence": conf, "evidence": evidence}
 
 

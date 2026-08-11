@@ -300,8 +300,8 @@ def test_classify_stage_with_snapshot_growth():
         {"snapshot_at": (now - timedelta(days=5)).isoformat(), "fans": 50000},
     ]
     res = _classify_stage(fans=50000, notes=notes, now=now, follower_history=history)
-    assert res["label"] in ("成长", "成熟")
-    assert res["confidence"] in ("high", "medium")
+    assert res["label"] == "成长"
+    assert res["confidence"] == "high"
 
 
 def test_classify_stage_no_snapshot_low_conf():
@@ -326,3 +326,30 @@ def test_classify_stage_decline():
     ]
     res = _classify_stage(fans=50000, notes=notes, now=now, follower_history=history)
     assert res["label"] == "衰退"
+    assert res["confidence"] == "medium"
+
+def test_classify_stage_stale_overrides_growth():
+    from app.services.blogger_scoring import _classify_stage
+
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    notes = [_mk(i, now - timedelta(days=80 + i * 2), 3000, 1200, 300, 200) for i in range(10)]  # 最新 80 天前
+    history = [
+        {"snapshot_at": (now - timedelta(days=35)).isoformat(), "fans": 45000},
+        {"snapshot_at": (now - timedelta(days=5)).isoformat(), "fans": 50000},
+    ]
+    res = _classify_stage(fans=50000, notes=notes, now=now, follower_history=history)
+    assert res["label"] == "衰退"          # 有强正增长，但停更覆盖
+    assert res["confidence"] == "medium"
+    assert any("停更" in e for e in res["evidence"])
+
+
+def test_classify_stage_no_snapshot_large_inactive_is_mature():
+    from app.services.blogger_scoring import _classify_stage
+
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    # 大号、低频但未停更（无快照）：应为存量成熟，而非冷启动
+    notes = [_mk(i, now - timedelta(days=40 + i * 20), 3000, 1200, 300, 200) for i in range(5)]  # 40..120 天前
+    res = _classify_stage(fans=200000, notes=notes, now=now, follower_history=None)
+    assert res["label"] == "成熟"
+    assert res["confidence"] == "low"
+    assert any("无有效涨粉快照" in e for e in res["evidence"])

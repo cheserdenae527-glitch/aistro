@@ -70,7 +70,7 @@ DEFAULT_CONFIG = {
             "collect_like_ratio_floor": 0.2, "growth_spike": 0.20,
             "growth_interaction_drop": 0.2, "t1_growth_spike": 0.35,
         },
-        "stage": {"cold_start_fans": 5000},
+        "stage": {"cold_start_fans": 5000, "mature_fans": 10000, "large_fans": 100000},
     },
 }
 

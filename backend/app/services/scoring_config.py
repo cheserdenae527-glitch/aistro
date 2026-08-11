@@ -54,7 +54,7 @@ DEFAULT_SCORING_CONFIG: dict = {
         "growth_interaction_drop": 0.2,
         "t1_growth_spike": 0.35,
     },
-    "stage": {"cold_start_fans": 5000},
+    "stage": {"cold_start_fans": 5000, "mature_fans": 10000, "large_fans": 100000},
 }
 
 
