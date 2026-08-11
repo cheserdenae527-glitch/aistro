@@ -35,9 +35,9 @@ DEFAULT_SCORING_CONFIG: dict = {
         ],
         "points": [(0.2, 10), (0.4, 40), (0.6, 70), (0.8, 100)],
     },
-    "viral": {"median_multiplier": 3.0, "abs_min": 200, "points": [(0.2, 100), (0.1, 70), (0.08, 40), (0.0, 0)]},
+    "viral": {"median_multiplier": 3.0, "abs_min": 200, "points": [(0.0, 0), (0.08, 40), (0.1, 70), (0.2, 100)]},
     "stability": {"gap_days": 14, "cliff_drop": 0.5, "cliff_penalty": 25},
-    "growth": {"content_weight": 0.3, "points": [(1.2, 100), (1.0, 75), (0.5, 45), (0.0, 15)]},
+    "growth": {"content_weight": 0.3, "points": [(0.0, 15), (0.5, 45), (1.0, 75), (1.2, 100)]},
     "comments": {
         "intent_keywords": ["在哪", "多少钱", "好吃吗", "怎么去", "求地址", "人均", "哪里", "电话", "营业", "菜单"],
         "spam_keywords": ["太棒了", "学习了", "支持", "求链接", "已收藏", "点赞"],
