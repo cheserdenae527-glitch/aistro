@@ -213,4 +213,16 @@ def test_stable_output_gap_and_cliff_penalize():
     new = [_mk(99, now - timedelta(days=20), 300, 100, 30, 10)]
     res = _score_stable_output(old + new, now=now)
     assert res["detail"]["gap_days"] >= 14
+    assert res["detail"]["cliff_detected"] is True
     assert res["score"] < 60
+
+
+def test_stable_output_cliff_only():
+    from app.services.blogger_scoring import _score_stable_output
+
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    older = [_mk(i, now - timedelta(days=35 + i * 2), 9000, 3600, 900, 600) for i in range(15)]  # 35..63 天前，高互动
+    recent = [_mk(100 + i, now - timedelta(days=i * 2), 300, 100, 30, 10) for i in range(15)]     # 0..28 天前，低互动
+    res = _score_stable_output(older + recent, now=now)
+    assert res["detail"]["cliff_detected"] is True
+    assert res["detail"]["gap_days"] == 0  # 无 ≥14 天空白期

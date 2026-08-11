@@ -150,6 +150,7 @@ def _score_stable_output(notes: list[dict], now: datetime | None = None) -> dict
     """稳定产出：爆文率（中位数×3，抗刷量拉高均值）×0.7 + 稳健性（连续性/断崖）×0.3。
 
     弃用 CV：爆款账号方差天然大，CV 会反向惩罚有爆款的账号；改为只罚中断与暴跌。
+    gap_days 上报口径：仅当近 30 天存在 ≥gap_days 天的连续无发布空白期时上报实际天数，否则为 0（常规节奏不算空白）。
     """
     cfg = load_scoring_config()
     now = now or datetime.now(CN_TZ)
@@ -188,10 +189,7 @@ def _score_stable_output(notes: list[dict], now: datetime | None = None) -> dict
 def _max_recent_gap_days(notes: list[dict], now: datetime) -> int:
     """近 30 天窗口内连续无发布的最大天数；窗口内无笔记按 30 天计。"""
     cutoff = now - timedelta(days=30)
-    in_window = [
-        _parse_dt(n["published_at"]) for n in notes
-        if _parse_dt(n["published_at"]) is not None and _parse_dt(n["published_at"]) >= cutoff
-    ]
+    in_window = [dt for n in notes if (dt := _parse_dt(n["published_at"])) is not None and dt >= cutoff]
     if not in_window:
         return 30
     in_window.sort()
