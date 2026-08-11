@@ -562,7 +562,9 @@ def _score_follower_growth(history: list[dict]) -> float | None:
 
 
 def _latest_growth_rate(history: list[dict] | None) -> float | None:
-    """取最近两次快照的粉丝增长率（30 天内）；不足两次或间隔 >60 天返回 None。"""
+    """取最近两次快照的粉丝增长率并月化；间隔需 ≤60 天，短间隔会被放大（如 1-2 天跨度 ×15-30）。
+
+    不足两次有效快照、间隔 ≤0 或 >60 天返回 None。"""
     if not history or len(history) < 2:
         return None
     items = []
@@ -591,12 +593,13 @@ def _score_growth_trend(
     follower_history: list[dict] | None,
     tier: dict,
 ) -> dict:
-    """增长趋势：有快照 → 涨粉分×0.7 + 内容趋势×0.3；无快照 → 仅内容趋势，confidence=low。
+    """增长趋势：有快照 → 涨粉分×(1-content_weight) + 内容趋势×content_weight；无快照 → 仅内容趋势，confidence=low。
 
     无快照时不引入阶段分，避免与阶段判定的同源互动趋势信号重复计算（见设计 §4.5）。
+    fans/now 为 Task 9 五维统一调用契约预留，本维度暂未使用。
     """
-    std_values = _type_standardized(notes)
-    trend = _score_trend(std_values, notes)
+    # 内容趋势沿用原 `_score_trend` 的加权互动口径（未做类型内标准化）；如需标准化待 Task 9 统一评估
+    trend = _score_trend(None, notes)
     content_score = None if trend["skipped"] else trend["score"]
     content_reason = None if not trend["skipped"] else trend["reason"]
 
@@ -610,8 +613,9 @@ def _score_growth_trend(
             "growth_rate": None, "has_snapshot": False, "trend_ratio": trend["ratio"],
             "reason": "无涨粉快照，仅按内容趋势计分", "weight_halved": True}}
 
+    cfg = load_scoring_config()
     baseline = float(tier.get("growth_baseline", 0.08))
-    points = load_scoring_config()["growth"]["points"]  # [(0.0,15),(0.5,45),(1.0,75),(1.2,100)] 升序
+    points = cfg["growth"]["points"]  # [(0.0,15),(0.5,45),(1.0,75),(1.2,100)] 升序
     growth_score = _interpolate(points, growth_rate / baseline if baseline else 0.0)
     if content_score is None:
         score = growth_score
@@ -619,7 +623,8 @@ def _score_growth_trend(
         detail = {"growth_rate": round(growth_rate, 4), "has_snapshot": True, "trend_ratio": None,
                   "reason": "内容趋势样本不足，仅按涨粉计分"}
     else:
-        score = growth_score * 0.7 + content_score * 0.3
+        content_weight = float(cfg["growth"]["content_weight"])
+        score = growth_score * (1 - content_weight) + content_score * content_weight
         conf = "high"
         detail = {"growth_rate": round(growth_rate, 4), "has_snapshot": True,
                   "trend_ratio": trend["ratio"], "reason": None}

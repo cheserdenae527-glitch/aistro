@@ -3,6 +3,8 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta
 
+import pytest
+
 from app.services.blogger_scoring import score_blogger, CN_TZ
 
 
@@ -238,17 +240,52 @@ def test_growth_trend_with_snapshot():
         {"snapshot_at": (now - timedelta(days=5)).isoformat(), "fans": 50000},
     ]
     res = _score_growth_trend(notes, fans=50000, now=now, follower_history=history, tier=_tier_for(50000))
-    # 35 天涨 11% → 月化约 9.4%，接近 T2 基准 9% → 中高分
+    # 快照间隔 30 天：月化涨粉率 (50000-45000)/45000 = 11.1%；/T2 基准 9% = 1.23 → 涨粉分封顶 100；复合 = 100×0.7 + 内容趋势60×0.3 = 88
     assert res["detail"]["has_snapshot"] is True
-    assert res["detail"]["growth_rate"] > 0.05
-    assert res["confidence"] in ("high", "medium")
+    assert res["detail"]["growth_rate"] == pytest.approx(0.1111, abs=1e-4)
+    assert res["score"] == pytest.approx(88.0)
+    assert res["confidence"] == "high"
 
 
 def test_growth_trend_no_snapshot_low_conf():
-    from app.services.blogger_scoring import _score_growth_trend, _tier_for
+    from app.services.blogger_scoring import _score_growth_trend, _score_trend, _tier_for
 
     now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
     notes = [_mk(i, now - timedelta(days=i * 2), 3000, 1200, 300, 200) for i in range(30)]
     res = _score_growth_trend(notes, fans=50000, now=now, follower_history=None, tier=_tier_for(50000))
     assert res["detail"]["has_snapshot"] is False
+    assert res["detail"]["weight_halved"] is True
     assert res["confidence"] == "low"
+    # 无快照时仅按内容趋势计分：score 应等于 _score_trend 的原始分数
+    assert res["score"] == _score_trend(None, notes)["score"]
+
+
+@pytest.mark.parametrize(
+    "history",
+    [
+        [{"fans": 10000, "snapshot_at": "2026-08-01T00:00:00+08:00"}],  # 仅一条快照
+        [  # 间隔 >60 天 → 不月化
+            {"fans": 10000, "snapshot_at": "2026-05-01T00:00:00+08:00"},
+            {"fans": 13000, "snapshot_at": "2026-08-01T00:00:00+08:00"},
+        ],
+        [  # 前一快照 fans=0 → 过滤后不足两条有效快照
+            {"fans": 0, "snapshot_at": "2026-07-01T00:00:00+08:00"},
+            {"fans": 13000, "snapshot_at": "2026-08-01T00:00:00+08:00"},
+        ],
+    ],
+)
+def test_latest_growth_rate_edges(history):
+    from app.services.blogger_scoring import _latest_growth_rate
+
+    assert _latest_growth_rate(history) is None
+
+
+def test_latest_growth_rate_monthlyizes():
+    from app.services.blogger_scoring import _latest_growth_rate
+
+    # 15 天涨 5% → 月化 ×2 = 10%
+    history = [
+        {"fans": 10000, "snapshot_at": "2026-07-17T00:00:00+08:00"},
+        {"fans": 10500, "snapshot_at": "2026-08-01T00:00:00+08:00"},
+    ]
+    assert _latest_growth_rate(history) == pytest.approx(0.10)
