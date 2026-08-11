@@ -62,7 +62,7 @@ def _seed_task(
                     confidence="high",
                     result=result,
                     error=None,
-                    finished_at=finished_at or datetime.now(timezone.utc),
+                    finished_at=finished_at,
                 )
                 session.add(task)
                 await session.commit()
@@ -112,24 +112,34 @@ def test_list_analysis_tasks_status_filter(client):
 
 
 def test_list_analysis_tasks_sorted_by_finished_at_desc(client):
-    headers, user_id = _auth(client)
+    headers, user_id = _auth(client, email=f"sort-{uuid.uuid4().hex[:8]}@test.com")
     old_id = _seed_task(user_id, "xhs-old", finished_at=datetime.now(timezone.utc) - timedelta(days=3))
     new_id = _seed_task(user_id, "xhs-new", finished_at=datetime.now(timezone.utc) - timedelta(days=1))
+    pending_id = _seed_task(user_id, "xhs-pending", status="pending", finished_at=None)
 
     resp = client.get("/api/v1/notes/analysis-tasks", headers=headers)
     assert resp.status_code == 200
     ids = [it["id"] for it in resp.json()["items"]]
-    assert ids.index(new_id) < ids.index(old_id)
+    # 完成时间倒序，finished_at 为空（pending/running）的任务排最后
+    assert ids == [new_id, old_id, pending_id]
 
 
 def test_list_analysis_tasks_limit_applied(client):
-    headers, user_id = _auth(client)
+    headers, user_id = _auth(client, email=f"limit-{uuid.uuid4().hex[:8]}@test.com")
     _seed_task(user_id, "xhs-limit-1")
     _seed_task(user_id, "xhs-limit-2")
 
     resp = client.get("/api/v1/notes/analysis-tasks?limit=1", headers=headers)
     assert resp.status_code == 200
-    assert len(resp.json()["items"]) <= 1
+    assert len(resp.json()["items"]) == 1
+
+    resp = client.get("/api/v1/notes/analysis-tasks?limit=0", headers=headers)
+    assert resp.status_code == 200
+    assert len(resp.json()["items"]) == 1  # limit 下界钳制为 1
+
+    resp = client.get("/api/v1/notes/analysis-tasks?limit=999", headers=headers)
+    assert resp.status_code == 200
+    assert len(resp.json()["items"]) == 2  # 不超过现有行数
 
 
 def test_list_analysis_tasks_data_isolation(client):

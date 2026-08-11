@@ -298,6 +298,14 @@ async def run_analysis_task(task_id: uuid.UUID) -> None:
             comment_analysis=comment_analysis,
         )
         status = "partial" if partial else "success"
+        # 注入昵称到结果顶层，供批量筛选列表（Task 11b/14）直接展示；
+        # score_blogger 结果本身不含顶层 nickname，昵称只存在于 notes[].author
+        result["nickname"] = ""
+        for n in real_notes:
+            author = n.get("author") or {}
+            if author.get("nickname"):
+                result["nickname"] = author["nickname"]
+                break
         await _update_task(
             task_id,
             status=status,
