@@ -33,7 +33,7 @@ def test_high_quality_account():
     assert res["overall"] is not None
     assert res["overall"]["score"] >= 70
     assert res["stage"]["label"] in ("成长", "成熟")
-    assert res["decision"]["recommendation"] in ("priority", "ok", "caution")
+    assert res["decision"]["recommendation"] == "priority"
     assert set(res["dimensions"].keys()) == {
         "seeding_depth", "verticality", "stable_output", "sustained_operation", "growth_trend",
     }
@@ -69,6 +69,7 @@ def test_low_coverage_no_score():
     res = score_blogger(notes, follower_count=50000, total_notes=40, now=now)
     assert res["confidence"] == "low"
     assert res["overall"] is None
+    assert res["overall_score_suppressed"] is True
     assert res["decision"]["recommendation"] == "insufficient_data"
 
 
@@ -518,3 +519,14 @@ def test_growth_trend_no_snapshot_overall_medium():
     res = score_blogger(notes, follower_count=50000, total_notes=30, now=now, follower_history=None)
     assert res["confidence"] == "medium"
     assert res["dimensions"]["growth_trend"]["confidence"] == "low"
+
+
+def test_no_interaction_inversion_when_fans_unknown():
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    notes = [_mk(i, now - timedelta(days=i * 2), 3000, 1200, 300, 200) for i in range(30)]
+    for n in notes:
+        n["tags"] = ["探店", "美食"]
+    res = score_blogger(notes, follower_count=0, total_notes=30, now=now)
+    assert not any(a["type"] == "interaction_inversion" for a in res["anomalies"])
+    assert res["overall"] is not None
+    assert res["overall"]["level"] not in ("待观察",)

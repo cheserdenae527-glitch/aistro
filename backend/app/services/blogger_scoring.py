@@ -414,6 +414,14 @@ def _downgrade_level(level: str) -> str:
     return _LEVEL_ORDER[max(0, idx - 1)]
 
 
+def _level_desc(level: str) -> str:
+    """等级标签对应的描述文案（闸门降级后同步刷新 desc）。"""
+    for _, label, d in LEVELS:
+        if label == level:
+            return d
+    return ""
+
+
 STRONG_SCORE = 70
 WEAK_SCORE = 40
 STALE_GAP_DAYS = 30
@@ -855,7 +863,7 @@ def _build_decision(grass: dict, growth: dict) -> dict:
     return {"status": "ok", "quadrant": quadrant, "recommendation": rec, "grass_level": gl, "growth_level": pl}
 
 
-def _recommendation(overall: float, level: str, stage: dict, anomalies: list[dict]) -> tuple[str, str]:
+def _recommendation(overall: float, stage: dict, anomalies: list[dict]) -> tuple[str, str]:
     """合作建议：priority / ok / caution 三档（insufficient/not_recommended 已提前返回）。"""
     red_flag_types = {a["type"] for a in anomalies}
     has_any_flag = bool(red_flag_types)
@@ -939,10 +947,12 @@ def score_blogger(
     # 闸门 1：覆盖率不达标 → insufficient_data（不评分、不判定低质）
     if coverage_conf == "low":
         base["insights"].append("数据不足，暂不评分")
+        base["overall_score_suppressed"] = True
         base["decision"] = {
             "recommendation": "insufficient_data", "summary": "真实样本覆盖率不足，暂不评分",
             "reasons": [f"已验证样本 {fetched}/{sample_size or 0}，覆盖率 {coverage_rate:.0%}"],
             "red_flags": [], "low_quality": False,
+            "status": "no_data", "quadrant": "数据不足", "grass_level": None, "growth_level": None,
         }
         return base
 
@@ -953,6 +963,7 @@ def score_blogger(
     growth = _score_growth_potential(real, follower_count, now, follower_history)
     base["grass_planting"] = grass
     base["growth_potential"] = growth
+    old_decision = _build_decision(grass, growth)  # 旧前端兼容（Task 13 切走后移除）
 
     # 五维评分
     seeding = _score_seeding_depth(real, follower_count, tier, now, comment_analysis=comment_analysis)
@@ -969,6 +980,7 @@ def score_blogger(
         "growth_trend": {"score": growth_trend["score"], "confidence": growth_trend["confidence"], "detail": growth_trend["detail"]},
     }
     base["dimensions"] = dimensions
+    base["confidence"] = _overall_confidence(dimensions, coverage_conf)
 
     # 权重归一化：被跳过/降权的维度处理
     weights = dict(load_scoring_config()["weights"])
@@ -977,7 +989,12 @@ def score_blogger(
         base["insights"].append(growth_trend["detail"].get("reason") or "增长趋势样本不足，跳过")
     elif growth_trend["confidence"] == "low":
         weights["growth_trend"] *= 0.5  # 无快照降权
-    total_weight = sum(weights.values())
+    total_weight = sum(w for k, w in weights.items() if dimensions[k].get("score") is not None)
+    if total_weight <= 0:
+        base["overall"] = None
+        base["overall_score_suppressed"] = True
+        base["decision"] = {"recommendation": "insufficient_data", "summary": "无可用评分维度", "reasons": [], "red_flags": [], "low_quality": False}
+        return base
     overall = sum(dimensions[k]["score"] * weights[k] for k in weights if dimensions[k].get("score") is not None) / total_weight
     overall = round(overall, 1)
     level, desc = _level_for(overall)
@@ -1006,6 +1023,7 @@ def score_blogger(
             "reasons": ["互动结构异常（高赞低藏或赞藏比倒挂）"], "red_flags": [
                 {"type": "fake_engagement", "level": "block", "detail": "疑似刷量"}],
             "low_quality": True,
+            "status": "blocked", "quadrant": "一票否决", "grass_level": None, "growth_level": None,
         }
         base["insights"].append("疑似刷量，不建议合作")
         return base
@@ -1014,17 +1032,19 @@ def score_blogger(
     stage = _classify_stage(follower_count, real, now, follower_history)
     base["stage"] = stage
 
-    # 闸门 3：粉丝互动倒挂
-    iq_rate = _score_interaction_quality(real, follower_count, tier, now)["rate"]
-    if iq_rate < float(tier.get("min_healthy", tier.get("min_healthy_rate", 0.0))):
-        base["anomalies"].append({"type": "interaction_inversion", "level": "cap", "detail": "粉丝互动倒挂"})
-        level = "待观察"
-        desc = "粉丝互动倒挂，等级封顶待观察"
+    # 闸门 3：粉丝互动倒挂（粉丝数未知时不判定）
+    if follower_count > 0:
+        iq_rate = _score_interaction_quality(real, follower_count, tier, now)["rate"]
+        if iq_rate < float(tier.get("min_healthy", tier.get("min_healthy_rate", 0.0))):
+            base["anomalies"].append({"type": "interaction_inversion", "level": "cap", "detail": "粉丝互动倒挂"})
+            level = "待观察"
+            desc = "粉丝互动倒挂，等级封顶待观察"
 
     # 闸门 4：发布停滞（有意叠加：维度已在新鲜度吃亏，等级再降一档）
     if sustained["freshness_days"] is not None and sustained["freshness_days"] > int(gate_cfg["stale_days"]):
         base["anomalies"].append({"type": "stale", "level": "downgrade", "detail": "最新笔记发布时间超过60天"})
         level = _downgrade_level(level)
+        desc = _level_desc(level)
         base["insights"].append("账号可能已停更")
 
     # 闸门 5：涨粉异常（且关系，T1 放宽）
@@ -1041,15 +1061,19 @@ def score_blogger(
             base["insights"].append(flag["detail"])
 
     # 合作建议（严格互斥顺序判定）
-    recommendation, rec_summary = _recommendation(overall, level, stage, base["anomalies"])
+    recommendation, rec_summary = _recommendation(overall, stage, base["anomalies"])
     base["overall"] = {"score": overall, "level": level, "description": desc, "score_suppressed": False}
-    base["confidence"] = _overall_confidence(dimensions, coverage_conf)
     base["decision"] = {
         "recommendation": recommendation,
         "summary": rec_summary,
         "reasons": _build_reasons(dimensions, stage),
         "red_flags": [{"type": a["type"], "level": a["level"], "detail": a["detail"]} for a in base["anomalies"]],
         "low_quality": False,
+        # 旧前端兼容字段（Task 13 切走后移除）
+        "status": old_decision.get("status"),
+        "quadrant": old_decision.get("quadrant"),
+        "grass_level": old_decision.get("grass_level"),
+        "growth_level": old_decision.get("growth_level"),
     }
     base["insights"].append(f"综合评分 {overall}，等级：{level}；阶段：{stage['label']}")
     return base
