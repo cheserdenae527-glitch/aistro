@@ -61,7 +61,6 @@ export interface BloggerAnalysisResult {
 export interface ScreeningRow {
   user_id: string;
   nickname: string;
-  avatar: string;
   fans: number;
   overall_score: number | null;
   score_suppressed: boolean;
@@ -70,7 +69,7 @@ export interface ScreeningRow {
   stage_label: StageLabel | '-';
   stage_confidence: Conf;
   red_flags: string[];
-  collect_rate: number;
+  collect_rate: number | null;
   food_ratio: number | null;
   confidence: Conf;
 }
