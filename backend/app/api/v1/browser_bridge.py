@@ -62,11 +62,19 @@ async def _enrich_captured_note(note: dict) -> dict:
         if not note_id or not token:
             return note
         from app.api.v1.notes import _extract_detail_items
-        from crawler.config import get_cookie, get_proxy_pool, get_delay_settings
+        from crawler.config import acquire_cookie, get_delay_settings
         from crawler.xhs import XhsCrawler
 
         min_d, max_d, retries = get_delay_settings()
-        crawler = XhsCrawler(get_cookie(), proxy_pool=get_proxy_pool(), min_delay=min_d, max_delay=max_d, max_retries=retries)
+        cookie, cookie_id, sticky_pool = acquire_cookie()
+        crawler = XhsCrawler(
+            cookie,
+            proxy_pool=sticky_pool,
+            min_delay=min_d,
+            max_delay=max_d,
+            max_retries=retries,
+            cookie_id=cookie_id,
+        )
         url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={token}&xsec_source=pc_user"
         detail = crawler.get_note_detail(url)
         items = _extract_detail_items(detail)

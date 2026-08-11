@@ -15,27 +15,33 @@ from crawler.processor import _parse_count
 logger = logging.getLogger("crawler.xhs_user")
 
 _PROFILE_COUNT_KEYS = ("fans", "fans_total", "follower_count")
+_PROFILE_NOTE_COUNT_KEYS = ("note_count", "notes", "note_num")
 
 
 def parse_profile_from_info(raw: dict) -> dict:
     """从 otherinfo 原始响应解析博主资料。
 
-    返回 {"ok", "fans", "nickname", "avatar"}；ok 表示粉丝数解析成功。
+    返回 {"ok", "fans", "note_count", "nickname", "avatar"}；ok 表示粉丝数解析成功。
     """
     fans = 0
+    note_count = 0
     nickname = ""
     avatar = ""
     try:
         if not isinstance(raw, dict):
-            return {"ok": False, "fans": 0, "nickname": "", "avatar": ""}
+            return {"ok": False, "fans": 0, "note_count": 0, "nickname": "", "avatar": ""}
         d = raw.get("data", raw) or {}
         if not isinstance(d, dict):
-            return {"ok": False, "fans": 0, "nickname": "", "avatar": ""}
+            return {"ok": False, "fans": 0, "note_count": 0, "nickname": "", "avatar": ""}
         bi = d.get("basic_info") or {}
         if isinstance(bi, dict):
             for key in _PROFILE_COUNT_KEYS:
                 if bi.get(key) not in (None, ""):
                     fans = _parse_count(bi.get(key))
+                    break
+            for key in _PROFILE_NOTE_COUNT_KEYS:
+                if bi.get(key) not in (None, ""):
+                    note_count = _parse_count(bi.get(key))
                     break
             nickname = bi.get("nickname") or bi.get("nick_name") or ""
             avatar = bi.get("imageb") or bi.get("images") or ""
@@ -47,9 +53,15 @@ def parse_profile_from_info(raw: dict) -> dict:
                 if count not in (None, ""):
                     fans = _parse_count(count)
                     break
+        for item in d.get("interactions") or []:
+            if isinstance(item, dict) and item.get("type") in ("notes", "note"):
+                count = item.get("count")
+                if count not in (None, ""):
+                    note_count = _parse_count(count)
+                    break
     except Exception as exc:
         logger.debug("解析 otherinfo 失败: %s", exc)
-    return {"ok": fans > 0, "fans": fans, "nickname": nickname, "avatar": avatar}
+    return {"ok": fans > 0, "fans": fans, "note_count": note_count, "nickname": nickname, "avatar": avatar}
 
 
 def _user_id_of(item: dict) -> str:
@@ -97,7 +109,7 @@ async def _fetch_profile(
 async def _nickname_from_notes(crawler, user_id: str) -> str:
     try:
         url = f"https://www.xiaohongshu.com/user/profile/{user_id}"
-        notes = await asyncio.to_thread(crawler.get_user_notes, url)
+        notes = await asyncio.to_thread(crawler.get_user_notes, url, max_notes=30)
         if notes.success:
             for n in notes.data or []:
                 if not isinstance(n, dict):

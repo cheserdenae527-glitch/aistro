@@ -35,6 +35,44 @@ DEFAULT_RETRIES = 3
 BACKOFF_BASE = 2.0
 BACKOFF_CAP = 30.0
 _INIT_LOCK = threading.Lock()
+_PROXY_PICK_LOCK = threading.Lock()
+_PROXY_PICK_INDEX = 0
+
+
+def _pick_proxy(pool: list[dict]) -> dict | None:
+    """跨爬虫实例全局轮换代理池，保证不同 worker/请求尽量使用不同出口 IP。"""
+    global _PROXY_PICK_INDEX
+    if not pool:
+        return None
+    with _PROXY_PICK_LOCK:
+        proxy = pool[_PROXY_PICK_INDEX % len(pool)]
+        _PROXY_PICK_INDEX += 1
+        return proxy
+
+
+def _proxy_short_label(proxy: dict | None) -> str:
+    """从 proxies 里提取 host:port，用于请求日志区分出口 IP。"""
+    if not proxy:
+        return ""
+    for key in ("http", "https"):
+        url = str(proxy.get(key) or "")
+        if "@" in url:
+            return url.rsplit("@", 1)[-1]
+        if url:
+            return url
+    return ""
+
+
+def _looks_like_proxy_error(message: str) -> bool:
+    low = str(message or "").lower()
+    return (
+        "407" in low
+        or "connect tunnel failed" in low
+        or "proxy authentication" in low
+        or "proxy connect error" in low
+        or "connection refused" in low
+    )
+
 
 # ── 请求观测日志（JSONL，append；线程安全）──
 _REQUEST_LOG_PATH = os.path.join(os.path.dirname(__file__), "scripts", "crawl_request_log.jsonl")
@@ -51,6 +89,7 @@ def _log_request(
     latency_ms: int | None = None,
     interval_before_ms: int | None = None,
     proxy_used: str | None = None,
+    cookie_id: str | None = None,
 ) -> None:
     """追加一条请求观测记录；观测失败不影响采集主流程。"""
     try:
@@ -65,6 +104,7 @@ def _log_request(
             "latency_ms": latency_ms,
             "interval_before_ms": interval_before_ms,
             "proxy_used": proxy_used,
+            "cookie_id": cookie_id,
         }
         with _REQUEST_LOG_LOCK:
             with open(_REQUEST_LOG_PATH, "a", encoding="utf-8") as f:
@@ -84,8 +124,10 @@ class XhsCrawler(BaseCrawler):
         min_delay: float = DEFAULT_MIN_DELAY,
         max_delay: float = DEFAULT_MAX_DELAY,
         max_retries: int = DEFAULT_RETRIES,
+        cookie_id: str | None = None,
     ):
         self._cookies_str = cookies_str
+        self._cookie_id = cookie_id
         self._proxies = proxies
         self._proxy_pool = proxy_pool or []
         self._min_delay = min_delay
@@ -94,7 +136,6 @@ class XhsCrawler(BaseCrawler):
         self._auth = None
         self._api = None
         self._last_request_at = 0.0
-        self._proxy_idx = 0
         self._active_proxy = None  # 会话级固定代理（一次采集操作内不变）
 
     def _ensure_init(self):
@@ -124,8 +165,7 @@ class XhsCrawler(BaseCrawler):
         if self._active_proxy is not None:
             return self._active_proxy
         if self._proxy_pool:
-            p = self._proxy_pool[self._proxy_idx % len(self._proxy_pool)]
-            self._proxy_idx += 1
+            p = _pick_proxy(self._proxy_pool)
             self._active_proxy = p
             return p
         self._active_proxy = self._proxies
@@ -155,19 +195,35 @@ class XhsCrawler(BaseCrawler):
         - 仅网络/超时类错误 → 指数退避重试
         - 会话级固定代理：本次操作（含重试）复用同一代理
         """
+        # 会话级固定代理（一次采集操作 + 其重试共用），操作结束后释放以便轮换
+        kwargs["proxies"] = self._current_proxy()
+        try:
+            return self._execute_impl(fn, *args, job_type=job_type, target=target, **kwargs)
+        finally:
+            self._active_proxy = None
+
+    def _execute_impl(self, fn, *args, job_type: str = "unknown", target: str = "", **kwargs) -> CrawlResult:
+        """真正的执行体；代理由 _execute 统一选定并在结束后释放。"""
+        proxy_used = _proxy_short_label(self._active_proxy)
         if gate.is_open():
-            _log_request(job_type=job_type, target=target, result="circuit_open")
+            _log_request(job_type=job_type, target=target, result="circuit_open", proxy_used=proxy_used, cookie_id=self._cookie_id)
             return CrawlResult(success=False, error="小红书风控熔断中，请稍后重试")
 
-        # 会话级固定代理（一次采集操作 + 其重试共用）
-        session_proxy = self._current_proxy()
-        kwargs["proxies"] = session_proxy
+        def _mark_cookie(success: bool, error: str = "") -> None:
+            if not self._cookie_id:
+                return
+            try:
+                from crawler.cookie_pool import report_result
+
+                report_result(self._cookie_id, success, error)
+            except Exception:
+                pass
 
         throttle_started = time.monotonic()
         try:
             self._throttle()
         except RuntimeError as exc:
-            _log_request(job_type=job_type, target=target, result="circuit_open", error_message=str(exc))
+            _log_request(job_type=job_type, target=target, result="circuit_open", error_message=str(exc), proxy_used=proxy_used, cookie_id=self._cookie_id)
             return CrawlResult(success=False, error=str(exc))
         interval_before_ms = int((time.monotonic() - throttle_started) * 1000)
 
@@ -180,7 +236,8 @@ class XhsCrawler(BaseCrawler):
                 latency_ms = int((time.monotonic() - started) * 1000)
                 if success:
                     gate.note_success()
-                    _log_request(job_type=job_type, target=target, result="ok", latency_ms=latency_ms, interval_before_ms=interval_before_ms)
+                    _mark_cookie(True)
+                    _log_request(job_type=job_type, target=target, result="ok", latency_ms=latency_ms, interval_before_ms=interval_before_ms, proxy_used=proxy_used, cookie_id=self._cookie_id)
                     return CrawlResult(success=True, data=data or [])
                 last_err = msg
                 risk = RiskGate.is_risk_error(str(last_err))
@@ -189,13 +246,17 @@ class XhsCrawler(BaseCrawler):
                     result="risk_signal" if risk else "http_error",
                     risk_type=RiskGate.classify_risk_error(str(last_err)) if risk else None,
                     error_message=str(last_err), latency_ms=latency_ms, interval_before_ms=interval_before_ms,
+                    proxy_used=proxy_used,
+                    cookie_id=self._cookie_id,
                 )
                 if risk:
                     # 风控信号：不重试，立即返回，避免继续试探放大风险
                     gate.note_failure(str(last_err))
+                    _mark_cookie(False, str(last_err))
                     logger.warning("风控信号（%s），不重试: %s", RiskGate.classify_risk_error(str(last_err)), last_err)
                     return CrawlResult(success=False, error=str(last_err))
                 if "登录" in str(last_err) or "login" in str(last_err).lower():
+                    _mark_cookie(False, str(last_err))
                     logger.warning("Cookie 已过期: %s", last_err)
                     return CrawlResult(success=False, error=str(last_err))
             except Exception as e:
@@ -207,13 +268,23 @@ class XhsCrawler(BaseCrawler):
                     result="risk_signal" if risk else "network_error",
                     risk_type=RiskGate.classify_risk_error(str(last_err)) if risk else None,
                     error_message=str(last_err), latency_ms=latency_ms, interval_before_ms=interval_before_ms,
+                    proxy_used=proxy_used,
+                    cookie_id=self._cookie_id,
                 )
                 if risk:
                     gate.note_failure(str(last_err))
+                    _mark_cookie(False, str(last_err))
                     logger.warning("风控信号（%s），不重试: %s", RiskGate.classify_risk_error(str(last_err)), last_err)
                     return CrawlResult(success=False, error=str(last_err))
             if attempt < self._max_retries - 1:
                 self._backoff(attempt)
+        if self._cookie_id and _looks_like_proxy_error(last_err):
+            try:
+                from crawler.cookie_pool import report_proxy_result
+
+                report_proxy_result(self._cookie_id, False)
+            except Exception:
+                pass
         return CrawlResult(success=False, error=str(last_err) if last_err else "Unknown error")
 
     @staticmethod
@@ -269,9 +340,9 @@ class XhsCrawler(BaseCrawler):
             job_type="user_info", target=user_id,
         )
 
-    def get_user_notes(self, user_url: str) -> CrawlResult:
+    def get_user_notes(self, user_url: str, max_notes: int = 0) -> CrawlResult:
         self._ensure_init()
         return self._execute(
-            self._api.get_user_all_notes, user_url,
+            self._api.get_user_all_notes, user_url, max_notes=max_notes,
             job_type="blogger", target=user_url,
         )

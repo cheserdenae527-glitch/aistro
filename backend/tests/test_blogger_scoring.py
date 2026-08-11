@@ -64,3 +64,62 @@ def test_trend_skipped_for_small_sample():
     trend = _score_trend(std, notes)
     assert trend["skipped"] is True
     assert "样本不足10篇" in trend["reason"]
+
+
+def test_grass_growth_scores_present():
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    notes = [_mk(i, now - timedelta(days=i * 2), 3000, 1600, 240, 600) for i in range(30)]
+    for n in notes:
+        n["tags"] = ["探店", "美食"]
+    res = score_blogger(notes, follower_count=50000, total_notes=30, now=now)
+    assert res["grass_planting"]["score"] is not None
+    assert res["growth_potential"]["score"] is not None
+    assert res["decision"]["status"] == "ok"
+    assert res["decision"]["quadrant"] in ("首选合作", "短期投放", "潜力股", "过滤")
+
+
+def test_growth_renormalizes_without_follower_history():
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    notes = [_mk(i, now - timedelta(days=i * 2), 3000, 1600, 240, 600) for i in range(30)]
+    res = score_blogger(notes, follower_count=50000, total_notes=30, now=now)
+    gp = res["growth_potential"]
+    assert gp["score"] is not None
+    assert gp["components"]["follower_growth"]["score"] is None
+    assert "暂无粉丝历史快照" in gp["components"]["follower_growth"]["detail"]["note"]
+
+
+def test_low_coverage_decision_no_data():
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    notes = [_mk(i, now - timedelta(days=i * 2), 1000, 300, 80, 40) for i in range(5)]
+    res = score_blogger(notes, follower_count=50000, total_notes=40, now=now)
+    assert res["decision"]["status"] == "no_data"
+
+
+def test_follower_growth_detected_from_history():
+    from app.services.blogger_scoring import _score_follower_growth
+    history = [
+        {"fans": 10000, "snapshot_at": "2026-07-01T00:00:00+08:00"},
+        {"fans": 13000, "snapshot_at": "2026-08-01T00:00:00+08:00"},
+    ]
+    score = _score_follower_growth(history)
+    assert score is not None
+    assert score >= 70
+    assert _score_follower_growth([{"fans": 10000, "snapshot_at": "2026-07-01T00:00:00+08:00"}]) is None
+
+
+def test_platform_follower_history_summary_and_detail():
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    notes = [_mk(i, now - timedelta(days=i * 2), 3000, 1600, 240, 600) for i in range(30)]
+    history = [
+        {"fans": 10000, "snapshot_at": "2026-07-01T00:00:00+08:00", "source": "justoneapi"},
+        {"fans": 13000, "snapshot_at": "2026-08-01T00:00:00+08:00", "source": "justoneapi"},
+    ]
+    res = score_blogger(notes, follower_count=50000, total_notes=30, now=now, follower_history=history)
+    assert res["follower_history"]["source"] == "justoneapi"
+    assert res["follower_history"]["points"] == 2
+    assert res["follower_history"]["growth_rate"] == 0.3
+    assert len(res["follower_history"]["series"]) == 2
+    fg = res["growth_potential"]["components"]["follower_growth"]
+    assert fg["score"] is not None
+    assert fg["detail"]["source"] == "justoneapi"
+    assert fg["detail"]["growth_rate"] == 0.3

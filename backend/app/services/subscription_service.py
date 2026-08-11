@@ -4,11 +4,34 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.subscription import Subscription, SubscriptionSnapshot
 from app.services.xhs_runtime import get_xhs_api
 from crawler.gate import gate
+
+
+async def load_follower_history(db: AsyncSession, user_id, xhs_user_id: str) -> list[dict]:
+    """读取订阅博主的历史粉丝快照，按时间升序返回，供成长潜力分使用。"""
+    sub_result = await db.execute(
+        select(Subscription).where(Subscription.user_id == user_id, Subscription.xhs_user_id == xhs_user_id)
+    )
+    sub = sub_result.scalar_one_or_none()
+    if not sub:
+        return []
+    snap_result = await db.execute(
+        select(SubscriptionSnapshot)
+        .where(SubscriptionSnapshot.subscription_id == sub.id)
+        .order_by(SubscriptionSnapshot.crawled_at)
+    )
+    return [
+        {
+            "fans": snap.follower_count,
+            "snapshot_at": snap.crawled_at.isoformat() if snap.crawled_at else None,
+        }
+        for snap in snap_result.scalars().all()
+    ]
 
 
 def _friendly_msg(msg) -> str:
@@ -91,6 +114,7 @@ async def refresh_subscription(db: AsyncSession, sub: Subscription) -> dict:
 
     errors: list[str] = []
     user_ok = False
+    profile_note_count = 0
 
     from app.services.xhs_user_resolver import parse_profile_from_info
 
@@ -104,6 +128,9 @@ async def refresh_subscription(db: AsyncSession, sub: Subscription) -> dict:
             sub.nickname = parsed["nickname"] or sub.nickname
             sub.avatar = parsed["avatar"] or sub.avatar
             sub.follower_count = parsed["fans"]
+        profile_note_count = int(parsed.get("note_count") or 0)
+        if profile_note_count:
+            sub.note_count = profile_note_count
         else:
             d = raw.get("data", raw) or {}
             for item in d.get("interactions", []) or []:
@@ -147,12 +174,14 @@ async def refresh_subscription(db: AsyncSession, sub: Subscription) -> dict:
     success2, msg2, notes_data = await asyncio.to_thread(
         api.get_user_all_notes,
         f"https://www.xiaohongshu.com/user/profile/{sub.xhs_user_id}",
+        max_notes=50,
     )
     if not success2 and gate.is_risk_error(str(msg2)):
         gate.note_failure(str(msg2))
     if success2:
         notes_ok = True
-        sub.note_count = len(notes_data or [])
+        if not profile_note_count:
+            sub.note_count = len(notes_data or [])
         from crawler.processor import normalize_note
 
         for n in notes_data or []:

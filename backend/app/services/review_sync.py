@@ -20,20 +20,20 @@ class XhsSyncError(Exception):
 
 
 def build_xhs_crawler():
-    from crawler.config import get_cookie, get_delay_settings, get_proxy_pool
+    from crawler.config import acquire_cookie, get_delay_settings
     from crawler.xhs import XhsCrawler
 
-    cookie = get_cookie()
+    cookie, cookie_id, sticky_pool = acquire_cookie()
     if not cookie:
         raise XhsSyncError("未配置小红书 Cookie")
-    proxies = get_proxy_pool()
     min_delay, max_delay, max_retries = get_delay_settings()
     return XhsCrawler(
         cookie,
-        proxy_pool=proxies,
+        proxy_pool=sticky_pool,
         min_delay=min_delay,
         max_delay=max_delay,
         max_retries=max_retries,
+        cookie_id=cookie_id,
     )
 
 

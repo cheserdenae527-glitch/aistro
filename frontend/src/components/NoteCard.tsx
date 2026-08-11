@@ -43,9 +43,12 @@ export function parseNote(raw: any): NoteCardData {
   };
 }
 
+const proxyImage = (url: string, size = 0) =>
+  '/api/v1/images/proxy?url=' + encodeURIComponent(url.replace(/^http:/, 'https:')) + '&size=' + size;
+
 export function NoteCardView({ note }: { note: NoteCardData }) {
   const cover = note.cover_url
-    ? note.cover_url.replace(/http:/, 'https:').replace(/!nc_n_webp_mw_1.*$/, '!nc_n_webp_mw_1')
+    ? proxyImage(note.cover_url.replace(/!nc_n_webp_mw_1.*$/, '!nc_n_webp_mw_1'), 800)
     : '';
   return (
     <Card hoverable style={{ borderRadius: 8, overflow: 'hidden' }}
@@ -65,7 +68,7 @@ export function NoteCardView({ note }: { note: NoteCardData }) {
         {note.full_stats === false ? <Tag color="orange" style={{ fontSize: 10, margin: 0 }}>部分数据</Tag> : null}
       </div>
       <Space style={{ marginTop: 8 }} wrap>
-        {note.author.avatar ? <img src={note.author.avatar} alt='' style={{ width: 20, height: 20, borderRadius: '50%' }} /> : null}
+        {note.author.avatar ? <img src={proxyImage(note.author.avatar, 64)} alt='' style={{ width: 20, height: 20, borderRadius: '50%' }} /> : null}
         <Text type='secondary' style={{ fontSize: 12 }}>{note.author.nickname}</Text>
         {note.author.id ? <span onClick={(e) => e.stopPropagation()}><SubscribeButton user={{ xhs_user_id: note.author.id, nickname: note.author.nickname, avatar: note.author.avatar }} showText={false} /></span> : null}
       </Space>

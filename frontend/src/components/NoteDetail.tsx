@@ -19,9 +19,20 @@ export default function NoteDetail({ open, note, onClose }: { open: boolean; not
     let active = true;
     (async () => {
       try {
+        // 列表已是完整数据时不再重复请求，避免空详情覆盖真实互动数据
+        if (note.full_stats === true) return;
         const api = (await import('../services/api')).default;
         const res = await api.get(`/notes/${note.platform_note_id}`, { params: { xsec_token: note.xsec_token || '' } });
-        if (active) setDetail(res.data);
+        if (!active) return;
+        const merged = { ...res.data };
+        const freshStats = merged.stats || {};
+        const oldStats = note.stats || {};
+        const hasFresh = Object.values(freshStats).some((v) => Number(v) > 0);
+        if (!hasFresh && Object.values(oldStats).some((v) => Number(v) > 0)) {
+          merged.stats = oldStats;
+          merged.full_stats = note.full_stats;
+        }
+        setDetail(merged);
       } catch {
         // 详情失败时保留列表数据展示
         if (active) message.warning('完整数据加载失败，已展示当前数据', 2);
@@ -57,7 +68,7 @@ export default function NoteDetail({ open, note, onClose }: { open: boolean; not
               return (<>
                 <Image src={px(main, 1200)} style={{ width: '100%', maxHeight: 500, objectFit: 'contain', background: '#f5f5f5', borderRadius: 8 }} />
                 {imgs.length > 1 && <div style={{ marginTop: 8, display: 'flex', gap: 4, flexWrap: 'wrap' }}>
-                  {imgs.map((url: string, i: number) => <img key={i} src={px(url)} onClick={() => setCur(i)}
+                  {imgs.map((url: string, i: number) => <img key={i} src={px(url, 160)} onClick={() => setCur(i)}
                     style={{ width: 52, height: 52, borderRadius: 4, cursor: 'pointer', objectFit: 'cover', border: i === cur ? '2px solid #1677ff' : '2px solid transparent' }} />)}
                 </div>}
                 <Text type='secondary' style={{ fontSize: 12, display: 'block', marginTop: 6 }}>共 {imgs.length} 张 · 点击图片可放大</Text>

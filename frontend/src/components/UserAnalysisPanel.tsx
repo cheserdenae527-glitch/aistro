@@ -58,6 +58,11 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
   const overall = data.overall;
   const anomalies = data.anomalies || [];
   const insights = data.insights || [];
+  const grass = data.grass_planting || null;
+  const growth = data.growth_potential || null;
+  const decision = data.decision || null;
+  const fh = data.follower_history || null;
+  const fg = growth?.components?.follower_growth || null;
 
   const columns = [
     { title: '标题', dataIndex: 'title', key: 'title', width: 240, render: (v: string) => <Text strong style={{ display: 'block', maxWidth: 240 }} ellipsis={{ tooltip: v }}>{v || '无标题'}</Text> },
@@ -82,6 +87,9 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
     { title: '篇均互动率', value: iq.rate_percent, suffix: '%', color: '#f5222d' },
     { title: '最新发布距今', value: sustained.freshness_days, suffix: '天', color: '#fa541c' },
   ];
+  if (fh?.growth_rate != null) {
+    statCards.push({ title: '平台涨粉率', value: (fh.growth_rate * 100).toFixed(2), suffix: '%', color: '#13c2c2' });
+  }
 
   return (
     <div>
@@ -112,6 +120,57 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
           )}
         </div>
       </div>
+
+      {(grass || growth || decision) && (
+        <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
+          <Col xs={24} md={8}>
+            <Card size="small" title="种草效率分">
+              <div style={{ fontSize: 32, fontWeight: 700, color: '#1677ff' }}>{grass?.score ?? '-'}</div>
+              {grass?.components && (
+                <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.8, color: '#666' }}>
+                  <div>收藏率 {fmtNum(grass.components.collect_rate?.score)} · 值 {fmtNum(grass.components.collect_rate?.value_percent, 2)}%</div>
+                  <div>赞藏比 {fmtNum(grass.components.collect_ratio?.score)} · 值 {fmtNum(grass.components.collect_ratio?.value, 2)}</div>
+                  <div>分享率 {fmtNum(grass.components.share_rate?.score)} · 值 {fmtNum(grass.components.share_rate?.value_percent, 2)}%</div>
+                  {grass.calibrated === false ? <Tag style={{ marginTop: 4 }} color="orange">阈值待标定</Tag> : null}
+                </div>
+              )}
+            </Card>
+          </Col>
+          <Col xs={24} md={8}>
+            <Card size="small" title="成长潜力分">
+              <div style={{ fontSize: 32, fontWeight: 700, color: '#52c41a' }}>{growth?.score ?? '-'}</div>
+              {growth?.components && (
+                <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.8, color: '#666' }}>
+                  <div>内容系统 {fmtNum(growth.components.content_system?.score)} · 更新稳定 {fmtNum(growth.components.update_stability?.score)}</div>
+                  <div>数据趋势 {fmtNum(growth.components.data_trend?.score)} · 粉丝增长 {fg?.score != null ? fmtNum(fg.score) : '无快照'}</div>
+                  {fg?.detail?.growth_rate != null && (
+                    <div>平台涨粉 {fmtNum(fg.detail.growth_rate * 100, 2)}% · {fmtNum(fg.detail.fans_increase)} 粉 · {fg.detail.days || fh?.days || 30} 天</div>
+                  )}
+                  {fg?.detail?.source === 'justoneapi' ? (
+                    <Tag style={{ marginTop: 4 }} color="cyan">蒲公英官方曲线 · {fg.detail.points || fh?.points || 0} 个数据点</Tag>
+                  ) : fg?.detail?.snapshots ? (
+                    <Tag style={{ marginTop: 4 }} color="blue">本地快照 · {fg.detail.snapshots} 次</Tag>
+                  ) : null}
+                  <Text type="secondary" style={{ fontSize: 11 }}>{growth.note}</Text>
+                </div>
+              )}
+            </Card>
+          </Col>
+          <Col xs={24} md={8}>
+            <Card size="small" title="合作建议">
+              {decision ? (
+                <>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
+                    <Tag color={decision.status === 'blocked' ? 'red' : decision.quadrant === '首选合作' ? 'magenta' : decision.quadrant === '短期投放' ? 'gold' : decision.quadrant === '潜力股' ? 'green' : 'default'}>{decision.quadrant || decision.status}</Tag>
+                    <Text type="secondary">{decision.grass_level ? `种草${decision.grass_level} · 成长${decision.growth_level}` : ''}</Text>
+                  </div>
+                  <Text>{decision.recommendation}</Text>
+                </>
+              ) : <Text type="secondary">数据不足</Text>}
+            </Card>
+          </Col>
+        </Row>
+      )}
 
       {anomalies.length > 0 && (
         <Alert
@@ -182,6 +241,22 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
           </Card>
         </Col>
       </Row>
+
+      {fh?.series?.length >= 2 && (
+        <Card size="small" title="平台历史涨粉" style={{ marginBottom: 12 }}
+          extra={<Text type="secondary" style={{ fontSize: 12 }}>{fh.points} 个数据点 · {fh.source === 'justoneapi' ? '蒲公英官方数据' : fh.platform_points > 0 ? '官方+本地快照' : '本地快照'}</Text>}>
+          <ResponsiveContainer width="100%" height={220}>
+            <LineChart data={fh.series.map((p: any) => ({ date: String(p.snapshot_at || '').slice(0, 10), fans: p.fans }))} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+              <XAxis dataKey="date" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
+              <YAxis tick={{ fontSize: 11 }} />
+              <Tooltip formatter={(value: any, name: any) => [fmtNum(Number(value)), name]} />
+              <Legend wrapperStyle={{ fontSize: 12 }} />
+              <Line type="monotone" dataKey="fans" name="粉丝数" stroke="#13c2c2" strokeWidth={2} dot={false} />
+            </LineChart>
+          </ResponsiveContainer>
+        </Card>
+      )}
 
       <Card size="small" title="全部真实笔记（点击行查看详情）">
         <Table

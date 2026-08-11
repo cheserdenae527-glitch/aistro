@@ -5,6 +5,7 @@ import { NoteCardView, parseNote, type NoteCardData } from '../components/NoteCa
 import NoteDetail from '../components/NoteDetail';
 import SubscriptionsPage from './SubscriptionsPage';
 import KnowledgeBasePanel from '../components/KnowledgeBasePanel';
+import CrawlerPoolPanel from '../components/CrawlerPoolPanel';
 import UserAnalysisPanel from '../components/UserAnalysisPanel';
 import SubscribeButton from '../components/SubscribeButton';
 
@@ -35,6 +36,8 @@ function saveUserHistory(query: string) {
   h.unshift(query);
   localStorage.setItem(USER_SEARCH_HISTORY_KEY, JSON.stringify(h.slice(0, MAX_HISTORY)));
 }
+
+const proxyImg = (url: string, size = 0) => '/api/v1/images/proxy?url=' + encodeURIComponent(url.replace(/^http:/, 'https:')) + '&size=' + size;
 
 const JOB_TYPES: Record<string,string> = { search:'搜索笔记', note_detail:'笔记详情', comment:'获取评论' };
 const JOB_COLORS: Record<string,string> = { search:'blue', note_detail:'green', comment:'orange' };
@@ -309,7 +312,7 @@ export default function CrawlJobsPage() {
                   <div style={{ border:'1px solid #f0f0f0', borderRadius:8, padding:16, background:'#fff' }}>
                     <div style={{ display:'flex', justifyContent:'space-between', alignItems:'flex-start', gap:8 }}>
                       <Space>
-                        {u.avatar ? <Avatar src={u.avatar} size={40} /> : <Avatar icon={<UserOutlined />} size={40} />}
+                        {u.avatar ? <Avatar src={proxyImg(u.avatar, 80)} size={40} /> : <Avatar icon={<UserOutlined />} size={40} />}
                         <div>
                           <Text strong>{u.nickname}</Text>
                           <div><Text type='secondary' style={{ fontSize:12 }}>粉丝 {u.fans} · 笔记 {u.notes}</Text></div>
@@ -382,6 +385,7 @@ export default function CrawlJobsPage() {
         ) : <UserAnalysisPanel user={analysisUser} data={analysisData} onOpenNote={(n) => setDetailNote(n)} /> },
         { key:'subscriptions', label:'博主订阅', children: <SubscriptionsPage /> },
         { key:'knowledge', label:'知识库', children: <KnowledgeBasePanel /> },
+        { key:'pool', label:'采集配置', children: <CrawlerPoolPanel /> },
       ]} />
       <NoteDetail open={!!detailNote} note={detailNote} onClose={() => setDetailNote(null)} />
     </div>

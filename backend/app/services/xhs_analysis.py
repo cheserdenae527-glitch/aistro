@@ -18,6 +18,14 @@ import statistics
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.services.blogger_scoring import (
+    _build_decision,
+    _score_grass_planting,
+    _score_growth_potential,
+    _summarize_follower_history,
+    _tier_for,
+)
+
 CN_TZ = timezone(timedelta(hours=8))
 
 DIMENSION_WEIGHTS = {
@@ -366,8 +374,8 @@ def _build_timeline(notes: list[dict]) -> dict:
     return {"type": "monthly", "items": months}
 
 
-def _build_summary(notes: list[dict], fans: int, now: datetime) -> dict:
-    total_notes = len(notes)
+def _build_summary(notes: list[dict], fans: int, now: datetime, total_notes: int | None = None) -> dict:
+    total_notes = total_notes or len(notes)
     detailed_notes = sum(1 for n in notes if n.get("full_stats"))
     scored = _analysis_notes(notes)
     stats_list = [n["stats"] for n in scored]
@@ -471,6 +479,8 @@ def analyze_notes(
     follower_count: int = 0,
     nickname: str = "",
     now: datetime | None = None,
+    follower_history: list[dict] | None = None,
+    total_notes: int | None = None,
 ) -> dict:
     """运行完整分析，返回可直出给前端的 JSON 结构。"""
     now = now or datetime.now(CN_TZ)
@@ -536,17 +546,19 @@ def analyze_notes(
             level_desc = desc
             break
 
-    summary = _build_summary(enriched, follower_count, now)
+    summary = _build_summary(enriched, follower_count, now, total_notes)
     timeline = _build_timeline(enriched)
     timed_notes = sorted((n for n in enriched if n.get("published_at_dt") is not None), key=lambda n: n["published_at_dt"], reverse=True)
     untimed_notes = [n for n in enriched if n.get("published_at_dt") is None]
     sorted_notes = timed_notes + untimed_notes
     insights = _build_insights(dimensions, summary, overall, level_label)
+    grass = _score_grass_planting(enriched, follower_count, _tier_for(follower_count))
+    growth = _score_growth_potential(enriched, follower_count, now, follower_history)
 
     return {
         "nickname": nickname,
         "follower_count": follower_count,
-        "note_count": len(enriched),
+        "note_count": total_notes or len(enriched),
         "date_range": {
             "start": min((n["published_at_dt"] for n in enriched if n.get("published_at_dt")), default=None).isoformat() if any(n.get("published_at_dt") for n in enriched) else None,
             "end": max((n["published_at_dt"] for n in enriched if n.get("published_at_dt")), default=None).isoformat() if any(n.get("published_at_dt") for n in enriched) else None,
@@ -557,4 +569,8 @@ def analyze_notes(
         "timeline": timeline,
         "notes": sorted_notes,
         "insights": insights,
+        "grass_planting": grass,
+        "growth_potential": growth,
+        "decision": _build_decision(grass, growth),
+        "follower_history": _summarize_follower_history(follower_history),
     }

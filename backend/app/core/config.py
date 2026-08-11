@@ -93,10 +93,19 @@ class Settings(BaseSettings):
     XHS_TUNNEL_PASSWORD: str = ""
     XHS_TUNNEL_HOST: str = ""
     XHS_TUNNEL_HTTP_PORT: str = ""
+    XHS_TUNNEL_BACKUP_HOST: str = ""
+    XHS_TUNNEL_BACKUP_HTTP_PORT: str = ""
     XHS_TUNNEL_PERIOD: str = "60"
     XHS_TUNNEL_POOL: str = "enh"
     XHS_TUNNEL_REGION: str = ""
     XHS_TUNNEL_SID: str = ""
+
+    # --- JustOneAPI（小红书蒲公英平台历史涨粉数据） ---
+    # Token 在 JustOneAPI 控制台获取；留空时分析任务自动回退到本地订阅快照
+    JUST_ONE_API_TOKEN: str = ""
+    JUST_ONE_API_BASE_URL: str = "https://api.justoneapi.com"
+    # 平台接口官方建议超时 60~120 秒，这里默认 60 秒
+    JUST_ONE_API_TIMEOUT_SECONDS: int = 60
 
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 

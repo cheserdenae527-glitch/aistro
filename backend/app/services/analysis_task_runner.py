@@ -12,6 +12,7 @@ from app.core.database import async_session_factory
 from app.models.analysis_task import BloggerAnalysisTask
 from app.models.note_detail import NoteDetail
 from app.services.blogger_scoring import score_blogger
+from app.services.justoneapi_client import fetch_follower_history
 from crawler.config import load_config
 from crawler.gate import gate
 
@@ -47,9 +48,11 @@ async def prescreen_user(user_id: str) -> dict:
     from crawler.processor import normalize_note
     from app.services.xhs_user_resolver import resolve_user_profile
 
+    cfg = load_config()
+    fetch_cap = max(int(cfg.get("analysis_max_notes_per_task", 50)) * 2, 60)
     crawler = _crawler()
     user_url = f"https://www.xiaohongshu.com/user/profile/{user_id}"
-    notes_result = await asyncio.to_thread(crawler.get_user_notes, user_url)
+    notes_result = await asyncio.to_thread(crawler.get_user_notes, user_url, max_notes=fetch_cap)
     if not notes_result.success:
         err = notes_result.error or ""
         if any(k in err for k in ("Cookie", "失效", "过期")):
@@ -71,6 +74,7 @@ async def prescreen_user(user_id: str) -> dict:
 
     profile = await resolve_user_profile(crawler, user_id, nickname=nickname)
     fans = profile.get("fans", 0)
+    total_notes = int(profile.get("note_count") or 0) or len(raw)
     info_ok = bool(profile.get("ok"))
     info_err = profile.get("error", "")
 
@@ -82,7 +86,6 @@ async def prescreen_user(user_id: str) -> dict:
         norm = normalize_note(n)
         likes.append(norm.get("stats", {}).get("liked", 0))
 
-    cfg = load_config()
     min_follower = int(cfg.get("min_follower_count", 1000))
     min_notes = int(cfg.get("min_note_count", 10))
     min_avg_likes = int(cfg.get("min_avg_likes", 50))
@@ -98,8 +101,8 @@ async def prescreen_user(user_id: str) -> dict:
         reasons.append(reason)
     elif fans < min_follower:
         reasons.append(f"粉丝数不足（{fans} < {min_follower}）")
-    if len(raw) < min_notes:
-        reasons.append(f"笔记数不足（{len(raw)} < {min_notes}）")
+    if total_notes < min_notes:
+        reasons.append(f"笔记数不足（{total_notes} < {min_notes}）")
     if avg_likes < min_avg_likes:
         reasons.append(f"列表平均赞不足（{avg_likes:.1f} < {min_avg_likes}）")
     passed = not reasons
@@ -107,7 +110,7 @@ async def prescreen_user(user_id: str) -> dict:
         "passed": passed,
         "reason": "；".join(reasons) if reasons else None,
         "fans": fans,
-        "notes": len(raw),
+        "notes": total_notes,
         "avg_likes": round(avg_likes, 1),
     }
 
@@ -172,17 +175,19 @@ async def run_analysis_task(task_id: uuid.UUID) -> None:
 
     crawler = _crawler()
     try:
+        fetch_cap = max(max_notes * 2, 60)
         user_url = f"https://www.xiaohongshu.com/user/profile/{task.xhs_user_id}"
-        notes_result = await asyncio.to_thread(crawler.get_user_notes, user_url)
+        notes_result = await asyncio.to_thread(crawler.get_user_notes, user_url, max_notes=fetch_cap)
         if not notes_result.success:
             raise RuntimeError(notes_result.error or "获取作品列表失败")
         raw_notes = [n for n in (notes_result.data or []) if isinstance(n, dict)]
-        total = len(raw_notes)
-        sample_size = min(total, max_notes)
+        available = len(raw_notes)
+        total = int(task.total_notes or 0) or available
+        sample_size = min(total, max_notes, available)
         if sample_size >= 2:
             indices = []
             for i in range(sample_size):
-                idx = int(round(i * (total - 1) / (sample_size - 1)))
+                idx = int(round(i * (available - 1) / (sample_size - 1)))
                 if not indices or idx != indices[-1]:
                     indices.append(idx)
         else:
@@ -191,41 +196,37 @@ async def run_analysis_task(task_id: uuid.UUID) -> None:
         target = len(indices)
         await _update_task(task_id, total_notes=total, target_notes=target)
 
+        # 平台涨粉曲线与详情抓取并行，避免任务结束前再等一次最长 60 秒的接口调用
+        platform_future = asyncio.create_task(
+            asyncio.to_thread(fetch_follower_history, task.xhs_user_id)
+        )
+
         real_notes: list[dict] = []
         deadline = datetime.now(timezone.utc) + timedelta(minutes=timeout_minutes)
         fetched = 0
         partial = False
+        detail_concurrency = max(1, int(cfg.get("analysis_detail_concurrency", 2)))
+        worker_count = min(detail_concurrency, max(target, 1))
+        detail_workers = [_crawler() for _ in range(worker_count)]
+        sem = asyncio.Semaphore(worker_count)
 
-        for batch_start in range(0, target, batch_size):
-            current_task = await _load_task(task_id)
-            if not current_task or current_task.status == "cancelled":
-                return
-            if datetime.now(timezone.utc) >= deadline:
-                partial = True
-                break
+        from app.api.v1.notes import _extract_detail_items
 
-            batch_positions = indices[batch_start:batch_start + batch_size]
-            for pos in batch_positions:
-                current_task = await _load_task(task_id)
-                if not current_task or current_task.status == "cancelled":
-                    return
-                if datetime.now(timezone.utc) >= deadline:
-                    partial = True
-                    break
+        async def _fetch_one(pos: int) -> dict | None:
+            async with sem:
                 n = raw_notes[pos]
                 n.setdefault("id", n.get("note_id", ""))
                 note_id = n.get("id", "")
                 if not note_id:
-                    continue
+                    return None
+                worker = detail_workers[pos % len(detail_workers)]
                 async with async_session_factory() as session:
                     cached = await _get_cached_detail(session, task.xhs_user_id, note_id)
                     if cached is None:
                         token = n.get("xsec_token", "")
                         if token:
-                            from app.api.v1.notes import _extract_detail_items
-
                             url = f"https://www.xiaohongshu.com/explore/{note_id}?xsec_token={token}&xsec_source=pc_user"
-                            detail_result = await asyncio.to_thread(crawler.get_note_detail, url)
+                            detail_result = await asyncio.to_thread(worker.get_note_detail, url)
                             if detail_result.success and isinstance(detail_result.data, dict):
                                 risk_code = detail_result.data.get("code")
                                 risk_msg = str(detail_result.data.get("msg") or "")
@@ -238,17 +239,50 @@ async def run_analysis_task(task_id: uuid.UUID) -> None:
                                 cached["full_stats"] = True
                                 await _upsert_detail(session, task.xhs_user_id, note_id, cached)
                                 await session.commit()
-                    if cached is not None:
-                        real_notes.append(cached)
-                        fetched += 1
-                    if fetched % 10 == 0:
-                        coverage = fetched / sample_size if sample_size else 0.0
-                        await _update_task(task_id, fetched_notes=fetched, coverage=round(coverage, 4))
+                    return cached
+
+        for batch_start in range(0, target, batch_size):
+            current_task = await _load_task(task_id)
+            if not current_task or current_task.status == "cancelled":
+                return
+            if datetime.now(timezone.utc) >= deadline:
+                partial = True
+                break
+
+            batch_positions = indices[batch_start:batch_start + batch_size]
+            results = await asyncio.gather(
+                *(_fetch_one(pos) for pos in batch_positions),
+                return_exceptions=True,
+            )
+            for result in results:
+                if isinstance(result, BaseException):
+                    raise result
+                if result is not None:
+                    real_notes.append(result)
+                    fetched += 1
+                if fetched % 10 == 0:
+                    coverage = fetched / sample_size if sample_size else 0.0
+                    await _update_task(task_id, fetched_notes=fetched, coverage=round(coverage, 4))
             if batch_start + batch_size < target and not partial:
                 await asyncio.sleep(batch_interval)
 
         coverage = fetched / sample_size if sample_size else 0.0
-        result = score_blogger(real_notes, follower_count=task.follower_count or 0, total_notes=total, sampled=sampled, coverage_denominator=(sample_size if sampled else None))
+        follower_history = []
+        async with async_session_factory() as session:
+            from app.services.subscription_service import load_follower_history
+            follower_history = await load_follower_history(session, task.user_id, task.xhs_user_id)
+        from app.services.justoneapi_client import merge_follower_history
+
+        platform_result = await platform_future
+        follower_history = merge_follower_history(follower_history, platform_result)
+        result = score_blogger(
+            real_notes,
+            follower_count=task.follower_count or 0,
+            total_notes=total,
+            sampled=sampled,
+            coverage_denominator=(sample_size if sampled else None),
+            follower_history=follower_history,
+        )
         status = "partial" if partial else "success"
         await _update_task(
             task_id,

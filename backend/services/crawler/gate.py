@@ -65,8 +65,9 @@ class RiskGate:
         with self._lock:
             elapsed = time.monotonic() - self._last_ok_at
             wait = max(0.0, self._min_interval - elapsed) + random.uniform(0.2, 0.6)
-        if wait > 0:
-            time.sleep(wait)
+            # 锁内等待：并发 worker 按顺序放行，保证每秒请求数不因并发翻倍
+            if wait > 0:
+                time.sleep(wait)
 
     def mark_request(self) -> None:
         with self._lock:

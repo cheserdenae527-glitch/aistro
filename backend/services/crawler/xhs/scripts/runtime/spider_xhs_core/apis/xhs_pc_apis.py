@@ -328,10 +328,11 @@ class XHS_Apis():
         return success, msg, res_json
 
 
-    def get_user_all_notes(self, user_url: str, proxies: dict = None):
+    def get_user_all_notes(self, user_url: str, proxies: dict = None, max_notes: int = 0):
         """
            获取用户所有笔记
            :param user_id: 你想要获取的用户的id
+           :param max_notes: 最多返回的笔记数；0 表示不限制
            返回用户的所有笔记
         """
         cursor = ''
@@ -352,6 +353,9 @@ class XHS_Apis():
                 else:
                     break
                 note_list.extend(notes)
+                if max_notes and len(note_list) >= max_notes:
+                    note_list = note_list[:max_notes]
+                    break
                 if len(notes) == 0 or not res_json["data"]["has_more"]:
                     break
         except Exception as e:

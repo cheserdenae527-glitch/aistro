@@ -238,6 +238,283 @@ def _downgrade_level(level: str) -> str:
     return _LEVEL_ORDER[max(0, idx - 1)]
 
 
+STRONG_SCORE = 70
+WEAK_SCORE = 40
+STALE_GAP_DAYS = 30
+GROWTH_TREND_MIN_SAMPLES = 10
+
+GRASS_WEIGHTS = {"collect_ratio": 0.30, "collect_rate": 0.40, "share_rate": 0.30}
+GROWTH_WEIGHTS = {"follower_growth": 0.25, "content_system": 0.20, "update_stability": 0.20, "data_trend": 0.35}
+
+# 种草效率子指标映射（初版占位，待按第七节用真实账号标定）
+GRASS_COLLECT_RATE_POINTS = {
+    "T1": [(0.0, 0), (1.2, 40), (2.8, 70), (6.0, 100)],
+    "T2": [(0.0, 0), (0.8, 40), (1.8, 70), (4.0, 100)],
+    "T3": [(0.0, 0), (0.4, 40), (1.0, 70), (2.2, 100)],
+    "T4": [(0.0, 0), (0.2, 40), (0.5, 70), (1.2, 100)],
+}
+GRASS_COLLECT_RATIO_POINTS = [(0.0, 0), (0.15, 40), (0.30, 70), (0.60, 100)]
+GRASS_SHARE_RATE_POINTS = {
+    "T1": [(0.0, 0), (0.5, 40), (1.2, 70), (3.0, 100)],
+    "T2": [(0.0, 0), (0.3, 40), (0.8, 70), (2.0, 100)],
+    "T3": [(0.0, 0), (0.2, 40), (0.5, 70), (1.2, 100)],
+    "T4": [(0.0, 0), (0.1, 40), (0.3, 70), (0.8, 100)],
+}
+CONTENT_SYSTEM_POINTS = [(0.0, 0), (0.10, 40), (0.25, 70), (0.50, 100)]
+
+
+def _tag_counts(notes: list[dict]) -> tuple[dict[str, int], int]:
+    counts: dict[str, int] = {}
+    tagged = 0
+    for n in notes:
+        tags = n.get("tags") or []
+        if not tags:
+            continue
+        tagged += 1
+        for t in tags:
+            key = str(t).strip()
+            if key:
+                counts[key] = counts.get(key, 0) + 1
+    return counts, tagged
+
+
+def _content_consistency_multiplier(notes: list[dict]) -> float:
+    counts, tagged = _tag_counts(notes)
+    if not counts or tagged == 0:
+        return 1.0
+    total = sum(counts.values())
+    concentration = sum((c / total) ** 2 for c in counts.values())
+    score = _interpolate(CONTENT_SYSTEM_POINTS, concentration)
+    return round(0.7 + 0.3 * (score / 100.0), 3)
+
+
+def _score_grass_planting(notes: list[dict], fans: int, tier: dict) -> dict:
+    """种草效率分 = 赞藏比×0.3 + 收藏率×0.4 + 分享率×0.3，再乘定位一致性系数。"""
+    if not notes or fans <= 0:
+        return {"score": None, "components": {}, "note": "样本或粉丝数据不足"}
+    likes = [int((n.get("stats") or {}).get("liked", 0) or 0) for n in notes]
+    collects = [int((n.get("stats") or {}).get("collected", 0) or 0) for n in notes]
+    shares = [int((n.get("stats") or {}).get("shared", 0) or 0) for n in notes]
+    total_likes = sum(likes)
+    total_collects = sum(collects)
+    total_shares = sum(shares)
+    collect_ratio = total_collects / total_likes if total_likes > 0 else 0.0
+    collect_rate = total_collects / fans / len(notes) * 100.0
+    share_rate = total_shares / fans / len(notes) * 100.0
+    tier_name = next((k for k, v in TIERS.items() if v is tier), "T1")
+    collect_ratio_score = _interpolate(GRASS_COLLECT_RATIO_POINTS, collect_ratio)
+    collect_rate_score = _interpolate(GRASS_COLLECT_RATE_POINTS[tier_name], collect_rate)
+    share_rate_score = _interpolate(GRASS_SHARE_RATE_POINTS[tier_name], share_rate)
+    base_score = (
+        collect_ratio_score * GRASS_WEIGHTS["collect_ratio"]
+        + collect_rate_score * GRASS_WEIGHTS["collect_rate"]
+        + share_rate_score * GRASS_WEIGHTS["share_rate"]
+    )
+    consistency_mult = _content_consistency_multiplier(notes)
+    final_score = min(100.0, base_score * consistency_mult)
+    return {
+        "score": round(final_score, 1),
+        "base_score": round(base_score, 1),
+        "consistency_multiplier": consistency_mult,
+        "local_match_multiplier": 1.0,
+        "components": {
+            "collect_ratio": {"score": round(collect_ratio_score, 1), "value": round(collect_ratio, 3), "note": "赞藏比，越接近或超过0.3越偏种草型"},
+            "collect_rate": {"score": round(collect_rate_score, 1), "value_percent": round(collect_rate, 3), "note": "篇均收藏率（近似口径）"},
+            "share_rate": {"score": round(share_rate_score, 1), "value_percent": round(share_rate, 3), "note": "篇均分享率（近似口径）"},
+        },
+        "calibrated": False,
+        "note": "阈值初版占位，需按设计文档第七节用真实账号标定",
+    }
+
+
+def _score_content_system(notes: list[dict]) -> dict:
+    counts, tagged = _tag_counts(notes)
+    if not counts or tagged == 0:
+        return {"score": 60.0, "detail": {"tag_count": 0, "concentration": 0.0, "note": "无标签数据，按中性处理"}}
+    total = sum(counts.values())
+    concentration = sum((c / total) ** 2 for c in counts.values())
+    score = _interpolate(CONTENT_SYSTEM_POINTS, concentration)
+    return {
+        "score": round(score, 1),
+        "detail": {"tag_count": len(counts), "tagged_notes": tagged, "concentration": round(concentration, 3)},
+    }
+
+
+def _score_update_stability(notes: list[dict], now: datetime) -> dict:
+    cutoff = now - timedelta(days=ANALYSIS_WINDOW_DAYS)
+    recent = [n for n in notes if _parse_dt(n.get("published_at")) is not None and _parse_dt(n.get("published_at")) >= cutoff]
+    weekly = len(recent) / (ANALYSIS_WINDOW_DAYS / 7.0)
+    freq_score = _interpolate([(0.0, 0), (0.5, 30), (1.0, 50), (2.0, 75), (3.0, 100)], weekly)
+    times = sorted(_parse_dt(n.get("published_at")) for n in notes if _parse_dt(n.get("published_at")) is not None)
+    max_gap = 0.0
+    for a, b in zip(times, times[1:]):
+        max_gap = max(max_gap, (b - a).total_seconds() / 86400.0)
+    stale_gap = max_gap > STALE_GAP_DAYS
+    score = min(freq_score, 100.0)
+    if stale_gap:
+        score = min(score, 30.0)
+    return {
+        "score": round(score, 1),
+        "detail": {"weekly_notes": round(weekly, 2), "max_gap_days": round(max_gap, 1), "stale_gap": stale_gap},
+    }
+
+
+def _score_growth_trend(notes: list[dict], fans: int) -> dict:
+    timed = sorted(
+        (n for n in notes if _parse_dt(n.get("published_at")) is not None),
+        key=lambda n: _parse_dt(n.get("published_at")),
+    )
+    if len(timed) < GROWTH_TREND_MIN_SAMPLES:
+        return {"score": None, "ratio": None, "note": "样本不足10篇，数据趋势不计分"}
+    mid = len(timed) // 2
+    earlier = timed[:mid]
+    later = timed[mid:]
+
+    def collect_median(items: list[dict]) -> float:
+        vals = [int((n.get("stats") or {}).get("collected", 0) or 0) for n in items]
+        return statistics.median(vals) if vals else 0.0
+
+    e = collect_median(earlier)
+    l = collect_median(later)
+    if e <= 0:
+        ratio = None
+        score = 60.0 if l > 0 else 30.0
+        note = "前半程收藏为0，按中性/从无到有处理" if l > 0 else "后半程无有效收藏，趋势偏低"
+    elif l <= 0:
+        ratio = 0.0
+        score = 30.0
+        note = "后半程无有效收藏，趋势偏低"
+    else:
+        ratio = l / e
+        score = _interpolate([(0.5, 15), (0.7, 40), (1.0, 60), (1.5, 85), (2.0, 100)], ratio)
+        note = ""
+    return {"score": round(score, 1), "ratio": round(ratio, 3) if ratio is not None else None, "note": note}
+
+
+def _score_follower_growth(history: list[dict]) -> float | None:
+    if len(history) < 2:
+        return None
+    rows = []
+    for h in history:
+        dt = _parse_dt(h.get("snapshot_at") or h.get("recorded_at") or h.get("created_at"))
+        if dt is None:
+            continue
+        fans = int(h.get("fans", 0) or 0)
+        rows.append((dt, fans))
+    rows.sort(key=lambda x: x[0])
+    if len(rows) < 2:
+        return None
+    first_fans = rows[0][1]
+    last_fans = rows[-1][1]
+    if first_fans <= 0:
+        return None
+    growth_rate = (last_fans - first_fans) / first_fans
+    score = _interpolate([(-0.2, 0), (0.0, 40), (0.1, 70), (0.3, 100)], growth_rate)
+    return round(score, 1)
+
+
+def _summarize_follower_history(history: list[dict] | None) -> dict | None:
+    """汇总粉丝历史来源与增长信息，供前端展示和成长潜力子项明细使用。"""
+    if not history:
+        return None
+    rows = []
+    for h in history:
+        dt = _parse_dt(h.get("snapshot_at") or h.get("recorded_at") or h.get("created_at"))
+        if dt is None:
+            continue
+        fans = int(h.get("fans", 0) or 0)
+        if fans <= 0:
+            continue
+        rows.append({"dt": dt, "fans": fans, "source": h.get("source") or "local"})
+    rows.sort(key=lambda r: r["dt"])
+    if len(rows) < 2:
+        return None
+    first = rows[0]
+    last = rows[-1]
+    growth_rate = (last["fans"] - first["fans"]) / first["fans"] if first["fans"] else 0.0
+    days = max((last["dt"] - first["dt"]).days, 1)
+    platform_points = sum(1 for r in rows if r["source"] == "justoneapi")
+    local_points = len(rows) - platform_points
+    return {
+        "source": "justoneapi" if platform_points >= 2 else ("local" if local_points >= 2 else "mixed"),
+        "points": len(rows),
+        "platform_points": platform_points,
+        "local_points": local_points,
+        "start_fans": first["fans"],
+        "end_fans": last["fans"],
+        "fans_increase": last["fans"] - first["fans"],
+        "growth_rate": round(growth_rate, 4),
+        "days": days,
+        "start_date": first["dt"].date().isoformat(),
+        "end_date": last["dt"].date().isoformat(),
+        "series": [{"fans": r["fans"], "snapshot_at": r["dt"].isoformat(), "source": r["source"]} for r in rows],
+    }
+
+
+def _score_growth_potential(notes: list[dict], fans: int, now: datetime, follower_history: list[dict] | None = None) -> dict:
+    """成长潜力分 = 粉丝增长×0.25 + 内容系统化×0.20 + 更新稳定性×0.20 + 数据趋势×0.35。"""
+    weights = dict(GROWTH_WEIGHTS)
+    components: dict[str, dict] = {}
+    if follower_history:
+        follower_score = _score_follower_growth(follower_history)
+        if follower_score is not None:
+            summary = _summarize_follower_history(follower_history) or {}
+            components["follower_growth"] = {
+                "score": follower_score,
+                "detail": {
+                    "snapshots": len(follower_history),
+                    **{k: v for k, v in summary.items() if k != "series"},
+                },
+            }
+        else:
+            del weights["follower_growth"]
+            components["follower_growth"] = {"score": None, "detail": {"note": "粉丝历史快照不足2次"}}
+    else:
+        del weights["follower_growth"]
+        components["follower_growth"] = {"score": None, "detail": {"note": "暂无粉丝历史快照，该子项不计分"}}
+    components["content_system"] = _score_content_system(notes)
+    components["update_stability"] = _score_update_stability(notes, now)
+    trend = _score_growth_trend(notes, fans)
+    if trend["score"] is None:
+        del weights["data_trend"]
+        components["data_trend"] = {"score": None, "detail": {"note": trend["note"]}}
+    else:
+        components["data_trend"] = {"score": trend["score"], "detail": {"ratio": trend["ratio"], "note": trend["note"]}}
+    total_weight = sum(weights.values())
+    if total_weight <= 0:
+        return {"score": None, "components": components, "note": "无可用成长指标"}
+    score = sum(components[k]["score"] * weights[k] for k in weights if components[k].get("score") is not None) / total_weight
+    return {"score": round(score, 1), "components": components, "note": "成长潜力分按可用子项归一化计算"}
+
+
+def _build_decision(grass: dict, growth: dict) -> dict:
+    if grass is None or growth is None:
+        return {"status": "no_data", "quadrant": "数据不足", "recommendation": "数据不足，暂不评分"}
+    g = grass.get("score")
+    p = growth.get("score")
+    if g is None or p is None:
+        return {"status": "no_data", "quadrant": "数据不足", "recommendation": "数据不足，暂不评分"}
+
+    def level_label(v: float) -> str:
+        return "强" if v >= STRONG_SCORE else ("中" if v >= WEAK_SCORE else "弱")
+
+    gl = level_label(g)
+    pl = level_label(p)
+    if gl == "强" and pl == "强":
+        quadrant = "首选合作"
+        rec = "优先投放，可谈长期框架合作"
+    elif gl == "强":
+        quadrant = "短期投放"
+        rec = "适合短期投放、单篇合作，不做长期绑定"
+    elif pl == "强":
+        quadrant = "潜力股"
+        rec = "低价提前绑定，长期观察，定期复核"
+    else:
+        quadrant = "过滤"
+        rec = "暂不合作"
+    return {"status": "ok", "quadrant": quadrant, "recommendation": rec, "grass_level": gl, "growth_level": pl}
+
+
 def score_blogger(
     notes: list[dict],
     follower_count: int = 0,
@@ -245,6 +522,7 @@ def score_blogger(
     now: datetime | None = None,
     sampled: bool = False,
     coverage_denominator: int | None = None,
+    follower_history: list[dict] | None = None,
 ) -> dict:
     """运行真实数据评分，返回可直接落库/展示的结果结构。"""
     now = now or datetime.now(CN_TZ)
@@ -275,6 +553,10 @@ def score_blogger(
         "confidence": confidence,
         "dimensions": {},
         "overall": None,
+        "grass_planting": None,
+        "growth_potential": None,
+        "decision": None,
+        "follower_history": _summarize_follower_history(follower_history),
         "anomalies": [],
         "insights": [],
         "timeline": _build_timeline(real),
@@ -286,9 +568,15 @@ def score_blogger(
 
     if confidence == "low":
         base["insights"].append("数据不足，暂不评分")
+        base["decision"] = {"status": "no_data", "quadrant": "数据不足", "recommendation": "数据不足，暂不评分"}
         return base
 
     tier = _tier_for(follower_count)
+    grass = _score_grass_planting(real, follower_count, tier)
+    growth = _score_growth_potential(real, follower_count, now, follower_history)
+    base["grass_planting"] = grass
+    base["growth_potential"] = growth
+    base["decision"] = _build_decision(grass, growth)
     std_values = _type_standardized(real)
     iq = _score_interaction_quality(real, follower_count, tier, now)
     stability = _score_content_stability(std_values, real)
@@ -329,6 +617,9 @@ def score_blogger(
     if fake_ratio > VOTE_BAN_RATIO:
         base["anomalies"].append({"type": "fake_engagement", "level": "block", "detail": "疑似刷量笔记占比过高"})
         base["overall"] = None
+        base["grass_planting"] = None
+        base["growth_potential"] = None
+        base["decision"] = {"status": "blocked", "quadrant": "一票否决", "recommendation": "疑似刷量，不建议合作"}
         base["insights"].append("疑似刷量，不建议合作")
         base["dimensions"] = dimensions
         base["result_forced"] = True

@@ -29,16 +29,16 @@ def _get_crawler(
     max_delay: float | None = None,
     max_retries: int | None = None,
 ):
-    from crawler.config import get_cookie, get_proxy_pool, get_delay_settings
-    cookie = get_cookie()
-    proxies = get_proxy_pool()
+    from crawler.config import acquire_cookie, get_delay_settings
+    cookie, cookie_id, sticky_pool = acquire_cookie()
     cfg_min, cfg_max, cfg_retries = get_delay_settings()
     return XhsCrawler(
         cookie,
-        proxy_pool=proxies,
+        proxy_pool=sticky_pool,
         min_delay=min_delay if min_delay is not None else cfg_min,
         max_delay=max_delay if max_delay is not None else cfg_max,
         max_retries=max_retries if max_retries is not None else cfg_retries,
+        cookie_id=cookie_id,
     )
 
 
@@ -121,14 +121,22 @@ def _extract_detail_items(result) -> list[dict]:
 
 
 def _merge_detail_note(base: dict, detail_raw: dict) -> None:
-    """用详情数据补齐列表笔记的发布时间与完整互动数据。"""
+    """用详情数据补齐列表笔记的发布时间与完整互动数据（空值不覆盖真实数据）。"""
     detail = normalize_note(detail_raw)
-    for key in ("title", "desc", "type", "cover_url", "image_urls", "video_url", "tags", "stats"):
+    for key in ("title", "desc", "type", "cover_url", "image_urls", "video_url", "tags"):
         if detail.get(key):
             base[key] = detail[key]
     if detail.get("published_at") is not None:
         base["published_at"] = detail["published_at"]
-    base["full_stats"] = True
+    detail_stats = detail.get("stats") or {}
+    base_stats = base.setdefault("stats", {})
+    for key in ("liked", "collected", "comments", "shared"):
+        value = detail_stats.get(key)
+        if value:
+            base_stats[key] = value
+        else:
+            base_stats[key] = base_stats.get(key, 0)
+    base["full_stats"] = bool(any(base_stats.get(key) for key in ("liked", "collected", "comments", "shared")))
 
 
 # 分析结果短缓存，避免重复分析触发风控
@@ -211,22 +219,33 @@ def _build_stratified_sample(notes: list[dict], detail_limit: int) -> list[int]:
     return sorted(sample_indices)
 
 
-async def _fetch_details_with_early_stop(crawler, notes: list[dict], indices: list[int]) -> None:
-    """顺序抓详情，连续新增样本对均值影响 <3% 时提前结束。"""
+async def _fetch_details_with_early_stop(crawler, notes: list[dict], indices: list[int], concurrency: int = 3) -> None:
+    """分窗口并发抓详情，窗口间按均值稳定性 <3% 提前结束。"""
     means: list[float] = []
     stable_streak = 0
-    for idx in indices:
+    if not indices:
+        return
+    pool_size = min(concurrency, len(indices))
+    pool = [crawler] if pool_size <= 1 else [_get_crawler(min_delay=1.0, max_delay=2.0, max_retries=1) for _ in range(pool_size)]
+    sem = asyncio.Semaphore(pool_size)
+
+    async def one(idx: int) -> None:
         base_note = notes[idx]
         nid = base_note.get("platform_note_id") or base_note.get("id")
         token = base_note.get("xsec_token")
         if not nid or not token:
-            continue
+            return
         url = f"https://www.xiaohongshu.com/explore/{nid}?xsec_token={token}&xsec_source=pc_user"
-        detail_result = await asyncio.to_thread(crawler.get_note_detail, url)
+        worker = pool[idx % len(pool)]
+        async with sem:
+            detail_result = await asyncio.to_thread(worker.get_note_detail, url)
         detail_items = _extract_detail_items(detail_result)
-        if not detail_items:
-            continue
-        _merge_detail_note(base_note, detail_items[0])
+        if detail_items:
+            _merge_detail_note(base_note, detail_items[0])
+
+    for start in range(0, len(indices), pool_size):
+        chunk = indices[start:start + pool_size]
+        await asyncio.gather(*(one(idx) for idx in chunk))
         detailed = [n for n in notes if n.get("full_stats")]
         if len(detailed) >= 3:
             mean = statistics.fmean(_weighted(n["stats"]) for n in detailed)
@@ -306,9 +325,10 @@ async def get_user_notes_by_id(
     if cached is not None:
         return cached
     user_url = f"https://www.xiaohongshu.com/user/profile/{user_id}"
+    fetch_cap = max(limit * 2, 100)
     notes_result = None
     for attempt in range(2):
-        notes_result = await asyncio.to_thread(crawler.get_user_notes, user_url)
+        notes_result = await asyncio.to_thread(crawler.get_user_notes, user_url, max_notes=fetch_cap)
         if notes_result.success:
             break
         if attempt == 0:
@@ -336,6 +356,13 @@ async def get_user_notes_by_id(
             raise HTTPException(status_code=502, detail=detail)
     else:
         raw_notes = notes_result.data or []
+
+    total_notes = len(raw_notes)
+    if source == "user_notes":
+        from app.services.xhs_user_resolver import resolve_user_profile
+
+        profile = await resolve_user_profile(crawler, user_id, nickname=nickname)
+        total_notes = int(profile.get("note_count") or 0) or len(raw_notes)
 
     items = []
     for n in raw_notes[:limit]:
@@ -370,7 +397,7 @@ async def get_user_notes_by_id(
         to_enrich = [i for i, item in enumerate(items) if not item.get("full_stats")][:enrich_limit]
         if to_enrich:
             await _enrich_note_details(items, to_enrich)
-    payload = {"items": items, "total": len(raw_notes), "user_id": user_id, "source": source}
+    payload = {"items": items, "total": total_notes, "user_id": user_id, "source": source}
     _search_cache_set(cache_key, payload)
     return payload
 
@@ -380,6 +407,7 @@ async def analyze_user_notes(
     user_id: str,
     body: UserAnalysisRequest | None = None,
     user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """抓取博主全部笔记并运行数据分析评分。"""
     # 分析链路用低延时 + 低重试，优先速度；失败走搜索兜底
@@ -393,6 +421,7 @@ async def analyze_user_notes(
 
     profile = await resolve_user_profile(crawler, user_id, nickname=nickname)
     nickname = nickname or profile.get("nickname", "")
+    profile_total = int(profile.get("note_count") or 0)
     if profile.get("ok"):
         fans = profile.get("fans", fans)
     cache_key = f"{user_id}:{detail_limit}"
@@ -413,9 +442,12 @@ async def analyze_user_notes(
             source = "search_quick"
 
     if raw_notes is None:
+        fetch_cap = 100
+        if detail_limit and detail_limit > 0:
+            fetch_cap = max(detail_limit * 2, 100)
         notes_result = None
         for attempt in range(2):
-            notes_result = await asyncio.to_thread(crawler.get_user_notes, user_url)
+            notes_result = await asyncio.to_thread(crawler.get_user_notes, user_url, max_notes=fetch_cap)
             if notes_result.success:
                 break
             if attempt == 0:
@@ -458,7 +490,22 @@ async def analyze_user_notes(
         _estimate_unfetched_stats(notes)
 
     from app.services.xhs_analysis import analyze_notes
-    result = analyze_notes(notes, follower_count=fans, nickname=nickname)
+    from app.services.subscription_service import load_follower_history
+    from app.services.justoneapi_client import fetch_follower_history, merge_follower_history
+
+    local_history = await load_follower_history(db, user.id, user_id)
+    platform_result = await asyncio.to_thread(fetch_follower_history, user_id)
+    follower_history = merge_follower_history(local_history, platform_result)
+    result_total = profile_total or len(notes)
+    result = analyze_notes(
+        notes,
+        follower_count=fans,
+        nickname=nickname,
+        follower_history=follower_history,
+        total_notes=result_total,
+    )
+    if platform_result.get("ok") and len(platform_result.get("history") or []) >= 2:
+        result["insights"].append("已获取平台历史涨粉数据，成长潜力按蒲公英官方曲线计算")
     result["source"] = source
     result["detail_limit"] = detail_limit
     result["user_id"] = user_id
@@ -467,7 +514,7 @@ async def analyze_user_notes(
         len(notes) if sample_mode == "search" else sum(1 for n in notes if n.get("full_stats"))
     )
     result["summary"]["estimated_count"] = sum(1 for n in notes if n.get("estimated"))
-    result["summary"]["candidate_notes"] = len(notes)
+    result["summary"]["candidate_notes"] = result_total
     # 响应瘦身：raw 原始 JSON 体积大，前端不需要
     for item in result.get("notes", []):
         item.pop("raw", None)
@@ -529,6 +576,9 @@ async def create_analysis_task(
     )
     db.add(task)
     await db.flush()
+    # 先提交让后台任务能看到刚插入的任务行，否则 run_analysis_task 可能抢在提交前
+    # 读取并返回 None，导致任务永远停留在 pending
+    await db.commit()
     start_analysis_task(task.id)
     payload = _task_payload(task)
     payload["passed_prescreen"] = True

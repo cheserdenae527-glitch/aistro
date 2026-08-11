@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { Button, Col, Empty, Image, Input, message, Modal, Popconfirm, Row, Select, Space, Statistic, Table, Tag, Typography } from 'antd';
 import { DeleteOutlined, DownloadOutlined, HeartOutlined, LinkOutlined, MessageOutlined, PictureOutlined, ReloadOutlined, ShareAltOutlined, StarOutlined, VideoCameraOutlined } from '@ant-design/icons';
-const { Text, Title } = Typography;
+const { Text } = Typography;
 
 interface KbEntry {
   id: string;
