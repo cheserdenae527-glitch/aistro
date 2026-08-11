@@ -184,6 +184,85 @@ def _score_sustained_operation(notes: list[dict], now: datetime) -> dict:
     }
 
 
+def _comment_participation(notes: list[dict]) -> float:
+    """评论参与度 = 评论数 / (赞+藏+评+转) 的篇均值；互动全为 0 时取 0。"""
+    ratios = []
+    for n in notes:
+        st = n["stats"]
+        total = sum(int(st.get(k, 0) or 0) for k in ("liked", "collected", "comments", "shared"))
+        if total > 0:
+            ratios.append(int(st.get("comments", 0) or 0) / total)
+    return statistics.fmean(ratios) if ratios else 0.0
+
+
+def _map_comment_participation(ratio: float) -> float:
+    """评论参与度映射（结构占位，待标定）：≥0.25→100，0.15→70，0.08→40，0→0。"""
+    points = [(0.0, 0), (0.08, 40), (0.15, 70), (0.25, 100)]
+    return _interpolate(points, ratio)
+
+
+def _score_seeding_depth(
+    notes: list[dict],
+    fans: int,
+    tier: dict,
+    now: datetime,
+    comment_analysis: dict | None = None,
+) -> dict:
+    """种草深度：收藏(想去)45% + 分享(安利)30% + 评论信号25%。
+
+    收藏深度/分享扩散按粉丝分层映射；赞藏比只作展示信号与闸门红旗，不打分。
+    评论分析默认关闭：评论子项用参与度近似且 confidence=low、权重 ×0.5 重归一化。
+    """
+    cutoff = now - timedelta(days=ANALYSIS_WINDOW_DAYS)
+    recent = [n for n in notes if _parse_dt(n["published_at"]) is not None and _parse_dt(n["published_at"]) >= cutoff]
+    recent = recent or notes
+    if not recent or fans <= 0:
+        return {"score": 0.0, "confidence": "high", "detail": {
+            "collect_rate_percent": 0.0, "collect_like_ratio": 0.0, "share_rate_percent": 0.0,
+            "comment_signal": 0.0, "comment_signal_low_conf": True}}
+
+    total_collect = sum(int(n["stats"].get("collected", 0) or 0) for n in recent)
+    total_share = sum(int(n["stats"].get("shared", 0) or 0) for n in recent)
+    collect_like_ratios = []
+    for n in recent:
+        liked = int(n["stats"].get("liked", 0) or 0)
+        collected = int(n["stats"].get("collected", 0) or 0)
+        if liked > 0:
+            collect_like_ratios.append(collected / liked)
+    collect_like_ratio = statistics.median(collect_like_ratios) if collect_like_ratios else 0.0
+
+    collect_rate_percent = (total_collect / len(recent) / fans) * 100.0
+    share_rate_percent = (total_share / len(recent) / fans) * 100.0
+    collect_score = _interpolate(tier["collect_rate_points"], collect_rate_percent)
+    share_score = _interpolate(tier["share_rate_points"], share_rate_percent)
+
+    comment_low_conf = comment_analysis is None
+    if comment_analysis is not None:
+        intent = float(comment_analysis.get("intent_ratio", 0.0))
+        spam = float(comment_analysis.get("spam_ratio", 0.0))
+        comment_score = max(0.0, min(100.0, intent * 100 - spam * 50))
+    else:
+        comment_score = _map_comment_participation(_comment_participation(recent))
+
+    sub_weights = {"collect": 0.45, "share": 0.30, "comment": 0.25}
+    if comment_low_conf:
+        sub_weights["comment"] *= 0.5
+    total_w = sum(sub_weights.values())
+    score = (collect_score * sub_weights["collect"] + share_score * sub_weights["share"]
+             + comment_score * sub_weights["comment"]) / total_w
+    return {
+        "score": round(score, 1),
+        "confidence": "high",
+        "detail": {
+            "collect_rate_percent": round(collect_rate_percent, 3),
+            "collect_like_ratio": round(collect_like_ratio, 3),
+            "share_rate_percent": round(share_rate_percent, 3),
+            "comment_signal": round(comment_score, 1),
+            "comment_signal_low_conf": comment_low_conf,
+        },
+    }
+
+
 def _score_trend(std_values: list[float], notes: list[dict]) -> dict:
     if len(notes) < TREND_MIN_SAMPLES:
         return {"score": None, "skipped": True, "reason": "样本不足10篇，趋势维度不计分"}
@@ -385,17 +464,17 @@ def _score_growth_trend(notes: list[dict], fans: int) -> dict:
         return statistics.median(vals) if vals else 0.0
 
     e = collect_median(earlier)
-    l = collect_median(later)
+    later_med = collect_median(later)
     if e <= 0:
         ratio = None
-        score = 60.0 if l > 0 else 30.0
-        note = "前半程收藏为0，按中性/从无到有处理" if l > 0 else "后半程无有效收藏，趋势偏低"
-    elif l <= 0:
+        score = 60.0 if later_med > 0 else 30.0
+        note = "前半程收藏为0，按中性/从无到有处理" if later_med > 0 else "后半程无有效收藏，趋势偏低"
+    elif later_med <= 0:
         ratio = 0.0
         score = 30.0
         note = "后半程无有效收藏，趋势偏低"
     else:
-        ratio = l / e
+        ratio = later_med / e
         score = _interpolate([(0.5, 15), (0.7, 40), (1.0, 60), (1.5, 85), (2.0, 100)], ratio)
         note = ""
     return {"score": round(score, 1), "ratio": round(ratio, 3) if ratio is not None else None, "note": note}

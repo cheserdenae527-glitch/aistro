@@ -123,3 +123,44 @@ def test_platform_follower_history_summary_and_detail():
     assert fg["score"] is not None
     assert fg["detail"]["source"] == "justoneapi"
     assert fg["detail"]["growth_rate"] == 0.3
+
+
+def test_seeding_depth_weights_and_detail():
+    from app.services.blogger_scoring import _score_seeding_depth, _tier_for
+
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    notes = [_mk(i, now - timedelta(days=i * 2), 3000, 1600, 300, 200) for i in range(30)]
+    res = _score_seeding_depth(notes, fans=50000, tier=_tier_for(50000), now=now)
+    assert 0 <= res["score"] <= 100
+    d = res["detail"]
+    assert d["collect_like_ratio"] > 0.5  # 藏/赞 > 0.5，干货结构
+    assert d["comment_signal_low_conf"] is True  # 默认未开评论分析
+
+
+def test_seeding_depth_comment_reweight():
+    from app.services.blogger_scoring import _score_seeding_depth, _tier_for
+
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    notes = [_mk(i, now - timedelta(days=i * 2), 3000, 1600, 300, 200) for i in range(30)]
+    base = _score_seeding_depth(notes, fans=50000, tier=_tier_for(50000), now=now)
+    with_comments = _score_seeding_depth(
+        notes, fans=50000, tier=_tier_for(50000), now=now,
+        comment_analysis={"intent_ratio": 0.3, "spam_ratio": 0.05},
+    )
+    assert with_comments["detail"]["comment_signal_low_conf"] is False
+    assert with_comments["score"] != base["score"]
+
+
+def test_comment_participation_mapping_ascending():
+    from app.services.blogger_scoring import _comment_participation, _map_comment_participation
+
+    # 映射锚点必须与 _interpolate 的升序约定一致：0→0、0.08→40、0.15→70、≥0.25→100
+    assert _map_comment_participation(0.0) == 0
+    assert _map_comment_participation(0.08) == 40
+    assert _map_comment_participation(0.15) == 70
+    assert _map_comment_participation(0.3) == 100
+    assert 40 < _map_comment_participation(0.10) < 70
+    # 互动全 0 的笔记不参与分子分母，参与度回退 0
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    notes = [_mk(i, now - timedelta(days=i), 0, 0, 0, 0) for i in range(5)]
+    assert _comment_participation(notes) == 0.0
