@@ -44,6 +44,34 @@ DEFAULT_CONFIG = {
     "analysis_task_timeout_minutes": 45,
     "subscription_deep_sync_min_interval_hours": 24,
     "subscription_deep_sync_max_per_run": 200,
+    "blogger_scoring": {
+        "weights": {
+            "seeding_depth": 0.30, "verticality": 0.20, "stable_output": 0.20,
+            "sustained_operation": 0.15, "growth_trend": 0.15,
+        },
+        "tiers": {
+            "T1": {"min": 1000, "max": 10000, "min_healthy_rate": 1.0, "growth_baseline": 0.06},
+            "T2": {"min": 10000, "max": 100000, "min_healthy_rate": 0.6, "growth_baseline": 0.09},
+            "T3": {"min": 100000, "max": 1000000, "min_healthy_rate": 0.3, "growth_baseline": 0.08},
+            "T4": {"min": 1000000, "max": None, "min_healthy_rate": 0.15, "growth_baseline": 0.07},
+        },
+        "verticality": {"food_keywords": ["探店", "美食", "好吃", "打卡", "菜单", "套餐", "口味", "推荐", "人气", "排队", "新店", "必吃", "餐厅", "小吃", "甜品", "咖啡", "奶茶", "火锅", "烧烤"]},
+        "viral": {"median_multiplier": 3.0, "abs_min": 200},
+        "stability": {"gap_days": 14, "cliff_drop": 0.5, "cliff_penalty": 25},
+        "comments": {
+            "intent_keywords": ["在哪", "多少钱", "好吃吗", "怎么去", "求地址", "人均", "哪里", "电话", "营业", "菜单"],
+            "spam_keywords": ["太棒了", "学习了", "支持", "求链接", "已收藏", "点赞"],
+            "negative_keywords": ["广告", "取关", "踩雷", "差评", "失望"],
+            "note_limit": 8,
+            "per_note": 50,
+        },
+        "gate": {
+            "stale_days": 60, "fake_ratio": 0.20, "fake_extra_ratio": 0.005,
+            "collect_like_ratio_floor": 0.2, "growth_spike": 0.20,
+            "growth_interaction_drop": 0.2, "t1_growth_spike": 0.35,
+        },
+        "stage": {"cold_start_fans": 5000},
+    },
 }
 
 
