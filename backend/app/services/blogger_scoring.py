@@ -694,6 +694,37 @@ def _classify_stage(fans: int, notes: list[dict], now: datetime, follower_histor
     return {"label": label, "confidence": conf, "evidence": evidence}
 
 
+def _growth_anomaly(growth_rate: float, interaction_drop: float, fans: int) -> dict | None:
+    """闸门 5：涨粉异常 = 增幅超阈值 且 同期互动率下降（「且」关系）。
+
+    T1（<1w 粉）阈值放宽到 t1_growth_spike，避免小爆款有机增长误报。
+    """
+    cfg = load_scoring_config()["gate"]
+    spike = float(cfg["t1_growth_spike"]) if fans < 10000 else float(cfg["growth_spike"])
+    if growth_rate > spike and interaction_drop >= float(cfg["growth_interaction_drop"]):
+        return {"type": "growth_anomaly", "level": "warn",
+                "detail": f"粉丝增幅 {growth_rate * 100:.0f}% 且互动率下降，疑似注水"}
+    return None
+
+
+def _collect_like_inversion_hit(notes: list[dict], fans: int, tier: dict) -> bool:
+    """刷量辅助信号：赞藏比中位数 <0.2 且 篇均收藏/粉丝 低于该层最低健康线。"""
+    cfg = load_scoring_config()["gate"]
+    ratios = []
+    for n in notes:
+        liked = int(n["stats"].get("liked", 0) or 0)
+        collected = int(n["stats"].get("collected", 0) or 0)
+        if liked > 0:
+            ratios.append(collected / liked)
+    if not ratios:
+        return False
+    median_ratio = statistics.median(ratios)
+    if median_ratio >= float(cfg["collect_like_ratio_floor"]):
+        return False
+    collect_rate_percent = sum(int(n["stats"].get("collected", 0) or 0) for n in notes) / len(notes) / fans * 100.0
+    return collect_rate_percent < float(tier.get("min_healthy_rate", 1.0))
+
+
 def _summarize_follower_history(history: list[dict] | None) -> dict | None:
     """汇总粉丝历史来源与增长信息，供前端展示和成长潜力子项明细使用。"""
     if not history:

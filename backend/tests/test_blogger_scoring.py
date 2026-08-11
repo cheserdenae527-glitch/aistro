@@ -353,3 +353,26 @@ def test_classify_stage_no_snapshot_large_inactive_is_mature():
     assert res["label"] == "成熟"
     assert res["confidence"] == "low"
     assert any("无有效涨粉快照" in e for e in res["evidence"])
+
+def test_growth_anomaly_requires_both_conditions():
+    from app.services.blogger_scoring import _growth_anomaly
+
+    # 且关系：T2 标准阈值 20%，涨粉 25%（超阈值）但互动率未下降 → 不触发
+    assert _growth_anomaly(growth_rate=0.25, interaction_drop=0.05, fans=50000) is None
+    # 涨粉 25%（超阈值）且互动率下降 30% → 触发
+    flag = _growth_anomaly(growth_rate=0.25, interaction_drop=0.30, fans=50000)
+    assert flag is not None and flag["type"] == "growth_anomaly"
+    # T1 小账号放大阈值：涨粉 25%（<35%）即使互动率下降也不触发
+    assert _growth_anomaly(growth_rate=0.25, interaction_drop=0.30, fans=2000) is None
+
+
+def test_collect_like_inversion_hit():
+    from app.services.blogger_scoring import _collect_like_inversion_hit, _tier_for
+
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    # 高赞低藏：赞藏比中位数 0.01 < 0.2，且篇均收藏/粉丝 0.1% < T2 最低健康线 0.6% → True
+    bad = [_mk(i, now - timedelta(days=i * 2), 5000, 50, 10, 2) for i in range(40)]
+    assert _collect_like_inversion_hit(bad, fans=50000, tier=_tier_for(50000)) is True
+    # 正常：赞藏比 0.53 ≥ 0.2 → False
+    good = [_mk(i, now - timedelta(days=i * 2), 3000, 1600, 300, 200) for i in range(30)]
+    assert _collect_like_inversion_hit(good, fans=50000, tier=_tier_for(50000)) is False
