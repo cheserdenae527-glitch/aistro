@@ -146,24 +146,83 @@ def _score_interaction_quality(notes: list[dict], fans: int, tier: dict, now: da
     return {"score": round(score, 1), "rate": round(rate, 3), "sample": len(recent)}
 
 
-def _score_content_stability(std_values: list[float], notes: list[dict]) -> dict:
+def _score_stable_output(notes: list[dict], now: datetime | None = None) -> dict:
+    """稳定产出：爆文率（中位数×3，抗刷量拉高均值）×0.7 + 稳健性（连续性/断崖）×0.3。
+
+    弃用 CV：爆款账号方差天然大，CV 会反向惩罚有爆款的账号；改为只罚中断与暴跌。
+    """
+    cfg = load_scoring_config()
+    now = now or datetime.now(CN_TZ)
     if not notes:
-        return {"score": 0.0, "quality_ratio": 0.0, "cv": 0.0}
-    quality_count = sum(1 for v in std_values if v >= 200)
-    ratio = quality_count / len(notes)
-    ratio_score = _interpolate([(0.0, 0), (0.08, 40), (0.15, 70), (0.25, 100)], ratio)
-    mean = statistics.fmean(std_values) if std_values else 0.0
-    if mean > 0 and len(std_values) >= 2:
-        cv = statistics.pstdev(std_values) / mean
-    else:
-        cv = 0.0
-    stability_term = (1 - min(cv, 1.0)) * 100 if mean > 0 else 50.0
-    score = ratio_score * 0.7 + stability_term * 0.3
+        return {"score": 0.0, "confidence": "high", "detail": {"viral_ratio": 0.0, "gap_days": 0, "cliff_detected": False}}
+
+    weighted = [_weighted(n["stats"]) for n in notes]
+    median = statistics.median(weighted)
+    mean = statistics.fmean(weighted)
+    mult = float(cfg["viral"]["median_multiplier"])
+    abs_min = int(cfg["viral"]["abs_min"])
+    threshold = median * mult if median > 0 else max(mean * mult, abs_min)
+    viral_count = sum(1 for w in weighted if w >= threshold)
+    viral_ratio = viral_count / len(notes)
+    points = cfg["viral"]["points"]  # [(0.0,0),(0.08,40),(0.1,70),(0.2,100)] 升序
+    viral_score = _interpolate(points, viral_ratio)
+
+    # 稳健性：近 30 天最长空白期 ≥ gap_days → 扣分；最新30天 vs 前60天 中位数互动跌 >50% → 扣分
+    raw_gap = _max_recent_gap_days(notes, now)
+    gap_threshold = int(cfg["stability"]["gap_days"])
+    # 空白期按设计口径只认 ≥gap_days 的连续无发布期：常规节奏（如隔天一更）不算空白，detail 上报 0
+    has_blank_period = raw_gap >= gap_threshold
+    gap_days = raw_gap if has_blank_period else 0
+    cliff_detected = _interaction_cliff(notes, now, drop=float(cfg["stability"]["cliff_drop"]))
+    penalty = float(cfg["stability"]["cliff_penalty"])
+    robustness = 100.0 - (penalty if has_blank_period else 0.0) - (penalty if cliff_detected else 0.0)
+
+    score = viral_score * 0.7 + max(0.0, robustness) * 0.3
     return {
         "score": round(score, 1),
-        "quality_ratio": round(ratio * 100, 1),
-        "cv": round(cv, 3),
+        "confidence": "high",
+        "detail": {"viral_ratio": round(viral_ratio, 4), "gap_days": gap_days, "cliff_detected": cliff_detected},
     }
+
+
+def _max_recent_gap_days(notes: list[dict], now: datetime) -> int:
+    """近 30 天窗口内连续无发布的最大天数；窗口内无笔记按 30 天计。"""
+    cutoff = now - timedelta(days=30)
+    in_window = [
+        _parse_dt(n["published_at"]) for n in notes
+        if _parse_dt(n["published_at"]) is not None and _parse_dt(n["published_at"]) >= cutoff
+    ]
+    if not in_window:
+        return 30
+    in_window.sort()
+    max_gap = 0
+    prev = cutoff
+    for dt in in_window:
+        gap = (dt - prev).days
+        if gap > max_gap:
+            max_gap = gap
+        prev = dt
+    tail = (now - prev).days
+    return max(max_gap, tail)
+
+
+def _interaction_cliff(notes: list[dict], now: datetime, drop: float = 0.5) -> bool:
+    """最新30天 vs 前60天 的标准化互动中位数下降超过 drop 比例则判定断崖。"""
+    std = _type_standardized(notes)
+    recent, older = [], []
+    for n, s in zip(notes, std):
+        dt = _parse_dt(n["published_at"])
+        if dt is None:
+            continue
+        if dt >= now - timedelta(days=30):
+            recent.append(s)
+        elif dt >= now - timedelta(days=90):
+            older.append(s)
+    if not recent or not older:
+        return False
+    m_recent = statistics.median(recent)
+    m_older = statistics.median(older)
+    return m_older > 0 and m_recent < m_older * (1 - drop)
 
 
 def _score_sustained_operation(notes: list[dict], now: datetime) -> dict:
@@ -670,13 +729,13 @@ def score_blogger(
     base["decision"] = _build_decision(grass, growth)
     std_values = _type_standardized(real)
     iq = _score_interaction_quality(real, follower_count, tier, now)
-    stability = _score_content_stability(std_values, real)
+    stability = _score_stable_output(real, now=now)
     sustained = _score_sustained_operation(real, now)
     trend = _score_trend(std_values, real)
 
     dimensions = {
         "interaction_quality": {"score": iq["score"], "confidence": "high", "detail": {"rate_percent": iq["rate"], "sample": iq["sample"]}},
-        "content_stability": {"score": stability["score"], "confidence": "high", "detail": {"quality_ratio": stability["quality_ratio"], "cv": stability["cv"]}},
+        "content_stability": {"score": stability["score"], "confidence": stability["confidence"], "detail": stability["detail"]},
         "sustained_operation": {"score": sustained["score"], "confidence": "high", "detail": {"weekly_notes": sustained["weekly_notes"], "freshness_days": sustained["freshness_days"]}},
     }
     weights = dict(DIMENSION_WEIGHTS)

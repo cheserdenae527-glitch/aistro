@@ -187,3 +187,30 @@ def test_grass_planting_uses_merged_tier_not_identity():
     t1 = _score_grass_planting(notes, fans=fans, tier=_tier_for(2000))
     assert t4["score"] is not None and t1["score"] is not None
     assert t4["score"] != t1["score"]
+
+
+def test_stable_output_median_viral_and_no_cv_penalty():
+    from app.services.blogger_scoring import _score_stable_output
+
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    # 20 篇普通 + 6 篇爆款（互动量 >> 中位数×3），正常账号高方差但连续发布
+    notes = [_mk(i, now - timedelta(days=i * 2), 800, 300, 100, 50) for i in range(20)]
+    for i in range(6):
+        notes[i] = _mk(i, now - timedelta(days=i * 2), 9000, 3600, 900, 600)
+    res = _score_stable_output(notes, now=now)
+    # 中位数×3 阈值下 6/26 ≈ 23% 命中爆文 → 高分；连续发布无空白期 → 无稳健性扣分
+    assert res["score"] >= 70
+    assert res["detail"]["cliff_detected"] is False
+    assert res["detail"]["gap_days"] == 0
+
+
+def test_stable_output_gap_and_cliff_penalize():
+    from app.services.blogger_scoring import _score_stable_output
+
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    # 近 30 天只有 1 篇（前 60 天密集），且前段互动高、后段骤降
+    old = [_mk(i, now - timedelta(days=70 - i * 2), 5000, 1800, 500, 300) for i in range(15)]
+    new = [_mk(99, now - timedelta(days=20), 300, 100, 30, 10)]
+    res = _score_stable_output(old + new, now=now)
+    assert res["detail"]["gap_days"] >= 14
+    assert res["score"] < 60
