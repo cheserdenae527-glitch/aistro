@@ -417,6 +417,8 @@ def _task_payload(task: BloggerAnalysisTask) -> dict:
     return {
         "id": str(task.id),
         "xhs_user_id": task.xhs_user_id,
+        "nickname": str((task.result or {}).get("nickname") or ""),
+        "follower_count": task.follower_count,
         "status": task.status,
         "prescreen_passed": task.prescreen_passed,
         "prescreen_reason": task.prescreen_reason,
@@ -471,6 +473,22 @@ async def create_analysis_task(
     payload = _task_payload(task)
     payload["passed_prescreen"] = True
     return payload
+
+
+@router.get("/analysis-tasks")
+async def list_analysis_tasks(
+    status: str | None = None,
+    limit: int = 100,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """只读列表：供批量筛选视图拉取成功/部分结果，按完成时间倒序。"""
+    stmt = select(BloggerAnalysisTask).where(BloggerAnalysisTask.user_id == user.id)
+    if status:
+        stmt = stmt.where(BloggerAnalysisTask.status == status)
+    stmt = stmt.order_by(BloggerAnalysisTask.finished_at.desc().nulls_last()).limit(min(max(limit, 1), 500))
+    rows = (await db.execute(stmt)).scalars().all()
+    return {"items": [_task_payload(t) for t in rows]}
 
 
 @router.get("/users/{user_id}/analysis-tasks/{task_id}")
