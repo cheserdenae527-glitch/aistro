@@ -11,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from typing import Any
 
 from app.services.scoring_config import load_scoring_config
+from app.services.blogger_verticality import food_verticality
 
 CN_TZ = timezone(timedelta(hours=8))
 
@@ -854,6 +855,33 @@ def _build_decision(grass: dict, growth: dict) -> dict:
     return {"status": "ok", "quadrant": quadrant, "recommendation": rec, "grass_level": gl, "growth_level": pl}
 
 
+def _recommendation(overall: float, level: str, stage: dict, anomalies: list[dict]) -> tuple[str, str]:
+    """合作建议：priority / ok / caution 三档（insufficient/not_recommended 已提前返回）。"""
+    red_flag_types = {a["type"] for a in anomalies}
+    has_any_flag = bool(red_flag_types)
+    stage_ok = stage["label"] in ("成长", "成熟") and stage["confidence"] != "low"
+    if overall >= 70 and not has_any_flag and stage_ok:
+        return "priority", "美食垂直度高、种草能力强，处于成长/成熟期，适合优先建联"
+    if overall >= 55 and not has_any_flag:
+        return "ok", "种草能力在线且无红旗，可以合作"
+    return "caution", "存在非致命红旗或分数偏低，建议谨慎评估"
+
+
+def _build_reasons(dimensions: dict, stage: dict) -> list[str]:
+    reasons = []
+    v = dimensions["verticality"]["detail"]
+    if v.get("food_ratio", 0) >= 0.6:
+        reasons.append(f"美食内容占比 {v['food_ratio'] * 100:.0f}%")
+    sd = dimensions["seeding_depth"]["detail"]
+    if sd.get("collect_rate_percent", 0) > 0:
+        reasons.append(f"篇均收藏率 {sd['collect_rate_percent']:.2f}%")
+    gt = dimensions["growth_trend"]["detail"]
+    if gt.get("has_snapshot") and gt.get("growth_rate") is not None:
+        reasons.append(f"月化涨粉 {gt['growth_rate'] * 100:.1f}%")
+    reasons.append(f"账号阶段：{stage['label']}")
+    return reasons
+
+
 def score_blogger(
     notes: list[dict],
     follower_count: int = 0,
@@ -862,8 +890,9 @@ def score_blogger(
     sampled: bool = False,
     coverage_denominator: int | None = None,
     follower_history: list[dict] | None = None,
+    comment_analysis: dict | None = None,
 ) -> dict:
-    """运行真实数据评分，返回可直接落库/展示的结果结构。"""
+    """运行种草能力五维评分，返回可直接落库/展示的结果结构。"""
     now = now or datetime.now(CN_TZ)
     if now.tzinfo is None:
         now = now.replace(tzinfo=CN_TZ)
@@ -873,11 +902,11 @@ def score_blogger(
     sample_size = coverage_denominator if coverage_denominator is not None else total_notes
     coverage_rate = fetched / sample_size if sample_size else 0.0
     if coverage_rate >= 0.8 and fetched >= 30:
-        confidence = "high"
+        coverage_conf = "high"
     elif coverage_rate >= 0.5 and fetched >= 15:
-        confidence = "medium"
+        coverage_conf = "medium"
     else:
-        confidence = "low"
+        coverage_conf = "low"
 
     base = {
         "note_count": len(notes),
@@ -889,12 +918,14 @@ def score_blogger(
             "fetched_notes": fetched,
             "coverage_rate": round(coverage_rate, 4),
         },
-        "confidence": confidence,
+        "confidence": coverage_conf,
         "dimensions": {},
         "overall": None,
+        "overall_score_suppressed": False,
         "grass_planting": None,
         "growth_potential": None,
         "decision": None,
+        "stage": None,
         "follower_history": _summarize_follower_history(follower_history),
         "anomalies": [],
         "insights": [],
@@ -905,43 +936,53 @@ def score_blogger(
     if sampled and sample_size:
         base["insights"].append(f"抽样分析：共 {total_notes} 篇，均匀抽取 {sample_size} 篇真实详情")
 
-    if confidence == "low":
+    # 闸门 1：覆盖率不达标 → insufficient_data（不评分、不判定低质）
+    if coverage_conf == "low":
         base["insights"].append("数据不足，暂不评分")
-        base["decision"] = {"status": "no_data", "quadrant": "数据不足", "recommendation": "数据不足，暂不评分"}
+        base["decision"] = {
+            "recommendation": "insufficient_data", "summary": "真实样本覆盖率不足，暂不评分",
+            "reasons": [f"已验证样本 {fetched}/{sample_size or 0}，覆盖率 {coverage_rate:.0%}"],
+            "red_flags": [], "low_quality": False,
+        }
         return base
 
     tier = _tier_for(follower_count)
+    gate_cfg = load_scoring_config()["gate"]
+    # 兼容字段（前端过渡期保留；新前端切走后移除）
     grass = _score_grass_planting(real, follower_count, tier)
     growth = _score_growth_potential(real, follower_count, now, follower_history)
     base["grass_planting"] = grass
     base["growth_potential"] = growth
-    base["decision"] = _build_decision(grass, growth)
-    std_values = _type_standardized(real)
-    iq = _score_interaction_quality(real, follower_count, tier, now)
-    stability = _score_stable_output(real, now=now)
+
+    # 五维评分
+    seeding = _score_seeding_depth(real, follower_count, tier, now, comment_analysis=comment_analysis)
+    vert = food_verticality(real)
+    stable = _score_stable_output(real, now)
     sustained = _score_sustained_operation(real, now)
-    trend = _score_trend(std_values, real)
+    growth_trend = _score_growth_trend(real, follower_count, now, follower_history, tier)
 
     dimensions = {
-        "interaction_quality": {"score": iq["score"], "confidence": "high", "detail": {"rate_percent": iq["rate"], "sample": iq["sample"]}},
-        "content_stability": {"score": stability["score"], "confidence": stability["confidence"], "detail": stability["detail"]},
+        "seeding_depth": {"score": seeding["score"], "confidence": seeding["confidence"], "detail": seeding["detail"]},
+        "verticality": {"score": vert["score"], "confidence": vert["confidence"], "detail": vert["detail"]},
+        "stable_output": {"score": stable["score"], "confidence": stable["confidence"], "detail": stable["detail"]},
         "sustained_operation": {"score": sustained["score"], "confidence": "high", "detail": {"weekly_notes": sustained["weekly_notes"], "freshness_days": sustained["freshness_days"]}},
+        "growth_trend": {"score": growth_trend["score"], "confidence": growth_trend["confidence"], "detail": growth_trend["detail"]},
     }
-    weights = dict(DIMENSION_WEIGHTS)
-    if trend["skipped"]:
-        dimensions["trend"] = {"score": None, "confidence": "low", "detail": {"reason": trend["reason"]}}
-        del weights["trend"]
-        base["insights"].append(trend["reason"])
-    else:
-        dimensions["trend"] = {"score": trend["score"], "confidence": "high", "detail": {"ratio": trend["ratio"], "note": trend["note"]}}
+    base["dimensions"] = dimensions
 
+    # 权重归一化：被跳过/降权的维度处理
+    weights = dict(load_scoring_config()["weights"])
+    if growth_trend["score"] is None:
+        del weights["growth_trend"]
+        base["insights"].append(growth_trend["detail"].get("reason") or "增长趋势样本不足，跳过")
+    elif growth_trend["confidence"] == "low":
+        weights["growth_trend"] *= 0.5  # 无快照降权
     total_weight = sum(weights.values())
     overall = sum(dimensions[k]["score"] * weights[k] for k in weights if dimensions[k].get("score") is not None) / total_weight
     overall = round(overall, 1)
     level, desc = _level_for(overall)
 
-    # 资格闸门（优先级：覆盖率→刷量→倒挂→停更）
-    # 2. 刷量嫌疑
+    # 闸门 2：刷量嫌疑（含赞藏比倒挂辅助）
     likes = [int(n["stats"].get("liked", 0) or 0) for n in real]
     median_likes = statistics.median(likes) if likes else 0.0
     fake_hits = 0
@@ -950,33 +991,65 @@ def score_blogger(
             st = n["stats"]
             liked = int(st.get("liked", 0) or 0)
             extra = int(st.get("collected", 0) or 0) + int(st.get("comments", 0) or 0) + int(st.get("shared", 0) or 0)
-            if liked >= median_likes * 3 and (extra / liked if liked else 0) < FAKE_RATIO_THRESHOLD:
+            if liked >= median_likes * 3 and (extra / liked if liked else 0) < float(gate_cfg["fake_extra_ratio"]):
                 fake_hits += 1
     fake_ratio = fake_hits / len(real) if real else 0.0
-    if fake_ratio > VOTE_BAN_RATIO:
-        base["anomalies"].append({"type": "fake_engagement", "level": "block", "detail": "疑似刷量笔记占比过高"})
+    collect_inversion = follower_count > 0 and _collect_like_inversion_hit(real, follower_count, tier)
+    if fake_ratio > float(gate_cfg["fake_ratio"]) or collect_inversion:
+        base["anomalies"].append({"type": "fake_engagement", "level": "block", "detail": "疑似刷量（赞藏倒挂或互动结构异常）"})
         base["overall"] = None
+        base["overall_score_suppressed"] = True
         base["grass_planting"] = None
         base["growth_potential"] = None
-        base["decision"] = {"status": "blocked", "quadrant": "一票否决", "recommendation": "疑似刷量，不建议合作"}
+        base["decision"] = {
+            "recommendation": "not_recommended", "summary": "疑似刷量，不建议合作",
+            "reasons": ["互动结构异常（高赞低藏或赞藏比倒挂）"], "red_flags": [
+                {"type": "fake_engagement", "level": "block", "detail": "疑似刷量"}],
+            "low_quality": True,
+        }
         base["insights"].append("疑似刷量，不建议合作")
-        base["dimensions"] = dimensions
-        base["result_forced"] = True
         return base
 
-    # 3. 粉丝互动倒挂
-    if iq["rate"] < tier["min_healthy"]:
+    # 阶段判定（独立标签）
+    stage = _classify_stage(follower_count, real, now, follower_history)
+    base["stage"] = stage
+
+    # 闸门 3：粉丝互动倒挂
+    iq_rate = _score_interaction_quality(real, follower_count, tier, now)["rate"]
+    if iq_rate < float(tier.get("min_healthy", tier.get("min_healthy_rate", 0.0))):
         base["anomalies"].append({"type": "interaction_inversion", "level": "cap", "detail": "粉丝互动倒挂"})
         level = "待观察"
         desc = "粉丝互动倒挂，等级封顶待观察"
 
-    # 4. 发布停滞
-    if sustained["freshness_days"] is not None and sustained["freshness_days"] > STALE_DAYS:
+    # 闸门 4：发布停滞（有意叠加：维度已在新鲜度吃亏，等级再降一档）
+    if sustained["freshness_days"] is not None and sustained["freshness_days"] > int(gate_cfg["stale_days"]):
         base["anomalies"].append({"type": "stale", "level": "downgrade", "detail": "最新笔记发布时间超过60天"})
         level = _downgrade_level(level)
         base["insights"].append("账号可能已停更")
 
-    base["dimensions"] = dimensions
-    base["overall"] = {"score": overall, "level": level, "description": desc}
-    base["insights"].append(f"综合评分 {overall}，等级：{level}")
+    # 闸门 5：涨粉异常（且关系，T1 放宽）
+    if growth_rate := _latest_growth_rate(follower_history):
+        std_now = _type_standardized(real)
+        recent_std = [s for n, s in zip(real, std_now) if _parse_dt(n["published_at"]) is not None and _parse_dt(n["published_at"]) >= now - timedelta(days=30)]
+        older_std = [s for n, s in zip(real, std_now) if _parse_dt(n["published_at"]) is not None and now - timedelta(days=90) <= _parse_dt(n["published_at"]) < now - timedelta(days=30)]
+        m_recent = statistics.median(recent_std) if recent_std else 0.0
+        m_older = statistics.median(older_std) if older_std else 0.0
+        interaction_drop = max(0.0, 1.0 - (m_recent / m_older if m_older > 0 else 0.0))
+        flag = _growth_anomaly(growth_rate, interaction_drop, follower_count)
+        if flag:
+            base["anomalies"].append(flag)
+            base["insights"].append(flag["detail"])
+
+    # 合作建议（严格互斥顺序判定）
+    recommendation, rec_summary = _recommendation(overall, level, stage, base["anomalies"])
+    base["overall"] = {"score": overall, "level": level, "description": desc, "score_suppressed": False}
+    base["confidence"] = _overall_confidence(dimensions, coverage_conf)
+    base["decision"] = {
+        "recommendation": recommendation,
+        "summary": rec_summary,
+        "reasons": _build_reasons(dimensions, stage),
+        "red_flags": [{"type": a["type"], "level": a["level"], "detail": a["detail"]} for a in base["anomalies"]],
+        "low_quality": False,
+    }
+    base["insights"].append(f"综合评分 {overall}，等级：{level}；阶段：{stage['label']}")
     return base

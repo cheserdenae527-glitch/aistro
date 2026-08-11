@@ -22,10 +22,21 @@ def test_high_quality_account():
     notes = [_mk(i, now - timedelta(days=i * 2), 3000, 900, 240, 120) for i in range(40)]
     for i in range(8):
         notes[i]["stats"] = {"liked": 12000, "collected": 3600, "comments": 960, "shared": 480}
-    res = score_blogger(notes, follower_count=50000, total_notes=40, now=now)
+    for n in notes:
+        n["tags"] = ["探店", "美食"]
+    history = [
+        {"snapshot_at": (now - timedelta(days=35)).isoformat(), "fans": 45000},
+        {"snapshot_at": (now - timedelta(days=5)).isoformat(), "fans": 50000},
+    ]
+    res = score_blogger(notes, follower_count=50000, total_notes=40, now=now, follower_history=history)
     assert res["confidence"] == "high"
     assert res["overall"] is not None
     assert res["overall"]["score"] >= 70
+    assert res["stage"]["label"] in ("成长", "成熟")
+    assert res["decision"]["recommendation"] in ("priority", "ok", "caution")
+    assert set(res["dimensions"].keys()) == {
+        "seeding_depth", "verticality", "stable_output", "sustained_operation", "growth_trend",
+    }
     assert res["anomalies"] == []
 
 
@@ -36,6 +47,9 @@ def test_fake_engagement_blocks():
         notes[i]["stats"] = {"liked": 100000, "collected": 0, "comments": 0, "shared": 0}
     res = score_blogger(notes, follower_count=50000, total_notes=40, now=now)
     assert res["overall"] is None
+    assert res["overall_score_suppressed"] is True
+    assert res["decision"]["recommendation"] == "not_recommended"
+    assert res["decision"]["low_quality"] is True
     assert any(a["type"] == "fake_engagement" and a["level"] == "block" for a in res["anomalies"])
     assert "疑似刷量" in res["insights"][-1]
 
@@ -55,6 +69,7 @@ def test_low_coverage_no_score():
     res = score_blogger(notes, follower_count=50000, total_notes=40, now=now)
     assert res["confidence"] == "low"
     assert res["overall"] is None
+    assert res["decision"]["recommendation"] == "insufficient_data"
 
 
 def test_trend_skipped_for_small_sample():
@@ -76,8 +91,7 @@ def test_grass_growth_scores_present():
     res = score_blogger(notes, follower_count=50000, total_notes=30, now=now)
     assert res["grass_planting"]["score"] is not None
     assert res["growth_potential"]["score"] is not None
-    assert res["decision"]["status"] == "ok"
-    assert res["decision"]["quadrant"] in ("首选合作", "短期投放", "潜力股", "过滤")
+    assert res["decision"]["recommendation"] in ("priority", "ok", "caution")
 
 
 def test_growth_renormalizes_without_follower_history():
@@ -94,7 +108,8 @@ def test_low_coverage_decision_no_data():
     now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
     notes = [_mk(i, now - timedelta(days=i * 2), 1000, 300, 80, 40) for i in range(5)]
     res = score_blogger(notes, follower_count=50000, total_notes=40, now=now)
-    assert res["decision"]["status"] == "no_data"
+    assert res["decision"]["recommendation"] == "insufficient_data"
+    assert res["decision"]["low_quality"] is False
 
 
 def test_follower_growth_detected_from_history():
@@ -481,3 +496,25 @@ def test_overall_confidence_missing_seeding_depth_no_crash():
     }
     # 缺 seeding_depth：不抛 KeyError，且因非核心单 low 且无 seeding_depth（视为非 low）→ medium
     assert _overall_confidence(dims, coverage_conf="high") == "medium"
+
+
+def test_gate_collect_like_inversion_blocks():
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    # 高赞低藏：赞藏比中位数 < 0.2，且篇均收藏/粉丝极低 → 刷量嫌疑闸门
+    notes = [_mk(i, now - timedelta(days=i * 2), 5000, 50, 10, 2) for i in range(40)]
+    res = score_blogger(notes, follower_count=50000, total_notes=40, now=now)
+    assert res["overall"] is None
+    assert res["overall_score_suppressed"] is True
+    assert res["decision"]["recommendation"] == "not_recommended"
+    assert any(a["type"] == "fake_engagement" and a["level"] == "block" for a in res["anomalies"])
+
+
+def test_growth_trend_no_snapshot_overall_medium():
+    now = datetime(2026, 8, 11, 12, 0, 0, tzinfo=CN_TZ)
+    # 无快照 → growth_trend confidence low（非 None），单非核心 low → 整体 medium
+    notes = [_mk(i, now - timedelta(days=i * 2), 3000, 1200, 300, 200) for i in range(30)]
+    for n in notes:
+        n["tags"] = ["探店", "美食"]
+    res = score_blogger(notes, follower_count=50000, total_notes=30, now=now, follower_history=None)
+    assert res["confidence"] == "medium"
+    assert res["dimensions"]["growth_trend"]["confidence"] == "low"
