@@ -376,3 +376,56 @@ def test_collect_like_inversion_hit():
     # 正常：赞藏比 0.53 ≥ 0.2 → False
     good = [_mk(i, now - timedelta(days=i * 2), 3000, 1600, 300, 200) for i in range(30)]
     assert _collect_like_inversion_hit(good, fans=50000, tier=_tier_for(50000)) is False
+
+
+def test_overall_confidence_single_noncore_low():
+    from app.services.blogger_scoring import _overall_confidence
+
+    dims = {
+        "seeding_depth": {"score": 80.0, "confidence": "high"},
+        "verticality": {"score": 85.0, "confidence": "high"},
+        "stable_output": {"score": 70.0, "confidence": "high"},
+        "sustained_operation": {"score": 75.0, "confidence": "high"},
+        "growth_trend": {"score": 60.0, "confidence": "low"},  # 单个非核心维度 low
+    }
+    assert _overall_confidence(dims, coverage_conf="high") == "medium"
+
+
+def test_overall_confidence_seeding_low():
+    from app.services.blogger_scoring import _overall_confidence
+
+    dims = {
+        "seeding_depth": {"score": 30.0, "confidence": "low"},
+        "verticality": {"score": 85.0, "confidence": "high"},
+        "stable_output": {"score": 70.0, "confidence": "high"},
+        "sustained_operation": {"score": 75.0, "confidence": "high"},
+        "growth_trend": {"score": 80.0, "confidence": "high"},
+    }
+    assert _overall_confidence(dims, coverage_conf="high") == "low"
+
+
+def test_overall_confidence_two_noncore_low():
+    from app.services.blogger_scoring import _overall_confidence
+
+    dims = {
+        "seeding_depth": {"score": 80.0, "confidence": "high"},
+        "verticality": {"score": 45.0, "confidence": "low"},
+        "stable_output": {"score": 70.0, "confidence": "high"},
+        "sustained_operation": {"score": 75.0, "confidence": "high"},
+        "growth_trend": {"score": 40.0, "confidence": "low"},
+    }
+    assert _overall_confidence(dims, coverage_conf="high") == "low"
+
+
+def test_overall_confidence_coverage_low():
+    from app.services.blogger_scoring import _overall_confidence
+
+    dims = {
+        "seeding_depth": {"score": 80.0, "confidence": "high"},
+        "verticality": {"score": 85.0, "confidence": "high"},
+        "stable_output": {"score": 70.0, "confidence": "high"},
+        "sustained_operation": {"score": 75.0, "confidence": "high"},
+        "growth_trend": {"score": 80.0, "confidence": "high"},
+    }
+    # 覆盖率 low 由闸门 1 兜底：即使五维全 high 也取 low
+    assert _overall_confidence(dims, coverage_conf="low") == "low"
