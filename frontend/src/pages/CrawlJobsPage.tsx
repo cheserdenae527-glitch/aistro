@@ -482,7 +482,7 @@ export default function CrawlJobsPage() {
                     <Progress percent={analysisProgress} status="active" style={{ maxWidth: 480, margin: '0 auto' }} />
                     <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>{analysisStatus || '正在分析...'}</Text>
                   </div>
-                ) : <UserAnalysisPanel user={analysisUser} data={analysisData} onOpenNote={(n) => setDetailNote(n)} taskId={analysisTaskId} onReAnalyze={() => analysisUser && handleAnalyzeUser(analysisUser)} />}
+                ) : <UserAnalysisPanel user={analysisUser} data={analysisData} onOpenNote={(n) => setDetailNote(n)} taskId={analysisTaskId} onReAnalyze={() => analysisUser && handleAnalyzeUser(analysisUser)} onAnalyzeUser={(u) => handleAnalyzeUser(u as XhsUser)} />}
               </>
             ) },
             { key:'batch', label:'批量分析', children: (

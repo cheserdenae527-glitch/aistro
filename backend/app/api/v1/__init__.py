@@ -18,5 +18,6 @@ from app.api.v1.media import router as media_router
 from app.api.v1.settings import router as settings_router
 from app.api.v1.browser_bridge import router as browser_bridge_router
 from app.api.v1.knowledge import router as knowledge_router
+from app.api.v1.pgy import router as pgy_router
 
-routers = [auth_router, merchants_router, shops_router, crawl_jobs_router, crawler_pool_router, notes_router, images_router, subscriptions_router, profiles_router, designs_router, reviews_router, studio_router, maps_router, district_router, deals_router, live_router, media_router, settings_router, browser_bridge_router, knowledge_router]
+routers = [auth_router, merchants_router, shops_router, crawl_jobs_router, crawler_pool_router, notes_router, images_router, subscriptions_router, profiles_router, designs_router, reviews_router, studio_router, maps_router, district_router, deals_router, live_router, media_router, settings_router, browser_bridge_router, knowledge_router, pgy_router]

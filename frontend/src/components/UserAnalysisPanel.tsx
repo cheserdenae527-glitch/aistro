@@ -1,12 +1,13 @@
-import { Alert, Button, Card, Col, Empty, message, Row, Space, Spin, Statistic, Table, Tag, Typography } from 'antd';
-import { useState } from 'react';
-import { SyncOutlined, TrophyOutlined } from '@ant-design/icons';
+import { Alert, Avatar, Button, Card, Col, Empty, message, Row, Space, Spin, Statistic, Table, Tag, Typography } from 'antd';
+import { useCallback, useEffect, useState } from 'react';
+import { BarChartOutlined, SyncOutlined, TrophyOutlined } from '@ant-design/icons';
 import {
   CartesianGrid, Legend, Line, LineChart, PolarAngleAxis, PolarGrid, Radar, RadarChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
 import SubscribeButton from './SubscribeButton';
 import { getAnalysisSummary } from '../services/analysis';
+import { fetchCreatorProfile, fetchFansSummary, fetchSimilarKol, PgyCreatorProfile, PgyFansSummary, PgySimilarKol } from '../services/pgy';
 
 const { Title, Text } = Typography;
 
@@ -46,15 +47,59 @@ function weighted(stats: any): number {
   return (stats?.liked || 0) * 1 + (stats?.collected || 0) * 4 + (stats?.comments || 0) * 5 + (stats?.shared || 0) * 6;
 }
 
-export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onReAnalyze }: {
+export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onReAnalyze, onAnalyzeUser }: {
   user: { user_id?: string; nickname: string; fans: number } | null;
   data: any;
   onOpenNote: (note: any) => void;
   taskId?: string | null;
   onReAnalyze?: () => void;
+  onAnalyzeUser?: (u: { user_id: string; nickname: string; fans: number; avatar?: string; notes?: number; desc?: string }) => void;
 }) {
   const [summary, setSummary] = useState<any>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+
+  // 蒲公英官方数据：创作者资料 / 粉丝摘要 / 相似创作者
+  const [pgyProfile, setPgyProfile] = useState<PgyCreatorProfile | null>(null);
+  const [pgyFans, setPgyFans] = useState<PgyFansSummary | null>(null);
+  const [pgySimilar, setPgySimilar] = useState<PgySimilarKol[]>([]);
+  const [pgyLoading, setPgyLoading] = useState(false);
+  const [pgyError, setPgyError] = useState('');
+  const [pgyLoaded, setPgyLoaded] = useState(false);
+
+  const loadPgy = useCallback(async (uid: string) => {
+    setPgyLoading(true);
+    setPgyError('');
+    try {
+      const [p, f, s] = await Promise.all([
+        fetchCreatorProfile(uid),
+        fetchFansSummary(uid),
+        fetchSimilarKol(uid),
+      ]);
+      setPgyProfile(p.ok ? (p.data as PgyCreatorProfile) : null);
+      setPgyFans(f.ok ? (f.data as PgyFansSummary) : null);
+      setPgySimilar(s.ok ? (s.data?.kols || []) : []);
+      const errs = [p, f, s].map((x) => (x.ok ? '' : x.error || '')).filter(Boolean);
+      setPgyError(errs.join('；'));
+    } catch (e: any) {
+      setPgyError(e?.response?.data?.detail || e?.message || '蒲公英数据加载失败');
+    } finally {
+      setPgyLoading(false);
+      setPgyLoaded(true);
+    }
+  }, []);
+
+  // 切换分析对象时清空上一位博主的 AI 总结与蒲公英数据，避免新旧数据错位展示
+  useEffect(() => {
+    setSummary(null);
+    setSummaryLoading(false);
+    setPgyProfile(null);
+    setPgyFans(null);
+    setPgySimilar([]);
+    setPgyError('');
+    setPgyLoaded(false);
+    const uid = user?.user_id;
+    if (uid) loadPgy(uid);
+  }, [taskId, user?.user_id, loadPgy]);
   if (!data) return <Empty style={{ padding: '64px 0' }} description="尚未生成分析结果" />;
 
   const cov = data.coverage || {};
@@ -68,7 +113,6 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
   const timeline = (data.timeline?.items || []).map((it: any) => ({ ...it, label: it.label || it.key }));
   const overall = data.overall;
   const anomalies = data.anomalies || [];
-  const insights = data.insights || [];
   const fh = data.follower_history || null;
 
   // 新格式 = 五维 dimensions 或 新 decision 结构（含 low_quality；数据不足的闸门1结果 dimensions 为空但仍是新格式）
@@ -231,11 +275,6 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
         </Card>
       )}
 
-      {insights.length > 0 && (
-        <Alert type="info" showIcon style={{ marginBottom: 12 }} message="分析洞察"
-          description={<ul style={{ margin: 0, paddingLeft: 18 }}>{insights.map((t: string, i: number) => <li key={i}>{t}</li>)}</ul>} />
-      )}
-
       <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
         <Col xs={24} xl={14}>
           <Card size="small" title="真实互动趋势" extra={<Text type="secondary" style={{ fontSize: 12 }}>{timeline.length ? '按周' : '暂无时间数据'}</Text>}>
@@ -306,6 +345,27 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
         ) : null;
       })()}
 
+      <Card size="small" title="蒲公英官方数据" style={{ marginBottom: 12 }}
+        extra={pgyLoading ? <Spin size="small" /> : (
+          <Button size="small" type="link" icon={<SyncOutlined />} disabled={!user?.user_id} onClick={() => user?.user_id && loadPgy(user.user_id)}>刷新</Button>
+        )}>
+        {pgyLoaded && !pgyLoading && !pgyProfile && !pgyFans && pgySimilar.length === 0 ? (
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={pgyError || '暂无蒲公英数据（该博主可能未入驻蒲公英）'} style={{ padding: 16 }} />
+        ) : (
+          <Row gutter={[12, 12]}>
+            <Col xs={24} md={8}>
+              <CreatorProfileCard data={pgyProfile} />
+            </Col>
+            <Col xs={24} md={8}>
+              <FansSummaryCard data={pgyFans} />
+            </Col>
+            <Col xs={24} md={8}>
+              <SimilarKolCard data={pgySimilar} onAnalyze={onAnalyzeUser} />
+            </Col>
+          </Row>
+        )}
+      </Card>
+
       <Card size="small" title="全部真实笔记（点击行查看详情）">
         <Table
           rowKey={(r: any) => r.platform_note_id || r.id || Math.random().toString()}
@@ -322,6 +382,116 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
         </>
       )}
     </div>
+  );
+}
+
+function fmtPrice(v: number | null | undefined): string {
+  if (v == null) return '-';
+  if (v <= 0) return '未开放';
+  return '¥' + Number(v).toLocaleString('zh-CN', { maximumFractionDigits: 0 });
+}
+
+function PgyTagList({ tags, color }: { tags?: string[]; color?: string }) {
+  if (!tags || tags.length === 0) return <Text type="secondary">-</Text>;
+  return (
+    <Space size={[4, 4]} wrap>
+      {tags.slice(0, 6).map((t) => <Tag key={t} color={color}>{t}</Tag>)}
+    </Space>
+  );
+}
+
+function CreatorProfileCard({ data }: { data: PgyCreatorProfile | null }) {
+  if (!data) return <Card size="small" title="创作者资料"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无资料" style={{ padding: 12 }} /></Card>;
+  const contentTags = (data.contentTags || []);
+  const catTags = contentTags.flatMap((c) => [c.taxonomy1Tag, ...(c.taxonomy2Tags || [])].filter(Boolean) as string[]);
+  return (
+    <Card size="small" title="创作者资料" extra={<Text type="secondary" style={{ fontSize: 12 }}>蒲公英官方</Text>}>
+      <Space direction="vertical" size={10} style={{ width: '100%' }}>
+        <Space size={10}>
+          <Avatar src={data.headPhoto} size={48} />
+          <div>
+            <Text strong style={{ fontSize: 15 }}>{data.name || '-'}</Text>
+            <div style={{ fontSize: 12, color: '#888' }}>红书号 {data.redId || '-'}{data.gender ? ` · ${data.gender}` : ''}</div>
+            <div style={{ fontSize: 12, color: '#888' }}>{data.location || ''}</div>
+          </div>
+        </Space>
+        <Row gutter={[8, 8]}>
+          <Col span={12}><Statistic title="粉丝" value={fmtNum(data.fansCount)} valueStyle={{ fontSize: 16 }} /></Col>
+          <Col span={12}><Statistic title="图文报价" value={fmtPrice(data.picturePrice)} valueStyle={{ fontSize: 16, color: '#eb2f96' }} /></Col>
+          <Col span={12}><Statistic title="视频报价" value={fmtPrice(data.videoPrice)} valueStyle={{ fontSize: 16, color: '#722ed1' }} /></Col>
+          <Col span={12}><Statistic title="赞藏总数" value={fmtNum(data.likeCollectCountInfo)} valueStyle={{ fontSize: 16 }} /></Col>
+        </Row>
+        {data.tradeType ? <div style={{ fontSize: 12 }}><Text type="secondary">可合作类目：</Text> {data.tradeType}</div> : null}
+        {catTags.length > 0 ? (
+          <div style={{ fontSize: 12 }}>
+            <Text type="secondary">内容标签：</Text>
+            <PgyTagList tags={catTags} color="geekblue" />
+          </div>
+        ) : null}
+        {(data.featureTags || []).length > 0 ? (
+          <div style={{ fontSize: 12 }}>
+            <Text type="secondary">特征标签：</Text>
+            <PgyTagList tags={data.featureTags} />
+          </div>
+        ) : null}
+      </Space>
+    </Card>
+  );
+}
+
+function FansSummaryCard({ data }: { data: PgyFansSummary | null }) {
+  if (!data) return <Card size="small" title="粉丝摘要"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无摘要" style={{ padding: 12 }} /></Card>;
+  const items = [
+    { label: '粉丝总数', value: fmtNum(data.fansNum), extra: '' },
+    { label: '近30天涨粉', value: fmtNum(data.fansIncreaseNum), extra: data.fansGrowthRate != null ? `${data.fansGrowthRate}%` : '' },
+    { label: '活跃粉丝（近28天）', value: fmtNum(data.activeFansL28), extra: data.activeFansRate != null ? `${data.activeFansRate}%` : '' },
+    { label: '互动粉丝（近30天）', value: fmtNum(data.engageFansL30), extra: data.engageFansRate != null ? `${data.engageFansRate}%` : '' },
+    { label: '阅读粉丝（近30天）', value: fmtNum(data.readFansIn30), extra: data.readFansRate != null ? `${data.readFansRate}%` : '' },
+    { label: '付费粉丝（近30天）', value: fmtNum(data.payFansUserNum30d), extra: data.payFansUserRate30d != null ? `${data.payFansUserRate30d}%` : '' },
+  ];
+  return (
+    <Card size="small" title="粉丝摘要" extra={<Text type="secondary" style={{ fontSize: 12 }}>蒲公英官方</Text>}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
+        {items.map((it) => (
+          <div key={it.label} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', borderBottom: '1px dashed #f0f0f0', paddingBottom: 6 }}>
+            <Text style={{ fontSize: 12 }}>{it.label}</Text>
+            <Space size={4}>
+              <Text strong style={{ fontSize: 13 }}>{it.value}</Text>
+              {it.extra ? <Text type="secondary" style={{ fontSize: 12 }}>({it.extra})</Text> : null}
+            </Space>
+          </div>
+        ))}
+        {data.fansGrowthBeyondRate != null && (
+          <Text type="secondary" style={{ fontSize: 12 }}>涨粉速度超越 {data.fansGrowthBeyondRate}% 同类博主</Text>
+        )}
+        {data.activeFansBeyondRate != null && (
+          <Text type="secondary" style={{ fontSize: 12 }}>活跃粉丝占比超越 {data.activeFansBeyondRate}% 同类博主</Text>
+        )}
+      </div>
+    </Card>
+  );
+}
+
+function SimilarKolCard({ data, onAnalyze }: { data: PgySimilarKol[]; onAnalyze?: (u: { user_id: string; nickname: string; fans: number; avatar?: string; notes?: number; desc?: string }) => void }) {
+  if (!data || data.length === 0) return <Card size="small" title="相似创作者"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无相似创作者" style={{ padding: 12 }} /></Card>;
+  return (
+    <Card size="small" title={`相似创作者（${data.length}）`} extra={<Text type="secondary" style={{ fontSize: 12 }}>蒲公英官方</Text>}>
+      <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 320, overflow: 'auto' }}>
+        {data.map((k, i) => (
+          <div key={k.userId || i} style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <Avatar src={k.headPhoto} size={36} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <Text strong style={{ fontSize: 13 }}>{k.name || '-'}</Text>
+              <div style={{ fontSize: 12, color: '#888' }}>粉丝 {fmtNum(k.fansCount)} · 图文 {fmtPrice(k.picturePrice)} · 视频 {fmtPrice(k.videoPrice)}</div>
+              {(k.featureTags || []).length > 0 ? <PgyTagList tags={(k.featureTags || []).slice(0, 3)} /> : null}
+            </div>
+            {onAnalyze ? (
+              <Button size="small" icon={<BarChartOutlined />} onClick={() => onAnalyze({ user_id: k.userId || '', nickname: k.name || '', fans: k.fansCount || 0, avatar: k.headPhoto, notes: k.totalNoteCount || 0, desc: '' })}>分析</Button>
+            ) : null}
+          </div>
+        ))}
+      </div>
+    </Card>
   );
 }
 

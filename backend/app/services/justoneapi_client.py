@@ -37,13 +37,13 @@ def _cache_dir() -> Path:
     return Path(settings.LOCAL_STORAGE_DIR) / "justoneapi_cache"
 
 
-def _cache_path(user_id: str) -> Path:
-    safe = "".join(ch if ch.isalnum() else "_" for ch in user_id)
+def _cache_path(key: str) -> Path:
+    safe = "".join(ch if ch.isalnum() else "_" for ch in key)
     return _cache_dir() / f"{safe}.json"
 
 
-def _cache_read(user_id: str) -> dict | None:
-    path = _cache_path(user_id)
+def _cache_read(user_id: str, key: str | None = None) -> dict | None:
+    path = _cache_path(key or user_id)
     try:
         if not path.exists():
             return None
@@ -55,10 +55,10 @@ def _cache_read(user_id: str) -> dict | None:
         return None
 
 
-def _cache_write(user_id: str, data: dict) -> None:
+def _cache_write(user_id: str, data: dict, key: str | None = None) -> None:
     try:
         _cache_dir().mkdir(parents=True, exist_ok=True)
-        _cache_path(user_id).write_text(
+        _cache_path(key or user_id).write_text(
             json.dumps({"fetched_at": time.time(), "data": data}, ensure_ascii=False),
             encoding="utf-8",
         )
@@ -180,3 +180,97 @@ def merge_follower_history(local_history: list[dict], platform_result: dict) -> 
         key = _cn_date_key(str(h.get("snapshot_at")))
         merged[key] = {**h, "source": "justoneapi"}
     return sorted(merged.values(), key=lambda x: str(x.get("snapshot_at")))
+
+
+# ---------------------------------------------------------------------------
+# 蒲公英补充数据：创作者资料 / 粉丝摘要 / 相似创作者（JustOneAPI 官方接口）
+# ---------------------------------------------------------------------------
+
+_PGY_CACHE_PREFIX = "pgy"
+
+
+def _pgy_cache_key(kind: str, user_id: str, *suffix: str) -> str:
+    parts = [_PGY_CACHE_PREFIX, kind, user_id, *map(str, suffix)]
+    return "_".join("".join(ch if ch.isalnum() else "_" for ch in part) for part in parts)
+
+
+def _pgy_get(path: str, params: dict) -> tuple[dict | None, str]:
+    """对 JustOneAPI 发 GET，返回 (body, error)。错误码与 fetch_follower_history 保持一致。"""
+    token = settings.JUST_ONE_API_TOKEN
+    if not token:
+        return None, "未配置 JustOneAPI Token"
+    url = settings.JUST_ONE_API_BASE_URL.rstrip("/") + path
+    try:
+        resp = httpx.get(
+            url,
+            params={"token": token, **params},
+            timeout=settings.JUST_ONE_API_TIMEOUT_SECONDS,
+            follow_redirects=True,
+        )
+        resp.raise_for_status()
+        body = resp.json()
+    except Exception as exc:
+        return None, str(exc)
+    code = body.get("code")
+    if code != 0:
+        message = body.get("message") or ""
+        hint = "Token 无效或余额不足" if code in (100, 600, 601, 602) else "平台暂未收录该博主或接口异常"
+        return None, f"JustOneAPI 返回 {code}: {message or hint}"
+    return body, ""
+
+
+def fetch_creator_profile(user_id: str) -> dict:
+    """蒲公英创作者资料 + 合作报价。返回 {"ok", "data", "error", "cached"}。"""
+    cache_key = _pgy_cache_key("creator_profile", user_id)
+    cached = _cache_read(user_id, key=cache_key)
+    if cached is not None:
+        return {"ok": True, "data": cached, "error": "", "cached": True}
+    body, err = _pgy_get(
+        "/api/xiaohongshu-pgy/api/solar/cooperator/user/blogger/userId/v1",
+        {"userId": user_id},
+    )
+    if err:
+        return {"ok": False, "data": None, "error": err, "cached": False}
+    data = (body or {}).get("data") or {}
+    if not data:
+        return {"ok": False, "data": None, "error": "平台暂未收录该博主", "cached": False}
+    _cache_write(user_id, data, key=cache_key)
+    return {"ok": True, "data": data, "error": "", "cached": False}
+
+
+def fetch_fans_summary(user_id: str) -> dict:
+    """蒲公英粉丝摘要（活跃/互动/阅读/付费粉丝等）。返回 {"ok", "data", "error", "cached"}。"""
+    cache_key = _pgy_cache_key("fans_summary", user_id)
+    cached = _cache_read(user_id, key=cache_key)
+    if cached is not None:
+        return {"ok": True, "data": cached, "error": "", "cached": True}
+    body, err = _pgy_get(
+        "/api/xiaohongshu-pgy/api/solar/kol/dataV3/fansSummary/v1",
+        {"userId": user_id},
+    )
+    if err:
+        return {"ok": False, "data": None, "error": err, "cached": False}
+    data = (body or {}).get("data") or {}
+    if not data:
+        return {"ok": False, "data": None, "error": "平台暂未收录该博主", "cached": False}
+    _cache_write(user_id, data, key=cache_key)
+    return {"ok": True, "data": data, "error": "", "cached": False}
+
+
+def fetch_similar_kol(user_id: str, page_num: int = 1) -> dict:
+    """蒲公英相似创作者分页列表。返回 {"ok", "data", "error", "cached"}，data 含 kols 列表。"""
+    cache_key = _pgy_cache_key("similar_kol", user_id, page_num)
+    cached = _cache_read(user_id, key=cache_key)
+    if cached is not None:
+        return {"ok": True, "data": cached, "error": "", "cached": True}
+    body, err = _pgy_get(
+        "/api/xiaohongshu-pgy/api/solar/kol/get_similar_kol/v1",
+        {"userId": user_id, "pageNum": max(1, int(page_num))},
+    )
+    if err:
+        return {"ok": False, "data": None, "error": err, "cached": False}
+    data = (body or {}).get("data") or {}
+    if not data:
+        return {"ok": False, "data": None, "error": "平台暂未收录该博主", "cached": False}
+    _cache_write(user_id, data, key=cache_key)
+    return {"ok": True, "data": data, "error": "", "cached": False}
