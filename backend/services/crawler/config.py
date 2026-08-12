@@ -200,7 +200,8 @@ def _short_proxy_request_url() -> str | None:
     url = os.getenv("XHS_SHORT_PROXY_API", "").strip()
     if not url:
         return None
-    if "api" in parse_qs(urlparse(url).query):
+    qs = parse_qs(urlparse(url).query)
+    if "api" in qs or "secret_id" in qs:
         return url
     api_id = os.getenv("XHS_SHORT_PROXY_API_ID", "").strip()
     akey = os.getenv("XHS_SHORT_PROXY_AKEY", "").strip()
@@ -221,30 +222,65 @@ def _short_proxy_request_url() -> str | None:
 
 
 def _fetch_short_proxy_pool() -> list[dict]:
-    """调用站大爷短效代理 GetIP，返回 requests 风格 proxies 列表。"""
+    """获取短效代理池，返回 requests 风格 proxies 列表。
+
+    兼容两种 GetIP 返回：
+    - 站大爷 JSON（code=10001 + data.proxy_list）
+    - KDL 隧道代理 text（每行 host:port，或 host:port:user:pass）
+    可选账号密码：XHS_SHORT_PROXY_USERNAME / XHS_SHORT_PROXY_PASSWORD（全局账密模式）。
+    """
     request_url = _short_proxy_request_url()
     if not request_url:
         return []
     req = urllib.request.Request(request_url, headers={"User-Agent": "AiRestro/0.1"})
     with urllib.request.urlopen(req, timeout=10) as resp:
-        payload = json.loads(resp.read().decode("utf-8"))
-    code = str(payload.get("code", ""))
-    if code != "10001":
-        raise RuntimeError(f"短效代理获取失败: {payload.get('msg') or code}")
-    raw_list = ((payload.get("data") or {}).get("proxy_list")) or []
-    proxies = []
-    for item in raw_list:
-        ip = str(item.get("ip", "")).strip()
-        port = str(item.get("port", "")).strip()
-        if not ip or not port:
-            continue
-        url = f"http://{ip}:{port}"
-        proxies.append({
-            "http": url,
-            "https": url,
-            "source": "short_proxy",
-            "timeout": item.get("timeout"),
-        })
+        raw = resp.read().decode("utf-8").strip()
+    username = os.getenv("XHS_SHORT_PROXY_USERNAME", "").strip()
+    password = os.getenv("XHS_SHORT_PROXY_PASSWORD", "").strip()
+
+    def _build(host: str, port: str) -> dict | None:
+        host, port = host.strip(), port.strip()
+        if not host or not port:
+            return None
+        auth = f"{quote(username, safe='')}:{quote(password, safe='')}@" if username else ""
+        url = f"http://{auth}{host}:{port}"
+        return {"http": url, "https": url, "source": "short_proxy"}
+
+    try:
+        payload = json.loads(raw)
+    except ValueError:
+        payload = None
+
+    proxies: list[dict] = []
+    if isinstance(payload, dict):
+        code = str(payload.get("code", ""))
+        if code != "10001":
+            raise RuntimeError(f"短效代理获取失败: {payload.get('msg') or code}")
+        for item in ((payload.get("data") or {}).get("proxy_list")) or []:
+            if not isinstance(item, dict):
+                continue
+            proxy = _build(str(item.get("ip", "")), str(item.get("port", "")))
+            if proxy:
+                proxy["timeout"] = item.get("timeout")
+                proxies.append(proxy)
+    else:
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line or "://" in line:
+                continue
+            parts = line.split(":")
+            if len(parts) == 2:
+                proxy = _build(parts[0], parts[1])
+            elif len(parts) == 4:
+                host, port, u, pw = parts
+                proxy = _build(host, port)
+                if proxy and u:
+                    url = f"http://{quote(u, safe='')}:{quote(pw, safe='')}@{host}:{port}"
+                    proxy["http"] = proxy["https"] = url
+            else:
+                continue
+            if proxy:
+                proxies.append(proxy)
     return proxies
 
 
@@ -271,7 +307,20 @@ def get_short_proxy_pool() -> list[dict]:
     return list(proxies)
 
 
+def _proxy_source() -> str:
+    """当前代理源：XHS_PROXY_SOURCE 显式指定（tunnel/short/static），默认 tunnel→short→static。"""
+    return os.getenv("XHS_PROXY_SOURCE", "").strip().lower()
+
+
 def get_proxy_pool() -> list[dict]:
+    source = _proxy_source()
+    if source == "short":
+        short_proxies = get_short_proxy_pool()
+        if short_proxies:
+            return short_proxies
+        return load_config().get("proxies", [])
+    if source == "static":
+        return load_config().get("proxies", [])
     tunnels = get_tunnel_proxies()
     if tunnels:
         return tunnels
@@ -295,18 +344,22 @@ def proxy_pool_stats() -> dict:
     short = get_short_proxy_pool()
     cfg = load_config()
     static = cfg.get("proxies", []) or []
-    if tunnels:
-        source = "tunnel"
-        entries = [{"label": _proxy_label(p), "source": "tunnel"} for p in tunnels]
+    source_flag = _proxy_source()
+    if source_flag == "short":
+        if short:
+            source, entries = "short_proxy", [{"label": _proxy_label(p), "source": "short_proxy"} for p in short]
+        else:
+            source, entries = "static", [{"label": _proxy_label(p), "source": "static"} for p in static]
+    elif source_flag == "static":
+        source, entries = "static", [{"label": _proxy_label(p), "source": "static"} for p in static]
+    elif tunnels:
+        source, entries = "tunnel", [{"label": _proxy_label(p), "source": "tunnel"} for p in tunnels]
     elif short:
-        source = "short_proxy"
-        entries = [{"label": _proxy_label(p), "source": "short_proxy"} for p in short]
+        source, entries = "short_proxy", [{"label": _proxy_label(p), "source": "short_proxy"} for p in short]
     elif static:
-        source = "static"
-        entries = [{"label": _proxy_label(p), "source": "static"} for p in static]
+        source, entries = "static", [{"label": _proxy_label(p), "source": "static"} for p in static]
     else:
-        source = "none"
-        entries = []
+        source, entries = "none", []
     return {
         "source": source,
         "count": len(entries),

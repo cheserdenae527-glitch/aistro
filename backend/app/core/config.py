@@ -100,6 +100,16 @@ class Settings(BaseSettings):
     XHS_TUNNEL_REGION: str = ""
     XHS_TUNNEL_SID: str = ""
 
+    # --- 代理源选择与短效代理（KDL / 站大爷 GetIP） ---
+    # XHS_PROXY_SOURCE: tunnel(默认) / short / static
+    XHS_PROXY_SOURCE: str = ""
+    XHS_SHORT_PROXY_API: str = ""
+    XHS_SHORT_PROXY_USERNAME: str = ""
+    XHS_SHORT_PROXY_PASSWORD: str = ""
+    XHS_SHORT_PROXY_COUNT: int = 5
+    XHS_SHORT_PROXY_TIMESPAN: int = 3
+    XHS_SHORT_PROXY_REFRESH_SECONDS: int = 90
+
     # --- JustOneAPI（小红书蒲公英平台历史涨粉数据） ---
     # Token 在 JustOneAPI 控制台获取；留空时分析任务自动回退到本地订阅快照
     JUST_ONE_API_TOKEN: str = ""

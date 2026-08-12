@@ -258,6 +258,8 @@ def test_acquire_cookie_falls_back_to_legacy(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_proxy_pool_stats_with_tunnel(monkeypatch: pytest.MonkeyPatch):
+    # 默认代理源（不显式指定 XHS_PROXY_SOURCE 时走 tunnel→short→static 顺序）
+    monkeypatch.delenv("XHS_PROXY_SOURCE", raising=False)
     monkeypatch.delenv("XHS_TUNNEL_BACKUP_HOST", raising=False)
     monkeypatch.delenv("XHS_TUNNEL_BACKUP_HTTP_PORT", raising=False)
     monkeypatch.setenv("XHS_TUNNEL_USERNAME", "user")
