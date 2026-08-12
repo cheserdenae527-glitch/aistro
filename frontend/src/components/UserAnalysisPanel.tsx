@@ -71,7 +71,11 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
   const insights = data.insights || [];
   const fh = data.follower_history || null;
 
-  const isOldFormat = !data.dimensions || typeof data.dimensions !== 'object' || !('seeding_depth' in data.dimensions);
+  // 新格式 = 五维 dimensions 或 新 decision 结构（含 low_quality；数据不足的闸门1结果 dimensions 为空但仍是新格式）
+  const isOldFormat = !(
+    (data.dimensions && typeof data.dimensions === 'object' && 'seeding_depth' in data.dimensions) ||
+    (data.decision && typeof data.decision === 'object' && 'low_quality' in data.decision)
+  );
   const genSummary = async () => {
     if (!taskId) return;
     setSummaryLoading(true);
