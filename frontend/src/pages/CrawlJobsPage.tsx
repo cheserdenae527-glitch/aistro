@@ -88,6 +88,7 @@ export default function CrawlJobsPage() {
 
   // 博主分析
   const [analysisUser, setAnalysisUser] = useState<XhsUser | null>(null);
+const [analysisTaskId, setAnalysisTaskId] = useState<string | null>(null);
   const [analysisData, setAnalysisData] = useState<any | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
@@ -241,7 +242,7 @@ export default function CrawlJobsPage() {
   };
 
   const handleAnalyzeUser = async (u: XhsUser) => {
-    setAnalysisUser(u); setAnalysisData(null); setAnalysisLoading(true); setAnalysisProgress(0);
+    setAnalysisUser(u); setAnalysisTaskId(null); setAnalysisData(null); setAnalysisLoading(true); setAnalysisProgress(0);
     setAnalysisStatus('正在创建分析任务...'); setActiveTab('analysis');
     try {
       const api = (await import('../services/api')).default;
@@ -253,6 +254,7 @@ export default function CrawlJobsPage() {
         return;
       }
       const taskId = res.data.id;
+      setAnalysisTaskId(taskId);
       const poll = setInterval(async () => {
         try {
           const r = await api.get(`/notes/users/${u.user_id}/analysis-tasks/${taskId}`);
@@ -480,7 +482,7 @@ export default function CrawlJobsPage() {
                     <Progress percent={analysisProgress} status="active" style={{ maxWidth: 480, margin: '0 auto' }} />
                     <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>{analysisStatus || '正在分析...'}</Text>
                   </div>
-                ) : <UserAnalysisPanel user={analysisUser} data={analysisData} onOpenNote={(n) => setDetailNote(n)} />}
+                ) : <UserAnalysisPanel user={analysisUser} data={analysisData} onOpenNote={(n) => setDetailNote(n)} taskId={analysisTaskId} onReAnalyze={() => analysisUser && handleAnalyzeUser(analysisUser)} />}
               </>
             ) },
             { key:'batch', label:'批量分析', children: (

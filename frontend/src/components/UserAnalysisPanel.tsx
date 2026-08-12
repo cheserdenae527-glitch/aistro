@@ -1,10 +1,12 @@
-import { Alert, Card, Col, Empty, Row, Space, Statistic, Table, Tag, Typography } from 'antd';
-import { TrophyOutlined } from '@ant-design/icons';
+import { Alert, Button, Card, Col, Empty, message, Row, Space, Spin, Statistic, Table, Tag, Typography } from 'antd';
+import { useState } from 'react';
+import { SyncOutlined, TrophyOutlined } from '@ant-design/icons';
 import {
   CartesianGrid, Legend, Line, LineChart, PolarAngleAxis, PolarGrid, Radar, RadarChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
 } from 'recharts';
 import SubscribeButton from './SubscribeButton';
+import { getAnalysisSummary } from '../services/analysis';
 
 const { Title, Text } = Typography;
 
@@ -44,11 +46,15 @@ function weighted(stats: any): number {
   return (stats?.liked || 0) * 1 + (stats?.collected || 0) * 4 + (stats?.comments || 0) * 5 + (stats?.shared || 0) * 6;
 }
 
-export default function UserAnalysisPanel({ user, data, onOpenNote }: {
+export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onReAnalyze }: {
   user: { user_id?: string; nickname: string; fans: number } | null;
   data: any;
   onOpenNote: (note: any) => void;
+  taskId?: string | null;
+  onReAnalyze?: () => void;
 }) {
+  const [summary, setSummary] = useState<any>(null);
+  const [summaryLoading, setSummaryLoading] = useState(false);
   if (!data) return <Empty style={{ padding: '64px 0' }} description="尚未生成分析结果" />;
 
   const cov = data.coverage || {};
@@ -64,6 +70,19 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
   const anomalies = data.anomalies || [];
   const insights = data.insights || [];
   const fh = data.follower_history || null;
+
+  const isOldFormat = !data.dimensions || typeof data.dimensions !== 'object' || !('seeding_depth' in data.dimensions);
+  const genSummary = async () => {
+    if (!taskId) return;
+    setSummaryLoading(true);
+    try {
+      setSummary(await getAnalysisSummary(taskId));
+    } catch (e: any) {
+      message.error('AI 总结生成失败：' + (e?.response?.data?.detail || e?.message || ''));
+    } finally {
+      setSummaryLoading(false);
+    }
+  };
 
   const columns = [
     { title: '标题', dataIndex: 'title', key: 'title', width: 240, render: (v: string) => <Text strong style={{ display: 'block', maxWidth: 240 }} ellipsis={{ tooltip: v }}>{v || '无标题'}</Text> },
@@ -114,7 +133,27 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
             </div>
           </div>
         </Space>
-        <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
+        <div style={{ flex: 1 }} />
+        {!isOldFormat && taskId && (
+          <Card size="small" title="AI 总结" style={{ width: 320 }}>
+            {summaryLoading ? <Spin /> : summary ? (
+              <Space direction="vertical" size={4} style={{ width: '100%' }}>
+                <Text style={{ fontSize: 12 }}>{summary.summary}</Text>
+                {summary.strengths?.length > 0 && (
+                  <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12 }}>{summary.strengths.map((s: string, i: number) => <li key={i}><Text type="success">✔ {s}</Text></li>)}</ul>
+                )}
+                {summary.weaknesses?.length > 0 && (
+                  <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12 }}>{summary.weaknesses.map((w: string, i: number) => <li key={i}><Text type="danger">✘ {w}</Text></li>)}</ul>
+                )}
+                <Tag color={summary.cooperate ? 'green' : 'red'}>{summary.cooperate ? '建议合作' : '不建议合作'}</Tag>
+                {summary.cooperate_reason && <Text type="secondary" style={{ fontSize: 12 }}>{summary.cooperate_reason}</Text>}
+              </Space>
+            ) : (
+              <Button size="small" type="primary" icon={<SyncOutlined />} onClick={genSummary}>生成 AI 总结</Button>
+            )}
+          </Card>
+        )}
+        <div style={{ textAlign: 'right' }}>
           {data.overall_score_suppressed || overall?.score_suppressed ? (
             <Tag color="red">已抑制评分</Tag>
           ) : overall ? (
@@ -127,6 +166,19 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
           )}
         </div>
       </div>
+
+      {isOldFormat && (
+        <Alert type="warning" showIcon style={{ marginBottom: 12 }} message="此结果为旧版分析结果"
+          description="该分析结果是旧版评分格式，五维数据无法显示。请点击「重新分析」用新评分系统重新分析。"
+          action={onReAnalyze ? <Button size="small" type="primary" onClick={onReAnalyze}>重新分析</Button> : null} />
+      )}
+
+      {isOldFormat ? (
+        <Card size="small" title="全部真实笔记">
+          <Table rowKey={(r: any) => r.platform_note_id || r.id || Math.random().toString()} columns={columns} dataSource={data.notes || []} size="small" pagination={{ pageSize: 10, showSizeChanger: true }} />
+        </Card>
+      ) : (
+        <>
 
       {anomalies.length > 0 && (
         <Alert
@@ -225,21 +277,30 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
         </Col>
       </Row>
 
-      {fh?.series?.length >= 2 && (
-        <Card size="small" title="平台历史涨粉" style={{ marginBottom: 12 }}
-          extra={<Text type="secondary" style={{ fontSize: 12 }}>{fh.points} 个数据点 · {fh.source === 'justoneapi' ? '蒲公英官方数据' : fh.platform_points > 0 ? '官方+本地快照' : '本地快照'}</Text>}>
-          <ResponsiveContainer width="100%" height={220}>
-            <LineChart data={fh.series.map((p: any) => ({ date: String(p.snapshot_at || '').slice(0, 10), fans: p.fans }))} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
-              <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-              <XAxis dataKey="date" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
-              <YAxis tick={{ fontSize: 11 }} />
-              <Tooltip formatter={(value: any, name: any) => [fmtNum(Number(value)), name]} />
-              <Legend wrapperStyle={{ fontSize: 12 }} />
-              <Line type="monotone" dataKey="fans" name="粉丝数" stroke="#13c2c2" strokeWidth={2} dot={false} />
-            </LineChart>
-          </ResponsiveContainer>
-        </Card>
-      )}
+      {(() => {
+        const raw = Array.isArray(fh) ? fh : (fh?.series || []);
+        const sorted = [...raw].sort((a: any, b: any) => String(a.snapshot_at || '').localeCompare(String(b.snapshot_at || '')));
+        const fhData = sorted.map((p: any, i: number) => ({
+          date: String(p.snapshot_at || '').slice(0, 10),
+          fans: Number(p.fans || 0),
+          delta: i === 0 ? 0 : Number(p.fans || 0) - Number(sorted[i - 1].fans || 0),
+        }));
+        return fhData.length >= 2 ? (
+          <Card size="small" title="平台历史涨粉（增长量）" style={{ marginBottom: 12 }}
+            extra={<Text type="secondary" style={{ fontSize: 12 }}>{fhData.length} 个数据点 · {fh?.source === 'justoneapi' ? '蒲公英官方数据' : fh?.platform_points > 0 ? '官方+本地快照' : '本地快照'}</Text>}>
+            <ResponsiveContainer width="100%" height={220}>
+              <LineChart data={fhData} margin={{ top: 8, right: 12, left: -8, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
+                <XAxis dataKey="date" tick={{ fontSize: 11 }} interval="preserveStartEnd" />
+                <YAxis tick={{ fontSize: 11 }} />
+                <Tooltip formatter={(value: any, name: any, item: any) => item?.payload?.fans != null ? [`${fmtNum(Number(value))}（总量 ${fmtNum(item.payload.fans)}）`, name] : [fmtNum(Number(value)), name]} />
+                <Legend wrapperStyle={{ fontSize: 12 }} />
+                <Line type="monotone" dataKey="delta" name="涨粉量" stroke="#13c2c2" strokeWidth={2} dot={false} />
+              </LineChart>
+            </ResponsiveContainer>
+          </Card>
+        ) : null;
+      })()}
 
       <Card size="small" title="全部真实笔记（点击行查看详情）">
         <Table
@@ -254,6 +315,8 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
           })}
         />
       </Card>
+        </>
+      )}
     </div>
   );
 }

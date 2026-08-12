@@ -156,3 +156,15 @@ export interface BatchCreateResponse {
 export async function createAnalysisTasksBatch(bloggers: BatchBloggerInput[]): Promise<BatchCreateResponse> {
   return (await api.post('/notes/analysis-tasks/batch', { bloggers }, { timeout: 300000 })).data;
 }
+
+export interface AnalysisSummary {
+  summary: string;
+  strengths: string[];
+  weaknesses: string[];
+  cooperate: boolean;
+  cooperate_reason: string;
+}
+
+export async function getAnalysisSummary(taskId: string): Promise<AnalysisSummary> {
+  return (await api.post(`/notes/analysis-tasks/${taskId}/summary`, undefined, { timeout: 60000 })).data;
+}
