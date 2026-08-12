@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Card, Drawer, Input, message, Progress, Table, Tag, Typography, Tabs, Row, Col, Space, Avatar, Switch } from 'antd';
+import { Button, Drawer, Input, message, Progress, Typography, Tabs, Row, Col, Space, Avatar, Switch } from 'antd';
 import { SearchOutlined, HistoryOutlined, UserOutlined, EyeOutlined, BarChartOutlined, DatabaseOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
 import { NoteCardView, type NoteCardData } from '../components/NoteCard';
 import NoteDetail from '../components/NoteDetail';
@@ -28,9 +28,6 @@ function saveUserHistory(query: string) {
 
 const proxyImg = (url: string, size = 0) => '/api/v1/images/proxy?url=' + encodeURIComponent(url.replace(/^http:/, 'https:')) + '&size=' + size;
 
-const JOB_TYPES: Record<string,string> = { search:'搜索笔记', note_detail:'笔记详情', comment:'获取评论', search_users:'搜索博主', blogger:'博主信息' };
-const JOB_COLORS: Record<string,string> = { search:'blue', note_detail:'green', comment:'orange', search_users:'cyan', blogger:'purple' };
-
 interface XhsUser {
   user_id: string;
   nickname: string;
@@ -41,8 +38,6 @@ interface XhsUser {
 }
 
 export default function CrawlJobsPage() {
-  interface CrawlTask { id:string; type:string; params:any; status:string; result:any; created_at:string; }
-  const [tasks, setTasks] = useState<CrawlTask[]>([]);
   const [activeTab, setActiveTab] = useState('user-notes');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [detailNote, setDetailNote] = useState<NoteCardData | null>(null);
@@ -76,12 +71,6 @@ export default function CrawlJobsPage() {
 
   // 批量分析队列
   const [batchQueue, setBatchQueue] = useState<BatchQueueItem[]>([]);
-
-  const fetchTasks = async () => {
-    try { const res = await (await import('../services/api')).default.get('/crawl-jobs'); setTasks(res.data.running || []); }
-    catch { /* silent poll */ }
-  };
-  useEffect(() => { fetchTasks(); const t = setInterval(fetchTasks,3000); return () => clearInterval(t); }, []);
 
   const loadScreening = async (silent = false) => {
     if (!silent) setScreeningLoading(true);
@@ -257,15 +246,6 @@ export default function CrawlJobsPage() {
     }
   };
 
-  const taskColumns = [
-    { title:'ID', dataIndex:'id', key:'id', render:(v:string) => v.slice(0,8)+'...' },
-    { title:'类型', dataIndex:'type', key:'type', render:(t:string) => <Tag color={JOB_COLORS[t]}>{JOB_TYPES[t]||t}</Tag> },
-    { title:'关键词', key:'params', render:(_:any, r:any) => r.params?.query||'-' },
-    { title:'状态', dataIndex:'status', key:'status', render:(s:string) => <Tag color={s==='success'?'success':s==='running'?'processing':'error'}>{s}</Tag> },
-    { title:'结果', key:'result', render:(_:any, r:any) => r.result?.stats?.count!=null ? r.result.stats.count+' 条' : r.result?.error?'失败':'-' },
-    { title:'时间', dataIndex:'created_at', key:'created_at', render:(v:string) => v?v.slice(11,19):'-' },
-  ];
-
   return (
     <div>
       <div style={{ display: 'flex', alignItems: 'center', marginBottom: 16 }}>
@@ -302,12 +282,6 @@ export default function CrawlJobsPage() {
           </div>
         )}
       </div>
-
-      {/* 运行任务（与搜索合并展示，实时轮询） */}
-      <Card size="small" title="运行任务" style={{ marginBottom: 12 }}
-        extra={<Text type="secondary" style={{ fontSize: 12 }}>{tasks.length} 个任务 · 每 3 秒自动刷新</Text>}>
-        <Table dataSource={tasks} columns={taskColumns} rowKey='id' pagination={false} size="small" />
-      </Card>
 
       {/* 博主搜索结果 */}
       {users.length === 0 ? (
