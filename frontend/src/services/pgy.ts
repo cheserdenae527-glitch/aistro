@@ -48,7 +48,7 @@ export interface PgyFansSummary {
   payFansUserNum30d?: number;
 }
 
-export interface PgySimilarKol extends PgyCreatorProfile {}
+export type PgySimilarKol = PgyCreatorProfile;
 
 export interface PgyResponse<T> {
   ok: boolean;

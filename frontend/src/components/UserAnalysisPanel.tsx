@@ -63,12 +63,12 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
   const [pgyFans, setPgyFans] = useState<PgyFansSummary | null>(null);
   const [pgySimilar, setPgySimilar] = useState<PgySimilarKol[]>([]);
   const [pgyLoading, setPgyLoading] = useState(false);
-  const [pgyError, setPgyError] = useState('');
+  const [pgyErrs, setPgyErrs] = useState<{ profile?: string; fans?: string; similar?: string }>({});
   const [pgyLoaded, setPgyLoaded] = useState(false);
 
   const loadPgy = useCallback(async (uid: string) => {
     setPgyLoading(true);
-    setPgyError('');
+    setPgyErrs({});
     try {
       const [p, f, s] = await Promise.all([
         fetchCreatorProfile(uid),
@@ -78,10 +78,14 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
       setPgyProfile(p.ok ? (p.data as PgyCreatorProfile) : null);
       setPgyFans(f.ok ? (f.data as PgyFansSummary) : null);
       setPgySimilar(s.ok ? (s.data?.kols || []) : []);
-      const errs = [p, f, s].map((x) => (x.ok ? '' : x.error || '')).filter(Boolean);
-      setPgyError(errs.join('；'));
+      setPgyErrs({
+        profile: p.ok ? undefined : (p.error || '加载失败'),
+        fans: f.ok ? undefined : (f.error || '加载失败'),
+        similar: s.ok ? undefined : (s.error || '加载失败'),
+      });
     } catch (e: any) {
-      setPgyError(e?.response?.data?.detail || e?.message || '蒲公英数据加载失败');
+      const msg = e?.response?.data?.detail || e?.message || '蒲公英数据加载失败';
+      setPgyErrs({ profile: msg, fans: msg, similar: msg });
     } finally {
       setPgyLoading(false);
       setPgyLoaded(true);
@@ -95,7 +99,7 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
     setPgyProfile(null);
     setPgyFans(null);
     setPgySimilar([]);
-    setPgyError('');
+    setPgyErrs({});
     setPgyLoaded(false);
     const uid = user?.user_id;
     if (uid) loadPgy(uid);
@@ -350,17 +354,19 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
           <Button size="small" type="link" icon={<SyncOutlined />} disabled={!user?.user_id} onClick={() => user?.user_id && loadPgy(user.user_id)}>刷新</Button>
         )}>
         {pgyLoaded && !pgyLoading && !pgyProfile && !pgyFans && pgySimilar.length === 0 ? (
-          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={pgyError || '暂无蒲公英数据（该博主可能未入驻蒲公英）'} style={{ padding: 16 }} />
+          <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+            description={[pgyErrs.profile, pgyErrs.fans, pgyErrs.similar].filter(Boolean).join('；') || '暂无蒲公英数据（该博主可能未入驻蒲公英）'}
+            style={{ padding: 16 }} />
         ) : (
           <Row gutter={[12, 12]}>
             <Col xs={24} md={8}>
-              <CreatorProfileCard data={pgyProfile} />
+              <CreatorProfileCard data={pgyProfile} error={pgyErrs.profile} />
             </Col>
             <Col xs={24} md={8}>
-              <FansSummaryCard data={pgyFans} />
+              <FansSummaryCard data={pgyFans} error={pgyErrs.fans} />
             </Col>
             <Col xs={24} md={8}>
-              <SimilarKolCard data={pgySimilar} onAnalyze={onAnalyzeUser} />
+              <SimilarKolCard data={pgySimilar} error={pgyErrs.similar} onAnalyze={onAnalyzeUser} />
             </Col>
           </Row>
         )}
@@ -400,8 +406,8 @@ function PgyTagList({ tags, color }: { tags?: string[]; color?: string }) {
   );
 }
 
-function CreatorProfileCard({ data }: { data: PgyCreatorProfile | null }) {
-  if (!data) return <Card size="small" title="创作者资料"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无资料" style={{ padding: 12 }} /></Card>;
+function CreatorProfileCard({ data, error }: { data: PgyCreatorProfile | null; error?: string }) {
+  if (!data) return <Card size="small" title="创作者资料"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={error || '暂无资料'} style={{ padding: 12 }} /></Card>;
   const contentTags = (data.contentTags || []);
   const catTags = contentTags.flatMap((c) => [c.taxonomy1Tag, ...(c.taxonomy2Tags || [])].filter(Boolean) as string[]);
   return (
@@ -439,8 +445,8 @@ function CreatorProfileCard({ data }: { data: PgyCreatorProfile | null }) {
   );
 }
 
-function FansSummaryCard({ data }: { data: PgyFansSummary | null }) {
-  if (!data) return <Card size="small" title="粉丝摘要"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无摘要" style={{ padding: 12 }} /></Card>;
+function FansSummaryCard({ data, error }: { data: PgyFansSummary | null; error?: string }) {
+  if (!data) return <Card size="small" title="粉丝摘要"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={error || '暂无摘要'} style={{ padding: 12 }} /></Card>;
   const items = [
     { label: '粉丝总数', value: fmtNum(data.fansNum), extra: '' },
     { label: '近30天涨粉', value: fmtNum(data.fansIncreaseNum), extra: data.fansGrowthRate != null ? `${data.fansGrowthRate}%` : '' },
@@ -472,8 +478,8 @@ function FansSummaryCard({ data }: { data: PgyFansSummary | null }) {
   );
 }
 
-function SimilarKolCard({ data, onAnalyze }: { data: PgySimilarKol[]; onAnalyze?: (u: { user_id: string; nickname: string; fans: number; avatar?: string; notes?: number; desc?: string }) => void }) {
-  if (!data || data.length === 0) return <Card size="small" title="相似创作者"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description="暂无相似创作者" style={{ padding: 12 }} /></Card>;
+function SimilarKolCard({ data, error, onAnalyze }: { data: PgySimilarKol[]; error?: string; onAnalyze?: (u: { user_id: string; nickname: string; fans: number; avatar?: string; notes?: number; desc?: string }) => void }) {
+  if (!data || data.length === 0) return <Card size="small" title="相似创作者"><Empty image={Empty.PRESENTED_IMAGE_SIMPLE} description={error || '暂无相似创作者'} style={{ padding: 12 }} /></Card>;
   return (
     <Card size="small" title={`相似创作者（${data.length}）`} extra={<Text type="secondary" style={{ fontSize: 12 }}>蒲公英官方</Text>}>
       <div style={{ display: 'flex', flexDirection: 'column', gap: 10, maxHeight: 320, overflow: 'auto' }}>

@@ -194,6 +194,19 @@ def _pgy_cache_key(kind: str, user_id: str, *suffix: str) -> str:
     return "_".join("".join(ch if ch.isalnum() else "_" for ch in part) for part in parts)
 
 
+_PGY_CODE_HINTS: dict[int, str] = {
+    100: "Token 无效或已失效，请更新 Token",
+    301: "平台数据采集失败，请稍后刷新重试",
+    302: "请求过于频繁，请稍后重试",
+    303: "今日接口配额已用完",
+    400: "请求参数错误",
+    500: "平台服务异常，请稍后重试",
+    600: "接口权限不足",
+    601: "账户余额不足",
+    602: "Token 限额已超限",
+}
+
+
 def _pgy_get(path: str, params: dict) -> tuple[dict | None, str]:
     """对 JustOneAPI 发 GET，返回 (body, error)。错误码与 fetch_follower_history 保持一致。"""
     token = settings.JUST_ONE_API_TOKEN
@@ -214,8 +227,8 @@ def _pgy_get(path: str, params: dict) -> tuple[dict | None, str]:
     code = body.get("code")
     if code != 0:
         message = body.get("message") or ""
-        hint = "Token 无效或余额不足" if code in (100, 600, 601, 602) else "平台暂未收录该博主或接口异常"
-        return None, f"JustOneAPI 返回 {code}: {message or hint}"
+        hint = _PGY_CODE_HINTS.get(code, "平台暂未收录该博主或接口异常")
+        return None, hint if not message or message == "SUCCESS" else f"{hint}（{message}）"
     return body, ""
 
 
