@@ -1,13 +1,13 @@
 import { useEffect, useState } from 'react';
 import { Button, Input, InputNumber, message, Select, Switch, Progress, Table, Tag, Typography, Tabs, Row, Col, Space, Avatar } from 'antd';
-import { SearchOutlined, HistoryOutlined, UserOutlined, EyeOutlined, BarChartOutlined, DatabaseOutlined } from '@ant-design/icons';
+import { SearchOutlined, HistoryOutlined, UserOutlined, EyeOutlined, BarChartOutlined, DatabaseOutlined, PlusOutlined } from '@ant-design/icons';
 import { NoteCardView, parseNote, type NoteCardData } from '../components/NoteCard';
 import NoteDetail from '../components/NoteDetail';
 import SubscriptionsPage from './SubscriptionsPage';
 import KnowledgeBasePanel from '../components/KnowledgeBasePanel';
 import CrawlerPoolPanel from '../components/CrawlerPoolPanel';
 import UserAnalysisPanel from '../components/UserAnalysisPanel';
-import BloggerScreeningPanel from '../components/BloggerScreeningPanel';
+import BatchAnalysisPanel, { type BatchQueueItem } from '../components/BatchAnalysisPanel';
 import SubscribeButton from '../components/SubscribeButton';
 import { listAnalysisTasks, ScreeningRow, BloggerAnalysisResult, AnalysisTaskPayload } from '../services/analysis';
 
@@ -98,6 +98,9 @@ export default function CrawlJobsPage() {
   const [screeningRows, setScreeningRows] = useState<ScreeningRow[]>([]);
   const [screeningLoading, setScreeningLoading] = useState(false);
 
+  // 批量分析队列
+  const [batchQueue, setBatchQueue] = useState<BatchQueueItem[]>([]);
+
   const fetchTasks = async () => {
     try { const res = await (await import('../services/api')).default.get('/crawl-jobs'); setTasks(res.data.running || []); }
     catch { /* silent poll */ }
@@ -141,6 +144,30 @@ export default function CrawlJobsPage() {
     }
   };
   useEffect(() => { loadScreening(); }, []);
+
+  const addToBatchQueue = (u: XhsUser) => {
+    if (batchQueue.some((x) => x.user_id === u.user_id)) {
+      message.info('该博主已在批量分析队列中');
+      return;
+    }
+    setBatchQueue((q) => [...q, { user_id: u.user_id, nickname: u.nickname, fans: u.fans }]);
+    message.success(`已加入批量分析队列：${u.nickname}`);
+  };
+
+  const addParsedToBatchQueue = (items: BatchQueueItem[]) => {
+    const existing = new Set(batchQueue.map((x) => x.user_id));
+    const fresh = items.filter((x) => !existing.has(x.user_id));
+    if (fresh.length === 0) {
+      message.info('这些博主已在批量分析队列中');
+      return;
+    }
+    setBatchQueue((q) => [...q, ...fresh]);
+    message.success(`已加入 ${fresh.length} 个博主到批量分析队列`);
+  };
+
+  const removeFromBatchQueue = (userId: string) => {
+    setBatchQueue((q) => q.filter((x) => x.user_id !== userId));
+  };
 
   const handleQuickSearch = async (query?: string) => {
     const q = query || browsingQuery;
@@ -371,6 +398,7 @@ export default function CrawlJobsPage() {
                     <Space style={{ marginTop:10 }}>
                       <Button type='primary' size='small' icon={<EyeOutlined />} onClick={() => handleViewUserNotes(u)}>查看作品</Button>
                       <Button size='small' type='primary' ghost icon={<BarChartOutlined />} onClick={() => handleAnalyzeUser(u)}>分析</Button>
+                      <Button size='small' icon={<PlusOutlined />} onClick={() => addToBatchQueue(u)}>加入批量分析</Button>
                     </Space>
                   </div>
                 </Col>
@@ -424,24 +452,36 @@ export default function CrawlJobsPage() {
           </>
         ) : <div style={{ padding:48, textAlign:'center', color:'#999' }}>选择一个已完成的任务查看结果</div>
         },
-        { key:'screening', label: '批量筛选', children: (
-          <BloggerScreeningPanel rows={screeningRows} loading={screeningLoading} onRefresh={loadScreening} />
-        ) },
         { key:'analysis', label: analysisUser ? '博主分析 · ' + analysisUser.nickname : '博主分析', children: (
-          <>
-            <div style={{ padding: 12, textAlign: 'center' }}>
-              <Space>
-                <Switch checked={withComments} disabled={analysisLoading} onChange={setWithComments} checkedChildren="评论分析开" unCheckedChildren="评论分析关" />
-                <Text type="secondary">深度诊断可开启评论意向分析（抓取代表笔记评论，更准但更慢）</Text>
-              </Space>
-            </div>
-            {analysisLoading ? (
-              <div style={{ padding: 24, textAlign: 'center' }}>
-                <Progress percent={analysisProgress} status="active" style={{ maxWidth: 480, margin: '0 auto' }} />
-                <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>{analysisStatus || '正在分析...'}</Text>
-              </div>
-            ) : <UserAnalysisPanel user={analysisUser} data={analysisData} onOpenNote={(n) => setDetailNote(n)} />}
-          </>
+          <Tabs size="small" items={[
+            { key:'single', label:'单号分析', children: (
+              <>
+                <div style={{ padding: 12, textAlign: 'center' }}>
+                  <Space>
+                    <Switch checked={withComments} disabled={analysisLoading} onChange={setWithComments} checkedChildren="评论分析开" unCheckedChildren="评论分析关" />
+                    <Text type="secondary">深度诊断可开启评论意向分析（抓取代表笔记评论，更准但更慢）</Text>
+                  </Space>
+                </div>
+                {analysisLoading ? (
+                  <div style={{ padding: 24, textAlign: 'center' }}>
+                    <Progress percent={analysisProgress} status="active" style={{ maxWidth: 480, margin: '0 auto' }} />
+                    <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>{analysisStatus || '正在分析...'}</Text>
+                  </div>
+                ) : <UserAnalysisPanel user={analysisUser} data={analysisData} onOpenNote={(n) => setDetailNote(n)} />}
+              </>
+            ) },
+            { key:'batch', label:'批量分析', children: (
+              <BatchAnalysisPanel
+                queue={batchQueue}
+                onRemoveFromQueue={removeFromBatchQueue}
+                onAddFromQueue={addParsedToBatchQueue}
+                screeningRows={screeningRows}
+                screeningLoading={screeningLoading}
+                onRefreshScreening={loadScreening}
+                withComments={withComments}
+              />
+            ) },
+          ]} />
         ) },
         { key:'subscriptions', label:'博主订阅', children: <SubscriptionsPage /> },
         { key:'knowledge', label:'知识库', children: <KnowledgeBasePanel /> },

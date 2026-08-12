@@ -119,3 +119,36 @@ export async function listAnalysisTasks(
 ): Promise<{ items: AnalysisTaskPayload[] }> {
   return (await api.get('/notes/analysis-tasks', { params })).data;
 }
+
+// ---------- 批量分析 ----------
+export interface BatchBloggerInput {
+  user_id: string;
+  nickname?: string;
+  fans?: number;
+  with_comments?: boolean;
+}
+
+export interface BatchCreatedItem {
+  task_id: string;
+  xhs_user_id: string;
+  nickname: string;
+  status: string;
+  follower_count?: number;
+  notes?: number;
+}
+
+export interface BatchRejectedItem {
+  xhs_user_id: string;
+  nickname: string;
+  reason: string;
+}
+
+export interface BatchCreateResponse {
+  created: BatchCreatedItem[];
+  rejected: BatchRejectedItem[];
+}
+
+/** 批量创建博主分析任务：后端逐博主真实粗筛，通过者创建后台任务（单次上限 50）。 */
+export async function createAnalysisTasksBatch(bloggers: BatchBloggerInput[]): Promise<BatchCreateResponse> {
+  return (await api.post('/notes/analysis-tasks/batch', { bloggers }, { timeout: 60000 })).data;
+}
