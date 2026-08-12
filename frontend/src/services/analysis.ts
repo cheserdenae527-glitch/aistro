@@ -38,8 +38,20 @@ export interface BloggerAnalysisResult {
   sampled: boolean;                                   // 顶层，匹配后端
   coverage: { total_notes: number; sample_size: number; fetched_notes: number; coverage_rate: number };
   confidence: Conf;
-  dimensions: Record<'seeding_depth' | 'verticality' | 'stable_output' | 'sustained_operation' | 'growth_trend', BloggerDimension>;
+  dimensions: Record<'seeding_depth' | 'verticality' | 'stable_output' | 'sustained_operation' | 'growth_trend' | 'cost_effectiveness', BloggerDimension>;
   overall: { score: number | null; level: string; description: string; score_suppressed: boolean } | null;
+  audience?: {
+    dominant_level: string | null;
+    level_distribution: Record<string, number>;
+    avg_price_band: [number, number] | null;
+    top_categories: string[];
+    top_scenes: string[];
+    merchant_tiers: string[];
+    signal_notes: number;
+    confidence: string;
+    verticality_audience_score: number;
+    match?: { has_profile: boolean; score: number | null; sub_scores: Record<string, number>; mismatches: string[] };
+  } | null;
   overall_score_suppressed?: boolean;
   stage: { label: StageLabel; confidence: Conf; evidence: string[] } | null;
   decision: {

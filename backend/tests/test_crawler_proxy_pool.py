@@ -47,6 +47,8 @@ def test_tunnel_backup_host_adds_second_entry(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_short_proxy_json_parsed_into_requests_style(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.delenv("XHS_SHORT_PROXY_USERNAME", raising=False)
+    monkeypatch.delenv("XHS_SHORT_PROXY_PASSWORD", raising=False)
     monkeypatch.setenv("XHS_SHORT_PROXY_API", "http://open.test/ShortProxy/GetIP/")
     monkeypatch.setenv("XHS_SHORT_PROXY_API_ID", "12345")
     monkeypatch.setenv("XHS_SHORT_PROXY_AKEY", "abcdef0123456789")

@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import re
 import statistics
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -21,15 +22,6 @@ COLLECTS_WEIGHT = 4
 COMMENTS_WEIGHT = 5
 SHARES_WEIGHT = 6
 
-# 粉丝分层（含互动质量映射阈值，百分数；分段间线性插值）
-# 初版标定 2026-08-08（样本 T1=12 / T2=12 / T3=11 / T4=4），P10→0、P25→40、P50→70、P90→100，待人工复核
-TIERS = {
-    "T1": {"min": 1000, "max": 10000, "points": [(6.906, 0), (16.784, 40), (41.851, 70), (74.377, 100)], "min_healthy": 6.906},
-    "T2": {"min": 10000, "max": 100000, "points": [(2.946, 0), (7.810, 40), (12.343, 70), (71.005, 100)], "min_healthy": 2.946},
-    "T3": {"min": 100000, "max": 1000000, "points": [(1.161, 0), (2.210, 40), (5.202, 70), (13.548, 100)], "min_healthy": 1.161},
-    "T4": {"min": 1000000, "max": None, "points": [(0.833, 0), (1.745, 40), (2.367, 70), (2.631, 100)], "min_healthy": 0.833},
-}
-
 LEVELS = [
     (85, "卓越", "优先入选"),
     (70, "优秀", "推荐入选"),
@@ -41,7 +33,7 @@ LEVELS = [
 ANALYSIS_WINDOW_DAYS = 90
 TREND_MIN_SAMPLES = 10
 _CONF_RANK = {"high": 0, "medium": 1, "low": 2}
-_NONCORE = {"verticality", "stable_output", "sustained_operation", "growth_trend"}
+_NONCORE = {"verticality", "stable_output", "sustained_operation", "growth_trend", "cost_effectiveness"}
 
 
 def _weighted(st: dict) -> int:
@@ -79,20 +71,19 @@ def _interpolate(points: list[tuple[float, float]], x: float) -> float:
 
 
 def _tier_for(fans: int) -> dict:
-    """粉丝分层：从 scoring_config 读取，并合并旧 TIERS 的 points/min_healthy。"""
+    """粉丝分层：从 scoring_config 读取（唯一事实来源）。
+
+    points/min_healthy 为加权互动率百分数口径，min_healthy_rate 为篇均收藏率
+    百分数口径；初版标定 2026-08-08（样本 T1=12 / T2=12 / T3=11 / T4=4），待复核。
+    """
     tiers = load_scoring_config()["tiers"]
     for key, t in tiers.items():
         if fans >= int(t["min"]) and (t.get("max") is None or fans < int(t["max"])):
             merged = dict(t)
             merged["tier_name"] = key
-            legacy = TIERS.get(key, {})
-            merged.setdefault("points", legacy.get("points", []))
-            merged.setdefault("min_healthy", legacy.get("min_healthy", t.get("min_healthy_rate", 0.0)))
             return merged
     merged = dict(tiers["T1"])
     merged["tier_name"] = "T1"
-    merged.setdefault("points", TIERS["T1"].get("points", []))
-    merged.setdefault("min_healthy", TIERS["T1"].get("min_healthy", tiers["T1"].get("min_healthy_rate", 0.0)))
     return merged
 
 
@@ -361,9 +352,10 @@ def _score_trend(std_values: list[float], notes: list[dict]) -> dict:
 
 
 def _overall_confidence(dimensions: dict, coverage_conf: str) -> str:
-    """通用置信度汇总：min(覆盖率可信度, min(五维置信度))。
+    """通用置信度汇总：min(覆盖率可信度, min(已评分维度置信度))。
 
-    被跳过（score=None）或被降权的维度按 low 计（规格 §7）；缺失 confidence 键按 low 计（fail-safe）。
+    v1.12：score=None（未评分/无数据，如无报价的 cost_effectiveness）的维度**不参与**置信度汇总，
+    仅"有分数但置信度低"的维度计入 low——避免"无报价 + 无快照"的常见组合被普遍压成 low。
     特例：low 仅来自单个非核心维度，且种草深度非 low 时，整体取 medium。
     覆盖率 low 已在闸门 1 拦截，此处只会是 high/medium。
     """
@@ -372,7 +364,9 @@ def _overall_confidence(dimensions: dict, coverage_conf: str) -> str:
     dim_confs = []
     low_dims = []
     for k, d in dimensions.items():
-        conf = "low" if d.get("score") is None else d.get("confidence", "low")
+        if d.get("score") is None:
+            continue
+        conf = d.get("confidence", "low")
         dim_confs.append(conf)
         if conf == "low":
             low_dims.append(k)
@@ -764,7 +758,8 @@ def _collect_like_inversion_hit(notes: list[dict], fans: int, tier: dict) -> boo
     if median_ratio >= float(cfg["collect_like_ratio_floor"]):
         return False
     collect_rate_percent = sum(int(n["stats"].get("collected", 0) or 0) for n in notes) / len(notes) / fans * 100.0
-    return collect_rate_percent < float(tier.get("min_healthy_rate", 1.0))
+    # 篇均收藏率（百分数）低于该层收藏健康线（min_healthy_rate，百分数口径）
+    return collect_rate_percent < float(tier["min_healthy_rate"])
 
 
 def _summarize_follower_history(history: list[dict] | None) -> dict | None:
@@ -869,13 +864,21 @@ def _build_decision(grass: dict, growth: dict) -> dict:
     return {"status": "ok", "quadrant": quadrant, "recommendation": rec, "grass_level": gl, "growth_level": pl}
 
 
-def _recommendation(overall: float, stage: dict, anomalies: list[dict]) -> tuple[str, str]:
-    """合作建议：priority / ok / caution 三档（insufficient/not_recommended 已提前返回）。"""
-    red_flag_types = {a["type"] for a in anomalies}
+def _recommendation(
+    overall: float, stage: dict, anomalies: list[dict],
+    cost_score: float | None = None, match_score: float | None = None,
+) -> tuple[str, str]:
+    """合作建议：priority / ok / caution 三档（insufficient/not_recommended 已提前返回）。
+
+    v1.12：info 级红旗（audience_mismatch）不降档；优先合作要求 性价比≥60（有报价时）且 匹配≥60（有 profile 时）。
+    """
+    red_flag_types = {a["type"] for a in anomalies if a.get("level") != "info"}
     has_any_flag = bool(red_flag_types)
     stage_ok = stage["label"] in ("成长", "成熟") and stage["confidence"] != "low"
-    if overall >= 70 and not has_any_flag and stage_ok:
-        return "priority", "美食垂直度高、种草能力强，处于成长/成熟期，适合优先建联"
+    cost_ok = cost_score is None or cost_score >= 60
+    match_ok = match_score is None or match_score >= 60
+    if overall >= 70 and not has_any_flag and stage_ok and cost_ok and match_ok:
+        return "priority", "美食垂直度高、种草能力强，处于成长/成熟期，性价比与目标匹配达标，适合优先建联"
     if overall >= 55 and not has_any_flag:
         return "ok", "种草能力在线且无红旗，可以合作"
     return "caution", "存在非致命红旗或分数偏低，建议谨慎评估"
@@ -905,6 +908,8 @@ def score_blogger(
     coverage_denominator: int | None = None,
     follower_history: list[dict] | None = None,
     comment_analysis: dict | None = None,
+    pgy_meta: dict | None = None,
+    merchant_profile: dict | None = None,
 ) -> dict:
     """运行种草能力五维评分，返回可直接落库/展示的结果结构。"""
     now = now or datetime.now(CN_TZ)
@@ -963,7 +968,13 @@ def score_blogger(
         return base
 
     tier = _tier_for(follower_count)
-    gate_cfg = load_scoring_config()["gate"]
+    cfg = load_scoring_config()
+    gate_cfg = cfg["gate"]
+    # v1.12：真实性闸门 / 受众画像 / 性价比（先于五维，供后续降级/集成）
+    authenticity = _authenticity_gate(real, follower_count, comment_analysis, pgy_meta, cfg)
+    audience = _score_audience_profile(real, tier, cfg)
+    pgy_price = (pgy_meta or {}).get("price") if pgy_meta else None
+    cost = _score_cost_effectiveness(real, follower_count, tier, pgy_price, pgy_meta, authenticity, cfg)
     # 兼容字段（前端过渡期保留；新前端切走后移除）
     grass = _score_grass_planting(real, follower_count, tier)
     growth = _score_growth_potential(real, follower_count, now, follower_history)
@@ -984,24 +995,43 @@ def score_blogger(
         "stable_output": {"score": stable["score"], "confidence": stable["confidence"], "detail": stable["detail"]},
         "sustained_operation": {"score": sustained["score"], "confidence": "high", "detail": {"weekly_notes": sustained["weekly_notes"], "freshness_days": sustained["freshness_days"]}},
         "growth_trend": {"score": growth_trend["score"], "confidence": growth_trend["confidence"], "detail": growth_trend["detail"]},
+        "cost_effectiveness": {"score": cost["score"], "confidence": cost["confidence"], "detail": cost["detail"]},
     }
     base["dimensions"] = dimensions
+
+    # v1.12：受众画像（顶层 + 垂直度深化）
+    base["audience"] = audience
+    dimensions["verticality"]["detail"]["audience"] = audience
+    if audience["confidence"] == "high" and dimensions["verticality"]["score"] is not None:
+        dimensions["verticality"]["score"] = round(
+            0.7 * dimensions["verticality"]["score"] + 0.3 * audience["verticality_audience_score"], 1
+        )
+    else:
+        base["insights"].append("受众画像样本不足，垂直度仅按品类评估")
+
     base["confidence"] = _overall_confidence(dimensions, coverage_conf)
 
-    # 权重归一化：被跳过/降权的维度处理
-    weights = dict(load_scoring_config()["weights"])
+    # 权重归一化（v1.12 §6.2 通用公式：score=None 剔除；low/medium ×0.5；high 原值）
+    weights = dict(cfg["weights"])
+    w_eff: dict[str, float] = {}
+    for k, w in weights.items():
+        dim = dimensions[k]
+        if dim.get("score") is None:
+            continue
+        w_eff[k] = w * (0.5 if dim.get("confidence") != "high" else 1.0)
     if growth_trend["score"] is None:
-        del weights["growth_trend"]
         base["insights"].append(growth_trend["detail"].get("reason") or "增长趋势样本不足，跳过")
-    elif growth_trend["confidence"] == "low":
-        weights["growth_trend"] *= 0.5  # 无快照降权
-    total_weight = sum(w for k, w in weights.items() if dimensions[k].get("score") is not None)
+    if cost["score"] is None:
+        base["insights"].append("暂无蒲公英报价，性价比未评分")
+    if not authenticity["passed"] and not authenticity["direct_fail"]:
+        base["insights"].append("数据真实性存疑，不提供报价参考")
+    total_weight = sum(w_eff.values())
     if total_weight <= 0:
         base["overall"] = None
         base["overall_score_suppressed"] = True
         base["decision"] = {"recommendation": "insufficient_data", "summary": "无可用评分维度", "reasons": [], "red_flags": [], "low_quality": False}
         return base
-    overall = sum(dimensions[k]["score"] * weights[k] for k in weights if dimensions[k].get("score") is not None) / total_weight
+    overall = sum(dimensions[k]["score"] * w_eff[k] for k in w_eff) / total_weight
     overall = round(overall, 1)
     level, desc = _level_for(overall)
 
@@ -1052,7 +1082,7 @@ def score_blogger(
     # 闸门 3：粉丝互动倒挂（粉丝数未知时不判定）
     if follower_count > 0:
         iq_rate = _score_interaction_quality(real, follower_count, tier, now)["rate"]
-        if iq_rate < float(tier.get("min_healthy", tier.get("min_healthy_rate", 0.0))):
+        if iq_rate < float(tier["min_healthy"]):
             base["anomalies"].append({"type": "interaction_inversion", "level": "cap", "detail": "粉丝互动倒挂"})
             level = "待观察"
             desc = "粉丝互动倒挂，等级封顶待观察"
@@ -1077,13 +1107,39 @@ def score_blogger(
             base["anomalies"].append(flag)
             base["insights"].append(flag["detail"])
 
+    # v1.12：商家匹配 + 非致命/信息型红旗 + reasons 扩展
+    match = _audience_match(audience, merchant_profile, tier, cfg)
+    base["audience"]["match"] = match
+    if not authenticity["passed"] and not authenticity["direct_fail"]:
+        base["anomalies"].append({"type": "authenticity_failed", "level": "flag", "detail": "数据真实性存疑（多维信号命中）"})
+    if cost["score"] is not None and cost["score"] < 40 \
+            and float(cost["detail"].get("quality_q") or 1.0) < float(cfg["cost"]["quality_gate"]):
+        base["anomalies"].append({"type": "overpriced_low_quality", "level": "flag", "detail": "报价虚高且互动质量不足"})
+    if match["score"] is not None and match["score"] < float(cfg["audience"]["match_threshold"]):
+        base["anomalies"].append({
+            "type": "audience_mismatch", "level": "info",
+            "detail": f"商家目标匹配度低（{match['score']}分）：" + ("；".join(match["mismatches"]) if match["mismatches"] else "目标客群不匹配"),
+        })
+    reasons = _build_reasons(dimensions, stage)
+    if cost["score"] is not None:
+        d = cost["detail"]
+        reasons.append(
+            f"性价比 {cost['score']:.0f} 分（图文建议 {d.get('suggested_bid_picture')} 元，"
+            f"视频建议 {d.get('suggested_bid_video')} 元）"
+        )
+    if audience["dominant_level"]:
+        mtext = "、".join(audience["merchant_tiers"]) if audience["merchant_tiers"] else ""
+        reasons.append(f"受众以{audience['dominant_level']}消费为主" + (f"，适配{mtext}" if mtext else ""))
+    if match["score"] is not None:
+        reasons.append(f"商家目标匹配度 {match['score']} 分")
+
     # 合作建议（严格互斥顺序判定）
-    recommendation, rec_summary = _recommendation(overall, stage, base["anomalies"])
+    recommendation, rec_summary = _recommendation(overall, stage, base["anomalies"], cost["score"], match["score"])
     base["overall"] = {"score": overall, "level": level, "description": desc, "score_suppressed": False}
     base["decision"] = {
         "recommendation": recommendation,
         "summary": rec_summary,
-        "reasons": _build_reasons(dimensions, stage),
+        "reasons": reasons,
         "red_flags": [{"type": a["type"], "level": a["level"], "detail": a["detail"]} for a in base["anomalies"]],
         "low_quality": False,
         # 旧前端兼容字段（Task 13 切走后移除）
@@ -1094,3 +1150,481 @@ def score_blogger(
     }
     base["insights"].append(f"综合评分 {overall}，等级：{level}；阶段：{stage['label']}")
     return base
+
+
+# ---------------------------------------------------------------------------
+# v1.12：真实性闸门 / 受众画像 / 性价比 / 商家匹配
+# ---------------------------------------------------------------------------
+
+def _tier_key(fans: int) -> str:
+    """绝对门槛/分层区间用的细粒度 key（T1 按 <5k/≥5k 拆）。"""
+    if fans < 5000:
+        return "T1_lt5k"
+    if fans < 10000:
+        return "T1_ge5k"
+    if fans < 100000:
+        return "T2"
+    if fans < 1000000:
+        return "T3"
+    return "T4"
+
+
+def _percentile(sorted_values: list[float], pct: int) -> float:
+    if not sorted_values:
+        return 0.0
+    k = (len(sorted_values) - 1) * pct / 100.0
+    lo = int(k)
+    hi = min(int(k) + 1, len(sorted_values) - 1)
+    return float(sorted_values[lo] + (sorted_values[hi] - sorted_values[lo]) * (k - lo))
+
+
+def _compute_fake_ratio(notes: list[dict], gate_cfg: dict) -> float:
+    likes = [int(n["stats"].get("liked", 0) or 0) for n in notes]
+    median_likes = statistics.median(likes) if likes else 0.0
+    if median_likes <= 0:
+        return 0.0
+    fake = 0
+    for n in notes:
+        st = n["stats"]
+        liked = int(st.get("liked", 0) or 0)
+        extra = int(st.get("collected", 0) or 0) + int(st.get("comments", 0) or 0) + int(st.get("shared", 0) or 0)
+        if liked >= median_likes * 3 and (extra / liked if liked else 0) < float(gate_cfg["fake_extra_ratio"]):
+            fake += 1
+    return fake / len(notes) if notes else 0.0
+
+
+def _authenticity_gate(
+    notes: list[dict],
+    follower_count: int,
+    comment_analysis: dict | None,
+    pgy_meta: dict | None,
+    cfg: dict,
+) -> dict:
+    """多维信号打分制真实性闸门（v1.12）。返回 {passed, score, direct_fail, hits}。"""
+    a_cfg = cfg["authenticity"]
+    threshold = int(a_cfg["threshold"])
+    signals = a_cfg["signals"]
+    gate_cfg = cfg["gate"]
+    score, hits, direct_fail = 0, [], False
+
+    # 信号1：刷量结构异常（强信号，直接判）
+    fake_ratio = _compute_fake_ratio(notes, gate_cfg)
+    collect_inversion = follower_count > 0 and _collect_like_inversion_hit(notes, follower_count, _tier_for(follower_count))
+    if fake_ratio > float(gate_cfg["fake_ratio"]) or collect_inversion:
+        hits.append({"id": "fake_ratio", "weight": 30, "detail": f"fake_ratio={fake_ratio:.2f} 或赞藏倒挂"})
+        score += 30
+        direct_fail = True
+
+    # 信号2：赞藏量级双向异常（按层区间，任一命中记满 20，不叠加）
+    key = _tier_key(follower_count)
+    band = signals["collect_like_band"]["bands"][key]
+    _fans = max(1, follower_count)
+    _cnt = max(1, len(notes))
+    avg_cl = (
+        sum(int(n["stats"].get("collected", 0) or 0) + int(n["stats"].get("liked", 0) or 0) for n in notes)
+        / _cnt / _fans
+    )
+    ratio_list = [
+        n["stats"]["collected"] / max(1, n["stats"]["liked"])
+        for n in notes
+        if int(n["stats"].get("liked", 0) or 0) > 0
+    ]
+    median_cl_ratio = statistics.median(ratio_list) if ratio_list else 0.0
+    cl_floor = float(signals["collect_like_band"]["collect_like_floor"])
+    hit2 = ""
+    if avg_cl < band[0]:
+        hit2 = f"篇均(赞+藏)/粉丝={avg_cl:.4f} < 下界{band[0]}"
+    elif avg_cl > band[1]:
+        hit2 = f"篇均(赞+藏)/粉丝={avg_cl:.4f} > 上界{band[1]}"
+    if median_cl_ratio < cl_floor:
+        hit2 = (hit2 + "；" if hit2 else "") + f"藏/赞中位={median_cl_ratio:.3f} < {cl_floor}"
+    if hit2:
+        hits.append({"id": "collect_like_band", "weight": 20, "detail": hit2})
+        score += 20
+
+    # 信号3：水评占比
+    if comment_analysis and float(comment_analysis.get("spam_ratio", 0.0)) >= float(gate_cfg["spam_ratio_threshold"]):
+        hits.append({"id": "spam_ratio", "weight": 15, "detail": f"水评占比={comment_analysis['spam_ratio']:.2f}"})
+        score += 15
+
+    # 信号4：篇均点赞绝对值下限（按层）
+    abs_likes = sum(int(n["stats"].get("liked", 0) or 0) for n in notes) / _cnt
+    min_likes = float(cfg["absolute_thresholds"][key]["likes"])
+    if abs_likes < min_likes:
+        hits.append({"id": "abs_likes_floor", "weight": 10, "detail": f"篇均赞={abs_likes:.1f} < 层下限{min_likes}"})
+        score += 10
+
+    # 信号5：商单密度（低权重，按层放宽）
+    if pgy_meta and pgy_meta.get("business_note_count") and pgy_meta.get("total_notes"):
+        density = int(pgy_meta["business_note_count"]) / max(1, int(pgy_meta["total_notes"]))
+        max_ratio = float(signals["commerce_density"]["max_ratio"].get(_tier_for(follower_count)["tier_name"], 0.5))
+        if density > max_ratio:
+            hits.append({"id": "commerce_density", "weight": 5, "detail": f"商单占比={density:.0%} > 层阈值{max_ratio:.0%}"})
+            score += 5
+
+    # 信号6：评论模板重复度（无语义模板；问询意图内容已排除，仅统计 spam 类）
+    if comment_analysis:
+        repeat = float(comment_analysis.get("template_repeat_ratio", 0.0))
+        if repeat >= float(a_cfg.get("comment_repeat_threshold", 0.3)):
+            hits.append({"id": "comment_repeat", "weight": 15, "detail": f"无语义模板重复占比={repeat:.2f}"})
+            score += 15
+
+    # 信号7-10（C档占位）：same_brand_repeat / like_rate_band / fans_content_match / organic_share
+    # 配置 weight>0 且数据接入后启用；当前均未接入，跳过
+
+    passed = (not direct_fail) and (score < threshold)
+    return {"passed": passed, "score": score, "direct_fail": direct_fail, "hits": hits}
+
+
+def _score_audience_profile(notes: list[dict], tier: dict, cfg: dict) -> dict:
+    """受众画像（v1.12）：层级分布 / 人均区间 / 品类场景 / 商家适配 / 垂直度深化。"""
+    a_cfg = cfg["audience"]
+    min_signal = int(a_cfg["min_signal_notes"])
+    neg_words = a_cfg["negative_words"]
+    exclude_words = a_cfg["price_exclude_words"]
+    level_kw = a_cfg["level_keywords"]
+    cat_kw = a_cfg["category_keywords"]
+    scene_kw = a_cfg["scene_keywords"]
+    # v1.12：逐个 pattern 单独编译（备选拼接会把各备选的捕获组按位置重编号，
+    # 导致非首个备选命中时 group(1) 为 None；单独编译各自用自己的 group(1)）
+    price_patterns = [re.compile(p) for p in a_cfg["price_patterns"]]
+    tier_name = tier["tier_name"]
+
+    price_hits: list[float] = []
+    level_counts = {k: 0 for k in level_kw}
+    cat_counts: dict[str, int] = {}
+    scene_counts: dict[str, int] = {}
+    signal_notes = 0
+
+    for n in notes:
+        text = f"{n.get('title','')}\n{n.get('desc','')}\n{' '.join(n.get('tags', []) or [])}"
+        # ① 负面语义前置过滤
+        if any(w in text for w in neg_words):
+            continue
+        note_has_price = note_has_level = note_has_cat = note_has_scene = False
+        # ② 价格信号（正则 + 同句排除词，句界 = 。！？；换行，逗号不算）
+        for sentence in re.split(r"[。！？；\n]", text):
+            if any(w in sentence for w in exclude_words):
+                continue  # 同句含排除词（"人均80元，限量供应"）→ 整句价格信号跳过
+            sentence_prices: set[float] = set()
+            for pat in price_patterns:
+                for m in pat.finditer(sentence):
+                    try:
+                        val = m.group(1)
+                        if val is None:
+                            continue
+                        fv = float(val)
+                    except (IndexError, ValueError):
+                        continue
+                    if fv in sentence_prices:
+                        continue  # 重叠 pattern 可能匹配到同一价格（如"人均80元"被两个 pattern 命中），句内去重
+                    sentence_prices.add(fv)
+                    price_hits.append(fv)
+                    note_has_price = True
+        # ③ 层级信号（首个出现位置决定主导层级）
+        best_pos, best_level = None, None
+        for level, kws in level_kw.items():
+            for kw in kws:
+                pos = text.find(kw)
+                if pos != -1 and (best_pos is None or pos < best_pos):
+                    best_pos, best_level = pos, level
+        if best_level:
+            level_counts[best_level] += 1
+            note_has_level = True
+        # ④ 品类 / 场景（可多命中）
+        for cat, kws in cat_kw.items():
+            if any(kw in text for kw in kws):
+                cat_counts[cat] = cat_counts.get(cat, 0) + 1
+                note_has_cat = True
+        for sc, kws in scene_kw.items():
+            if any(kw in text for kw in kws):
+                scene_counts[sc] = scene_counts.get(sc, 0) + 1
+                note_has_scene = True
+        if note_has_price or note_has_level or note_has_cat or note_has_scene:
+            signal_notes += 1
+
+    confidence = "high" if signal_notes >= min_signal else "low"
+    total_level = sum(level_counts.values())
+    level_distribution = {k: round(v / total_level, 4) for k, v in level_counts.items()} if total_level else {}
+    dominant_level = max(level_distribution, key=level_distribution.get) if level_distribution else None
+
+    avg_price_band = None
+    if len(price_hits) >= 3:
+        prices = sorted(price_hits)
+        avg_price_band = [int(_percentile(prices, 25)), int(_percentile(prices, 75))]
+
+    top_categories = [k for k, _ in sorted(cat_counts.items(), key=lambda x: -x[1])[:3]]
+    top_scenes = [k for k, _ in sorted(scene_counts.items(), key=lambda x: -x[1])[:3]]
+
+    merchant_tiers: list[str] = []
+    if dominant_level:
+        merchant_tiers = a_cfg["merchant_tier_map"].get(tier_name, {}).get(dominant_level, [])
+
+    concentration = level_distribution.get(dominant_level, 0.0) if dominant_level else 0.0
+    verticality_audience_score = _interpolate([(0.4, 0.0), (0.7, 100.0)], concentration) if concentration else 0.0
+
+    return {
+        "dominant_level": dominant_level,
+        "level_distribution": level_distribution,
+        "avg_price_band": avg_price_band,
+        "top_categories": top_categories,
+        "top_scenes": top_scenes,
+        "merchant_tiers": merchant_tiers,
+        "signal_notes": signal_notes,
+        "confidence": confidence,
+        "verticality_audience_score": round(verticality_audience_score, 1),
+    }
+
+
+def _industry_benchmarks(exposure_est: float, interaction_rate_pct: float, notes: list[dict], c_cfg: dict) -> dict:
+    """行业公开基准旁证（仅展示，不参与打分）。"""
+    ib = c_cfg["industry_benchmarks"]
+    weighted_list = [_weighted(n["stats"]) for n in notes]
+    med = statistics.median(weighted_list) if weighted_list else 0.0
+    viral = sum(1 for w in weighted_list if med > 0 and w >= med * 3) / max(1, len(weighted_list))
+
+    def _band(value, lo, hi):
+        if value is None:
+            return None
+        if value < lo:
+            return "偏低"
+        if value <= hi:
+            return "中位"
+        return "偏高"
+
+    def _cpe_band(cpe, ntype):
+        if cpe is None:
+            return None
+        b = ib["cpe_bands"][ntype]
+        if cpe < b["excellent"]:
+            return "优秀"
+        if cpe < b["good"]:
+            return "不错"
+        if cpe <= b["normal"]:
+            return "常态"
+        return "偏高"
+
+    interaction_band = _band(interaction_rate_pct, ib["interaction_rate"][0] * 100, ib["interaction_rate"][1] * 100)
+    viral_band = _band(viral * 100, ib["viral_ratio"][0] * 100, ib["viral_ratio"][1] * 100)
+    roi_note = None
+    if interaction_band == "偏低" or viral_band == "偏低":
+        roi_note = "互动/爆文低于行业基准，预估 ROI 承压，投放需跟踪成交"
+    elif interaction_band == "中位":
+        roi_note = "互动位于行业中位，预估 ROI 接近 1.5 阈值，建议小规模试投"
+    else:
+        roi_note = "互动高于行业基准，预估 ROI 有望超过 1.5"
+
+    return {
+        "interaction_rate_pct": round(interaction_rate_pct, 1) if interaction_rate_pct is not None else None,
+        "interaction_band": interaction_band,
+        "viral_ratio_pct": round(viral * 100, 1),
+        "viral_band": viral_band,
+        "roi_note": roi_note,
+    }
+
+
+def _score_cost_effectiveness(
+    notes: list[dict],
+    follower_count: int,
+    tier: dict,
+    pgy_price: dict | None,
+    pgy_meta: dict | None,
+    authenticity: dict,
+    cfg: dict,
+) -> dict:
+    """性价比（v1.12）：真实性闸门未过→0 分；无报价→降级；分差制合并 + 双口径建议报价。"""
+    c_cfg = cfg["cost"]
+    if not authenticity["passed"]:
+        return {
+            "score": 0, "confidence": "high",
+            "detail": {"authenticity": "failed", "reason": "authenticity_failed", "authenticity_signals": authenticity["hits"]},
+        }
+
+    pic = float((pgy_price or {}).get("picture_price") or 0)
+    vid = float((pgy_price or {}).get("video_price") or 0)
+    lower = (pgy_price or {}).get("lower_price")
+    if pic <= 0 and vid <= 0:
+        return {"score": None, "confidence": "low", "detail": {"reason": "no_price", "authenticity_signals": authenticity["hits"]}}
+
+    conf = "high" if len(notes) >= 10 else "medium"
+    _cnt = max(1, len(notes))
+    weighted = sum(_weighted(n["stats"]) for n in notes) / _cnt
+    interaction_rate = weighted / max(1, follower_count)
+    interaction_rate_pct = interaction_rate * 100
+    min_healthy = float(tier.get("min_healthy") or 1.0)
+    quality_q = min(1.0, interaction_rate_pct / min_healthy)
+
+    read_rate = float(c_cfg["read_rates"][tier["tier_name"]])
+    exposure_est = (pgy_meta or {}).get("read_mid") or (follower_count * read_rate)
+    tier_name = tier["tier_name"]
+
+    results: dict[str, dict | None] = {}
+    for ntype, price, factor in (
+        ("picture", pic, float(c_cfg["type_factor"]["picture"])),
+        ("video", vid, float(c_cfg["type_factor"]["video"])),
+    ):
+        if price <= 0:
+            results[ntype] = None
+            continue
+        cpm = price / (exposure_est / 1000) if exposure_est else None
+        cpe = price / (exposure_est * interaction_rate) if exposure_est and interaction_rate else None
+        anchor = float(c_cfg["price_anchors"][tier_name][ntype])
+        fair = anchor * (0.4 + 0.6 * quality_q)
+        ratio = price / fair if fair else 0.0
+        price_score = _interpolate(c_cfg["points"], ratio)
+        cap = 30 if quality_q < float(c_cfg["quality_hard_gate"]) else (50 if quality_q < float(c_cfg["quality_gate"]) else 100)
+        price_score = min(price_score, cap)
+
+        read_unit = float(c_cfg["read_unit"][tier_name])
+        inter_unit = float(c_cfg["inter_unit"][tier_name])
+        read_value = exposure_est / 1000 * read_unit
+        inter_value = exposure_est * interaction_rate * inter_unit
+
+        if quality_q >= float(c_cfg["quality_gate"]):
+            discount = 0.5 + 0.5 * quality_q
+            ceiling = max(read_value, inter_value) * discount * factor
+            bid = (0.6 * inter_value + 0.4 * read_value) * discount * factor
+        elif quality_q >= float(c_cfg["quality_hard_gate"]):
+            discount = 0.5 * quality_q
+            ceiling = max(read_value, inter_value) * discount * factor
+            bid = (0.6 * inter_value + 0.4 * read_value) * discount * factor
+        else:
+            ceiling = bid = None
+
+        bid_range = None
+        if bid is not None:
+            bid = bid * c_cfg["fusion"]["data"] + anchor * c_cfg["fusion"]["anchor"] * float(c_cfg["bid_merchant_discount"])
+            ceiling = ceiling * c_cfg["fusion"]["data"] + anchor * c_cfg["fusion"]["anchor"]
+            bid = round(bid)
+            ceiling = round(ceiling)
+            bid_range = [int(round(bid * c_cfg["range"][0])), int(round(bid * c_cfg["range"][1]))]
+
+        lower_warning = None
+        if lower and bid is not None and bid < float(lower):
+            lower_warning = f"博主自报底价 {float(lower):.0f} 高于系统建议 {bid}，可能不接受该价位"
+
+        results[ntype] = {
+            "score": round(price_score, 1), "cpm": cpm, "cpe": cpe, "fair": round(fair, 1),
+            "ratio": ratio, "suggested_bid": bid, "range": bid_range,
+            "value_ceiling": ceiling, "lower_warning": lower_warning,
+        }
+
+    # 分差制合并（v1.9）
+    scores = [r["score"] for r in results.values() if r]
+    gap_flag = False
+    if not scores:
+        overall_score = None
+    elif len(scores) == 1:
+        overall_score = round(scores[0], 1)
+    else:
+        diff = abs(scores[0] - scores[1])
+        if diff < 20:
+            w_pic = float(c_cfg["type_factor"]["picture"])
+            w_vid = float(c_cfg["type_factor"]["video"])
+            overall_score = round((scores[0] * w_pic + scores[1] * w_vid) / (w_pic + w_vid), 1)
+        else:
+            overall_score = round(max(scores) * 0.85, 1)
+            gap_flag = True
+
+    industry = _industry_benchmarks(exposure_est, interaction_rate_pct, notes, c_cfg)
+
+    audit = None
+    cpm_platform = None
+    click_mid = (pgy_meta or {}).get("click_mid")
+    pic_res = results.get("picture")
+    if click_mid and pic_res and pic_res.get("cpm"):
+        cpm_platform = pic / (float(click_mid) / 1000)
+        r = max(cpm_platform, pic_res["cpm"]) / max(1e-6, min(cpm_platform, pic_res["cpm"]))
+        if r > float(c_cfg["cpm_mismatch"]["red"]):
+            audit = "red"
+        elif r > float(c_cfg["cpm_mismatch"]["yellow"]):
+            audit = "yellow"
+
+    def _g(ntype, field):
+        r = results.get(ntype)
+        return r.get(field) if r else None
+
+    return {
+        "score": overall_score,
+        "confidence": conf,
+        "detail": {
+            "authenticity": "passed",
+            "authenticity_signals": authenticity["hits"],
+            "picture_price": pic, "video_price": vid, "lower_price": lower,
+            "fair_picture": _g("picture", "fair"), "fair_video": _g("video", "fair"),
+            "suggested_bid_picture": _g("picture", "suggested_bid"), "suggested_bid_video": _g("video", "suggested_bid"),
+            "suggested_range_picture": _g("picture", "range"), "suggested_range_video": _g("video", "range"),
+            "value_ceiling_picture": _g("picture", "value_ceiling"), "value_ceiling_video": _g("video", "value_ceiling"),
+            "lower_price_warning": _g("picture", "lower_warning") or _g("video", "lower_warning"),
+            "cpm": _g("picture", "cpm"), "cpe": _g("picture", "cpe"),
+            "cpm_platform": round(cpm_platform, 2) if cpm_platform else None,
+            "audit_flag": audit, "type_score_gap_flag": gap_flag,
+            "quality_q": round(quality_q, 3),
+            "price_ratio_picture": _g("picture", "ratio"),
+            "anchor_tier": tier_name,
+            "exposure_source": "pgy_read" if (pgy_meta or {}).get("read_mid") else "read_rate_est",
+            "industry_benchmarks": industry,
+        },
+    }
+
+
+def _audience_match(audience: dict, merchant_profile: dict | None, tier: dict, cfg: dict) -> dict:
+    """商家目标层级匹配（v1.12）：客单价 0.40 / 品类 0.25 / 层级 0.25 / 城市 0.10，缺项权重重分配。"""
+    a_cfg = cfg["audience"]
+    if not merchant_profile:
+        return {"has_profile": False, "score": None, "sub_scores": {}, "mismatches": []}
+    threshold = float(a_cfg["match_threshold"])
+    weights = {"price_overlap": 0.40, "category_overlap": 0.25, "level_match": 0.25, "city_match": 0.10}
+    sub: dict[str, int] = {}
+
+    band = audience.get("avg_price_band")
+    target = merchant_profile.get("target_price_band")
+    if band and target and len(target) == 2 and target[0] is not None and target[1] is not None:
+        a1, a2 = float(band[0]), float(band[1])
+        t1, t2 = float(target[0]), float(target[1])
+        if t1 == t2:
+            if a1 <= t1 <= a2:
+                s = 100.0
+            else:
+                width = a2 - a1
+                dist = min(abs(t1 - a1), abs(t1 - a2))
+                s = max(0.0, (1 - dist / width) * 100) if width > 0 else 0.0
+        else:
+            overlap = max(0.0, min(a2, t2) - max(a1, t1))
+            union = max(a2, t2) - min(a1, t1)
+            s = overlap / union * 100 if union > 0 else 100.0
+        sub["price_overlap"] = round(s)
+
+    cats = set(audience.get("top_categories") or [])
+    targets = set(merchant_profile.get("target_categories") or [])
+    if targets:
+        hit = len(cats & targets)
+        sub["category_overlap"] = round(hit / len(targets) * 100)
+
+    dl = audience.get("dominant_level")
+    tl = merchant_profile.get("target_merchant_tier")
+    if dl and tl:
+        order = ["大众", "中端", "高端", "奢华"]
+        if dl in order and tl in order:
+            d = abs(order.index(dl) - order.index(tl))
+            sub["level_match"] = 100 if d == 0 else (60 if d == 1 else (20 if d == 2 else 0))
+
+    cs = merchant_profile.get("city_scope")
+    expected = {"T1": ["本地"], "T2": ["区域"], "T3": ["区域", "全国"], "T4": ["全国"]}.get(tier["tier_name"], [])
+    scope_order = ["本地", "区域", "全国"]
+    if cs and expected:
+        if cs in expected:
+            s = 100.0
+        else:
+            dists = [abs(scope_order.index(cs) - scope_order.index(e)) for e in expected if e in scope_order]
+            s = (60.0 if dists and min(dists) == 1 else 20.0) if dists else 0.0
+        sub["city_match"] = round(s)
+
+    denom = sum(w for k, w in weights.items() if k in sub)
+    score = round(sum(sub[k] * weights[k] for k in sub) / denom) if denom else None
+    mismatches: list[str] = []
+    if score is not None and score < threshold:
+        for k, s in sub.items():
+            if s < threshold:
+                mismatches.append(f"{k}={s}")
+    return {"has_profile": True, "score": score, "sub_scores": sub, "mismatches": mismatches}

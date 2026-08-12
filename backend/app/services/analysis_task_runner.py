@@ -288,6 +288,30 @@ async def run_analysis_task(task_id: uuid.UUID) -> None:
             except Exception as exc:
                 logger.warning("评论分析失败，降级 task=%s: %s", task_id, exc)
                 comment_analysis = None
+        # 蒲公英官方数据（v1.12）：报价/商单数/点击互动中位数 → 性价比与真实性闸门；失败则性价比降级
+        pgy_meta = None
+        try:
+            from app.services.justoneapi_client import fetch_creator_profile
+
+            profile_res = await asyncio.to_thread(fetch_creator_profile, task.xhs_user_id)
+            if profile_res.get("ok") and isinstance(profile_res.get("data"), dict):
+                d = profile_res["data"]
+                pgy_meta = {
+                    "price": {
+                        "picture_price": d.get("picturePrice"),
+                        "video_price": d.get("videoPrice"),
+                        "lower_price": d.get("lowerPrice"),
+                    },
+                    "business_note_count": d.get("businessNoteCount") or 0,
+                    "total_notes": int(total or 0),
+                    "click_mid": d.get("clickMidNum"),
+                    "inter_mid": d.get("interMidNum"),
+                    "read_mid": None,  # 蒲公英未提供阅读中位数，用 粉丝×阅读率 估算
+                }
+        except Exception as exc:
+            logger.warning("蒲公英数据获取失败，性价比将降级 task=%s: %s", task_id, exc)
+            pgy_meta = None
+
         result = score_blogger(
             real_notes,
             follower_count=task.follower_count or 0,
@@ -296,6 +320,7 @@ async def run_analysis_task(task_id: uuid.UUID) -> None:
             coverage_denominator=(sample_size if sampled else None),
             follower_history=follower_history,
             comment_analysis=comment_analysis,
+            pgy_meta=pgy_meta,
         )
         status = "partial" if partial else "success"
         # 注入昵称到结果顶层，供批量筛选列表（Task 11b/14）直接展示；

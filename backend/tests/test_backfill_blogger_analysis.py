@@ -27,7 +27,7 @@ from backfill_blogger_analysis import (  # noqa: E402
 )
 
 CN_TZ = timezone(timedelta(hours=8))
-NEW_DIMS = {"seeding_depth", "verticality", "stable_output", "sustained_operation", "growth_trend"}
+NEW_DIMS = {"seeding_depth", "verticality", "stable_output", "sustained_operation", "growth_trend", "cost_effectiveness"}
 OLD_DIMS = {"trend", "content_stability", "interaction_quality", "sustained_operation"}
 
 

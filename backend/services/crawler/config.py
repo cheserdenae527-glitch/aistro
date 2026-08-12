@@ -46,8 +46,8 @@ DEFAULT_CONFIG = {
     "subscription_deep_sync_max_per_run": 200,
     "blogger_scoring": {
         "weights": {
-            "seeding_depth": 0.30, "verticality": 0.20, "stable_output": 0.20,
-            "sustained_operation": 0.15, "growth_trend": 0.15,
+            "seeding_depth": 0.25, "verticality": 0.20, "stable_output": 0.15,
+            "sustained_operation": 0.15, "growth_trend": 0.15, "cost_effectiveness": 0.10,
         },
         "tiers": {
             "T1": {"min": 1000, "max": 10000, "min_healthy_rate": 1.0, "growth_baseline": 0.06},

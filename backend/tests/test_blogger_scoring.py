@@ -36,6 +36,7 @@ def test_high_quality_account():
     assert res["decision"]["recommendation"] == "priority"
     assert set(res["dimensions"].keys()) == {
         "seeding_depth", "verticality", "stable_output", "sustained_operation", "growth_trend",
+        "cost_effectiveness",
     }
     assert res["anomalies"] == []
 
@@ -467,7 +468,8 @@ def test_overall_confidence_coverage_low():
     assert _overall_confidence(dims, coverage_conf="low") == "low"
 
 
-def test_overall_confidence_skipped_noncore_counts_low():
+def test_overall_confidence_skipped_noncore_not_counted():
+    # v1.12：score=None（未评分/无数据）维度不参与置信度汇总，不把整体拖成 low
     from app.services.blogger_scoring import _overall_confidence
 
     dims = {
@@ -475,22 +477,24 @@ def test_overall_confidence_skipped_noncore_counts_low():
         "verticality": {"score": 80.0, "confidence": "high"},
         "stable_output": {"score": 75.0, "confidence": "high"},
         "sustained_operation": {"score": 70.0, "confidence": "high"},
-        "growth_trend": {"score": None, "confidence": "low"},  # 被跳过（无快照且内容趋势不足）
+        "growth_trend": {"score": None, "confidence": "low"},  # 无数据（无快照且内容趋势不足）
+        "cost_effectiveness": {"score": None, "confidence": "low"},  # 无报价
     }
-    assert _overall_confidence(dims, coverage_conf="high") == "medium"
+    assert _overall_confidence(dims, coverage_conf="high") == "high"
 
 
-def test_overall_confidence_two_skipped_noncore_low():
+def test_overall_confidence_low_with_score_still_counts():
+    # 有分数但置信度低（如无快照的 growth_trend）→ 仍计入 low
     from app.services.blogger_scoring import _overall_confidence
 
     dims = {
         "seeding_depth": {"score": 85.0, "confidence": "high"},
-        "verticality": {"score": None, "confidence": "low"},
-        "stable_output": {"score": None, "confidence": "low"},
+        "verticality": {"score": 80.0, "confidence": "high"},
+        "stable_output": {"score": 75.0, "confidence": "high"},
         "sustained_operation": {"score": 70.0, "confidence": "high"},
-        "growth_trend": {"score": 75.0, "confidence": "high"},
+        "growth_trend": {"score": 75.0, "confidence": "low"},  # 有分数但低置信
     }
-    assert _overall_confidence(dims, coverage_conf="high") == "low"
+    assert _overall_confidence(dims, coverage_conf="high") == "medium"
 
 
 def test_overall_confidence_missing_confidence_key_fail_safe_low():

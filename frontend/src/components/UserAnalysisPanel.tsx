@@ -118,6 +118,8 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
   const overall = data.overall;
   const anomalies = data.anomalies || [];
   const fh = data.follower_history || null;
+  const cost = data.dimensions?.cost_effectiveness || null;
+  const audience = data.audience || null;
 
   // 新格式 = 五维 dimensions 或 新 decision 结构（含 low_quality；数据不足的闸门1结果 dimensions 为空但仍是新格式）
   const isOldFormat = !(
@@ -277,6 +279,17 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
             )}
           </Space>
         </Card>
+      )}
+
+      {(cost || audience) && (
+        <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
+          <Col xs={24} xl={10}>
+            <CostCard cost={cost} />
+          </Col>
+          <Col xs={24} xl={14}>
+            <AudienceCard audience={audience} />
+          </Col>
+        </Row>
       )}
 
       <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
@@ -497,6 +510,97 @@ function SimilarKolCard({ data, error, onAnalyze }: { data: PgySimilarKol[]; err
           </div>
         ))}
       </div>
+    </Card>
+  );
+}
+
+function CostCard({ cost }: { cost: any }) {
+  if (!cost) return null;
+  const d = cost.detail || {};
+  const ib = d.industry_benchmarks || null;
+  const confTag = cost.confidence === 'low' ? <Tag color="default">无报价</Tag>
+    : cost.confidence === 'medium' ? <Tag color="gold">低置信</Tag> : <Tag color="green">官方数据</Tag>;
+  return (
+    <Card size="small" title="性价比与建议报价" extra={confTag}>
+      {cost.score == null ? (
+        <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
+          description={d.reason === 'authenticity_failed' ? '数据真实性存疑，不提供报价参考' : '暂无蒲公英报价数据'}
+          style={{ padding: 12 }} />
+      ) : (
+        <Space direction="vertical" size={10} style={{ width: '100%' }}>
+          <Space size={8} align="baseline" wrap>
+            <Text strong style={{ fontSize: 26, color: '#1677ff' }}>{cost.score}</Text>
+            <Text type="secondary">性价比分</Text>
+            {d.audit_flag === 'red' ? <Tag color="red">报价口径异常</Tag> : null}
+            {d.audit_flag === 'yellow' ? <Tag color="orange">报价口径待复核</Tag> : null}
+            {d.type_score_gap_flag ? <Tag color="gold">图文/视频差异大</Tag> : null}
+          </Space>
+          <Row gutter={[8, 8]}>
+            <Col span={12}>
+              <Statistic title="图文建议出价" value={d.suggested_bid_picture != null ? '¥' + fmtNum(d.suggested_bid_picture) : '-'} valueStyle={{ fontSize: 15, color: '#eb2f96' }} />
+              {d.suggested_range_picture ? <div style={{ fontSize: 12, color: '#888' }}>可谈 {fmtNum(d.suggested_range_picture[0])}–{fmtNum(d.suggested_range_picture[1])} 元</div> : null}
+            </Col>
+            <Col span={12}>
+              <Statistic title="视频建议出价" value={d.suggested_bid_video != null ? '¥' + fmtNum(d.suggested_bid_video) : '-'} valueStyle={{ fontSize: 15, color: '#722ed1' }} />
+              {d.suggested_range_video ? <div style={{ fontSize: 12, color: '#888' }}>可谈 {fmtNum(d.suggested_range_video[0])}–{fmtNum(d.suggested_range_video[1])} 元</div> : null}
+            </Col>
+          </Row>
+          {d.value_ceiling_picture != null ? (
+            <Text type="secondary" style={{ fontSize: 12 }}>博主价值上限（图文）约 ¥{fmtNum(d.value_ceiling_picture)}</Text>
+          ) : null}
+          {d.lower_price_warning ? <Alert type="warning" showIcon message={d.lower_price_warning} style={{ fontSize: 12 }} /> : null}
+          {d.cpe != null ? (
+            <div style={{ fontSize: 12 }}><Text type="secondary">CPE（单互动成本）：</Text> {Number(d.cpe).toFixed(1)} 元</div>
+          ) : null}
+          {ib ? (
+            <div style={{ fontSize: 12 }}>
+              <Text type="secondary">行业旁证：</Text>
+              {ib.interaction_rate_pct != null ? `互动率 ${ib.interaction_rate_pct}%（${ib.interaction_band || '-'}）` : ''}
+              {ib.viral_ratio_pct != null ? ` · 爆文率 ${ib.viral_ratio_pct}%（${ib.viral_band || '-'}）` : ''}
+            </div>
+          ) : null}
+          {ib?.roi_note ? <Text type="secondary" style={{ fontSize: 12 }}>{ib.roi_note}</Text> : null}
+        </Space>
+      )}
+    </Card>
+  );
+}
+
+function AudienceCard({ audience }: { audience: any }) {
+  if (!audience) return null;
+  const dist = audience.level_distribution || {};
+  const total = Object.values(dist).reduce((a: number, b: any) => a + Number(b || 0), 0);
+  return (
+    <Card size="small" title="受众画像" extra={audience.confidence === 'low' ? <Tag color="default">样本不足</Tag> : <Tag color="green">已分析</Tag>}>
+      <Space direction="vertical" size={10} style={{ width: '100%' }}>
+        <Space size={8} wrap>
+          <Text strong style={{ fontSize: 15 }}>{audience.dominant_level ? `${audience.dominant_level}消费为主` : '未识别'}</Text>
+          {audience.avg_price_band ? <Tag color="blue">人均 {audience.avg_price_band[0]}–{audience.avg_price_band[1]} 元</Tag> : null}
+          {audience.merchant_tiers?.length ? <Tag color="geekblue">适配 {audience.merchant_tiers.join('、')}</Tag> : null}
+        </Space>
+        {total > 0 && (
+          <div>
+            {Object.entries(dist).map(([k, v]) => (
+              <div key={k} style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 4, fontSize: 12 }}>
+                <span style={{ width: 36 }}>{k}</span>
+                <div style={{ flex: 1, background: '#f5f5f5', borderRadius: 4, height: 8 }}>
+                  <div style={{ width: `${(Number(v) / total) * 100}%`, background: '#1677ff', height: 8, borderRadius: 4 }} />
+                </div>
+                <span style={{ width: 40, textAlign: 'right' }}>{Math.round((Number(v) / total) * 100)}%</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <Space size={12} wrap>
+          {audience.top_categories?.length ? <Text type="secondary" style={{ fontSize: 12 }}>品类：{audience.top_categories.join('、')}</Text> : null}
+          {audience.top_scenes?.length ? <Text type="secondary" style={{ fontSize: 12 }}>场景：{audience.top_scenes.join('、')}</Text> : null}
+        </Space>
+        {audience.match?.score != null ? (
+          <Alert type={audience.match.score >= 60 ? 'success' : 'warning'} showIcon
+            message={`商家目标匹配度 ${audience.match.score} 分`}
+            description={audience.match.mismatches?.length ? audience.match.mismatches.join('；') : undefined} />
+        ) : null}
+      </Space>
     </Card>
   );
 }
