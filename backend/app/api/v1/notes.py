@@ -571,6 +571,31 @@ async def create_analysis_tasks_batch(
     return {"created": created, "rejected": rejected}
 
 
+@router.post("/analysis-tasks/{task_id}/summary")
+async def generate_analysis_task_summary(
+    task_id: str,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """基于分析结果生成 AI 总结（总结 + 优劣点 + 是否建议合作）。"""
+    try:
+        tid = uuid.UUID(task_id)
+    except ValueError:
+        raise HTTPException(status_code=404, detail="Not found")
+    task = await db.get(BloggerAnalysisTask, tid)
+    if not task or task.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Not found")
+    result = task.result or {}
+    if not isinstance(result, dict):
+        raise HTTPException(status_code=422, detail="任务结果格式无效")
+    from app.services.blogger_summary import generate_summary
+
+    try:
+        return await generate_summary(result)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="AI 总结生成失败：" + str(exc))
+
+
 def _is_uuid(s: str) -> bool:
     try:
         uuid.UUID(s)
