@@ -99,9 +99,9 @@ DEFAULT_SCORING_CONFIG: dict = {
         ],
         "points": [(0.2, 10), (0.4, 40), (0.6, 70), (0.8, 100)],
     },
-    "viral": {"median_multiplier": 3.0, "abs_min": 200, "points": [(0.2, 100), (0.1, 70), (0.08, 40), (0.0, 0)]},
+    "viral": {"median_multiplier": 3.0, "abs_min": 200, "points": [(0.0, 0), (0.08, 40), (0.1, 70), (0.2, 100)]},
     "stability": {"gap_days": 14, "cliff_drop": 0.5, "cliff_penalty": 25},
-    "growth": {"content_weight": 0.3, "points": [(1.2, 100), (1.0, 75), (0.5, 45), (0.0, 15)]},
+    "growth": {"content_weight": 0.3, "points": [(0.0, 15), (0.5, 45), (1.0, 75), (1.2, 100)]},
     "comments": {
         "intent_keywords": ["在哪", "多少钱", "好吃吗", "怎么去", "求地址", "人均", "哪里", "电话", "营业", "菜单"],
         "spam_keywords": ["太棒了", "学习了", "支持", "求链接", "已收藏", "点赞"],
@@ -508,7 +508,7 @@ def _score_stable_output(notes: list[dict], now: datetime | None = None) -> dict
     threshold = median * mult if median > 0 else max(mean * mult, abs_min)
     viral_count = sum(1 for w in weighted if w >= threshold)
     viral_ratio = viral_count / len(notes)
-    points = cfg["viral"]["points"]  # [(0.2,100),(0.1,70),(0.08,40),(0,0)]
+    points = cfg["viral"]["points"]  # [(0.0,0),(0.08,40),(0.1,70),(0.2,100)] 升序
     viral_score = _interpolate(points, viral_ratio)
 
     # 稳健性：近 30 天最长空白期 ≥ gap_days → 扣分；最新30天 vs 前60天 中位数互动跌 >50% → 扣分
@@ -1932,3 +1932,27 @@ git commit -m "feat: 博主批量筛选视图（硬门槛 + 总分排序 + score
 - **批量筛选列表端点**：`GET /notes/analysis-tasks` 已作为 Task 11b 落地，Task 14 直接消费。
 - **类型一致性**：`score_blogger` 输出键（`seeding_depth/verticality/stable_output/sustained_operation/growth_trend`、`stage.label/confidence/evidence`、`decision.recommendation/summary/reasons/red_flags/low_quality`、`overall.score/score_suppressed`、`overall_score_suppressed`）与前端 `BloggerAnalysisResult` 完全对应。
 - **占位扫描**：无 TBD/TODO；所有阈值以「结构占位」注明，标定方法论在 Task 1 配置与设计 §10。
+
+---
+
+## 实施偏差记录（2026-08-11 执行后补充）
+
+以下为执行过程中，经实现子代理/审查发现的计划字面代码缺陷与评审修订，均已落实到提交中（最终实现以代码为准）：
+
+- **Task 1**：测试改真实覆盖 `_deep_merge` 深合并路径（monkeypatch `crawler.config.load_config`）+ 回退契约测试；配置读取失败加日志。
+- **Task 2**：计划测试片段读取顶层字段与 `detail` 嵌套实现不一致 → 测试改断言 `detail.*`；`food_verticality([])` 空输入 confidence 修复；配置单次加载（消除 N+1）。
+- **Task 3**：`_map_comment_participation` 锚点计划为降序 → 改升序（`_interpolate` 契约）；`_tier_for` 合并改造从 Task 9 前移到 Task 3，并新增 `tier_name` 键修复 `_score_grass_planting` 分层回归；`viral/growth` 映射锚点改升序。
+- **Task 4**：`gap_days` 报告按设计 §4.3「空白期≥14天」语义归零（惩罚判定不变）；断崖路径独立断言（含突变验证）。
+- **Task 5**：旧 2 参 `_score_growth_trend`（C9 遗留）改名 `_score_data_trend` 解决命名冲突；快照测试钉死数学值（月化 11.1% / 复合 88.0）；内容趋势沿用原 `_score_trend(None, notes)` 口径并注释。
+- **Task 6**：无快照回退不再把大账号误标「冷启动」（计划自带 bug，按规格 §5 修正）；`stage` 配置新增 `mature_fans/large_fans`；停更驱动的「衰退」证据补充「（停更）」。
+- **Task 7**：计划测试片段触发用例 `fans=5000` 与 T1 阈值(35%)矛盾 → 改 `fans=50000`；`score_blogger` 接线与集成断言并入 Task 9。
+- **Task 8**：计划字面 `min(key=_CONF_RANK)` 方向反（取最信任）→ 改 `max`（最不信任）；被跳过(score=None)维度按 low 计（规格 §7）；缺失 confidence 键 fail-safe 按 low。
+- **Task 9**：闸门 3 加 `follower_count>0` 守卫（防虚假倒挂）；`decision` 兼容字段（status/quadrant/grass_level/growth_level）保留至前端 Task 13 落地；置信度在闸门 2 返回前聚合；加权均值分母过滤非 None 维度 + 零权重守卫；闸门 4 降档后重算 desc。
+- **Task 10**：评论信号接入水评闸门（`spam_ratio_threshold`）并暴露 intent/spam/negative/sample 到 seeding detail；`collect_comments` 异步路径补 6 个 stub-crawler 测试；`note_limit∈{1,2}` 钳制；最新笔记保证进样本。
+- **Task 11**：同步接口 410 + 访问埋点；`_ANALYSIS_CACHE*` 删除；死代码（notes.py 5 个 helper）移交阶段 2（3 个仍被 test_xhs_analysis 引用）。
+- **Task 11b**：`nickname` 由 `run_analysis_task` 从 `real_notes[0].author.nickname` 注入 `result`（修复「死字段」）；列表测试补强（limit 钳制、nulls_last、隔离）。
+- **Task 12**：`BloggerAnalysisResult` 类型对齐后端契约（`sampled` 顶层 / `coverage.sample_size`）；返回类型化（`AnalysisTaskPayload` / `CreateAnalysisTaskResponse`）+ 新增 `listAnalysisTasks`。
+- **Task 13**：`Statistic` null 渲染占位（`safeValue`）；头部「已抑制评分 vs 数据不足」状态区分；评论开关移到空闲态可前置 + 运行中禁用。
+- **Task 14**：`loadScreening` 补错误处理/加载态；阶段「（推断）」标记；空态区分（无数据 vs 全被筛掉）；`avatar` 死字段移除；按 `xhs_user_id` 去重取最新任务；`collect_rate`/`food_ratio` null 处理。
+
+> 阶段 2 遗留（观察 1–2 周后执行）：删除 `xhs_analysis.py`、`test_xhs_analysis.py`、`UserAnalysisRequest`、410 接口本体、notes.py 5 个死 helper、blogger_scoring.py 遗留常量（`DIMENSION_WEIGHTS`/`STALE_DAYS`/`VOTE_BAN_RATIO`/`FAKE_RATIO_THRESHOLD`/`_build_decision`），并同步 SPEC-CRAWLER.md §11。

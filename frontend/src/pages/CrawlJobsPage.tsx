@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Button, Input, InputNumber, message, Select, Progress, Table, Tag, Typography, Tabs, Row, Col, Space, Avatar } from 'antd';
+import { Button, Input, InputNumber, message, Select, Switch, Progress, Table, Tag, Typography, Tabs, Row, Col, Space, Avatar } from 'antd';
 import { SearchOutlined, HistoryOutlined, UserOutlined, EyeOutlined, BarChartOutlined, DatabaseOutlined } from '@ant-design/icons';
 import { NoteCardView, parseNote, type NoteCardData } from '../components/NoteCard';
 import NoteDetail from '../components/NoteDetail';
@@ -7,7 +7,9 @@ import SubscriptionsPage from './SubscriptionsPage';
 import KnowledgeBasePanel from '../components/KnowledgeBasePanel';
 import CrawlerPoolPanel from '../components/CrawlerPoolPanel';
 import UserAnalysisPanel from '../components/UserAnalysisPanel';
+import BloggerScreeningPanel from '../components/BloggerScreeningPanel';
 import SubscribeButton from '../components/SubscribeButton';
+import { listAnalysisTasks, ScreeningRow, BloggerAnalysisResult, AnalysisTaskPayload } from '../services/analysis';
 
 const { Title, Text } = Typography;
 
@@ -90,12 +92,55 @@ export default function CrawlJobsPage() {
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);
   const [analysisStatus, setAnalysisStatus] = useState('');
+  const [withComments, setWithComments] = useState(false);
+
+  // 批量筛选
+  const [screeningRows, setScreeningRows] = useState<ScreeningRow[]>([]);
+  const [screeningLoading, setScreeningLoading] = useState(false);
 
   const fetchTasks = async () => {
     try { const res = await (await import('../services/api')).default.get('/crawl-jobs'); setTasks(res.data.running || []); }
     catch { /* silent poll */ }
   };
   useEffect(() => { fetchTasks(); const t = setInterval(fetchTasks,3000); return () => clearInterval(t); }, []);
+
+  const loadScreening = async () => {
+    setScreeningLoading(true);
+    try {
+      const res = await listAnalysisTasks({ status: 'success', limit: 200 });
+      const items = res.items || [];
+      // 去重：每个 xhs_user_id 保留最新 finished_at 的一条
+      const latest = new Map<string, AnalysisTaskPayload>();
+      for (const t of items) {
+        const prev = latest.get(t.xhs_user_id);
+        if (!prev || (t.finished_at || '') > (prev.finished_at || '')) latest.set(t.xhs_user_id, t);
+      }
+      const rows: ScreeningRow[] = Array.from(latest.values()).map((t) => {
+        const r = (t.result || {}) as BloggerAnalysisResult;
+        return {
+          user_id: t.xhs_user_id,
+          nickname: t.nickname || '',
+          fans: t.follower_count || 0,
+          overall_score: r.overall?.score ?? null,
+          score_suppressed: !!(r.overall_score_suppressed || r.overall?.score_suppressed),
+          level: r.overall?.level || '-',
+          recommendation: r.decision?.recommendation || 'insufficient_data',
+          stage_label: r.stage?.label || '-',
+          stage_confidence: r.stage?.confidence || 'low',
+          red_flags: (r.decision?.red_flags || []).map((f) => f.detail),
+          collect_rate: r.dimensions?.seeding_depth?.detail?.collect_rate_percent ?? null,
+          food_ratio: r.dimensions?.verticality?.detail?.food_ratio ?? null,
+          confidence: r.confidence || 'low',
+        };
+      });
+      setScreeningRows(rows);
+    } catch (e: unknown) {
+      message.error('批量筛选数据加载失败：' + ((e as { message?: unknown })?.message || e));
+    } finally {
+      setScreeningLoading(false);
+    }
+  };
+  useEffect(() => { loadScreening(); }, []);
 
   const handleQuickSearch = async (query?: string) => {
     const q = query || browsingQuery;
@@ -160,7 +205,7 @@ export default function CrawlJobsPage() {
     setAnalysisStatus('正在创建分析任务...'); setActiveTab('analysis');
     try {
       const api = (await import('../services/api')).default;
-      const res = await api.post(`/notes/users/${u.user_id}/analysis-tasks`, { nickname: u.nickname, fans: u.fans }, { timeout: 60000 });
+      const res = await api.post(`/notes/users/${u.user_id}/analysis-tasks`, { nickname: u.nickname, fans: u.fans, with_comments: withComments }, { timeout: 60000 });
       if (res.data.passed_prescreen === false) {
         setAnalysisStatus('未通过粗筛：' + (res.data.reason || ''));
         setAnalysisLoading(false);
@@ -182,9 +227,11 @@ export default function CrawlJobsPage() {
             clearInterval(poll);
             if (t.status === 'success' || t.status === 'partial') {
               setAnalysisData(t.result);
-              setAnalysisStatus(t.status === 'partial' ? '分析完成（部分数据）' : '分析完成');
+              const commentsOn = withComments && t.result?.dimensions?.seeding_depth?.detail?.comment_signal_low_conf === false;
+              const doneMsg = commentsOn ? '分析完成（已启用评论意向分析）' : (t.status === 'partial' ? '分析完成（部分数据）' : '分析完成');
+              setAnalysisStatus(doneMsg);
               setAnalysisProgress(100);
-              message.success(t.status === 'partial' ? '分析完成（部分数据）' : '分析完成');
+              message.success(doneMsg);
             } else {
               setAnalysisStatus('分析失败');
               message.error('分析失败：' + (t.error || t.status), 6);
@@ -377,12 +424,25 @@ export default function CrawlJobsPage() {
           </>
         ) : <div style={{ padding:48, textAlign:'center', color:'#999' }}>选择一个已完成的任务查看结果</div>
         },
-        { key:'analysis', label: analysisUser ? '博主分析 · ' + analysisUser.nickname : '博主分析', children: analysisLoading ? (
-          <div style={{ padding: 24, textAlign: 'center' }}>
-            <Progress percent={analysisProgress} status="active" style={{ maxWidth: 480, margin: '0 auto' }} />
-            <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>{analysisStatus || '正在分析...'}</Text>
-          </div>
-        ) : <UserAnalysisPanel user={analysisUser} data={analysisData} onOpenNote={(n) => setDetailNote(n)} /> },
+        { key:'screening', label: '批量筛选', children: (
+          <BloggerScreeningPanel rows={screeningRows} loading={screeningLoading} onRefresh={loadScreening} />
+        ) },
+        { key:'analysis', label: analysisUser ? '博主分析 · ' + analysisUser.nickname : '博主分析', children: (
+          <>
+            <div style={{ padding: 12, textAlign: 'center' }}>
+              <Space>
+                <Switch checked={withComments} disabled={analysisLoading} onChange={setWithComments} checkedChildren="评论分析开" unCheckedChildren="评论分析关" />
+                <Text type="secondary">深度诊断可开启评论意向分析（抓取代表笔记评论，更准但更慢）</Text>
+              </Space>
+            </div>
+            {analysisLoading ? (
+              <div style={{ padding: 24, textAlign: 'center' }}>
+                <Progress percent={analysisProgress} status="active" style={{ maxWidth: 480, margin: '0 auto' }} />
+                <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>{analysisStatus || '正在分析...'}</Text>
+              </div>
+            ) : <UserAnalysisPanel user={analysisUser} data={analysisData} onOpenNote={(n) => setDetailNote(n)} />}
+          </>
+        ) },
         { key:'subscriptions', label:'博主订阅', children: <SubscriptionsPage /> },
         { key:'knowledge', label:'知识库', children: <KnowledgeBasePanel /> },
         { key:'pool', label:'采集配置', children: <CrawlerPoolPanel /> },

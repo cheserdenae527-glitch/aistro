@@ -10,6 +10,9 @@ import statistics
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.services.scoring_config import load_scoring_config
+from app.services.blogger_verticality import food_verticality
+
 CN_TZ = timezone(timedelta(hours=8))
 
 # 加权互动：点赞成本最低、最容易刷，权重最低；分享最难伪造，权重最高
@@ -47,6 +50,8 @@ TREND_MIN_SAMPLES = 10
 STALE_DAYS = 60
 VOTE_BAN_RATIO = 0.20
 FAKE_RATIO_THRESHOLD = 0.005
+_CONF_RANK = {"high": 0, "medium": 1, "low": 2}
+_NONCORE = {"verticality", "stable_output", "sustained_operation", "growth_trend"}
 
 
 def _weighted(st: dict) -> int:
@@ -84,11 +89,21 @@ def _interpolate(points: list[tuple[float, float]], x: float) -> float:
 
 
 def _tier_for(fans: int) -> dict:
-    for tier in TIERS.values():
-        if fans >= tier["min"] and (tier["max"] is None or fans < tier["max"]):
-            return tier
-    # 粉丝 <1000 的账号按 T1（尾部）口径评分，避免误落到 T4 顶部阈值
-    return TIERS["T1"]
+    """粉丝分层：从 scoring_config 读取，并合并旧 TIERS 的 points/min_healthy。"""
+    tiers = load_scoring_config()["tiers"]
+    for key, t in tiers.items():
+        if fans >= int(t["min"]) and (t.get("max") is None or fans < int(t["max"])):
+            merged = dict(t)
+            merged["tier_name"] = key
+            legacy = TIERS.get(key, {})
+            merged.setdefault("points", legacy.get("points", []))
+            merged.setdefault("min_healthy", legacy.get("min_healthy", t.get("min_healthy_rate", 0.0)))
+            return merged
+    merged = dict(tiers["T1"])
+    merged["tier_name"] = "T1"
+    merged.setdefault("points", TIERS["T1"].get("points", []))
+    merged.setdefault("min_healthy", TIERS["T1"].get("min_healthy", tiers["T1"].get("min_healthy_rate", 0.0)))
+    return merged
 
 
 def _real_notes(notes: list[dict]) -> list[dict]:
@@ -134,24 +149,81 @@ def _score_interaction_quality(notes: list[dict], fans: int, tier: dict, now: da
     return {"score": round(score, 1), "rate": round(rate, 3), "sample": len(recent)}
 
 
-def _score_content_stability(std_values: list[float], notes: list[dict]) -> dict:
+def _score_stable_output(notes: list[dict], now: datetime | None = None) -> dict:
+    """稳定产出：爆文率（中位数×3，抗刷量拉高均值）×0.7 + 稳健性（连续性/断崖）×0.3。
+
+    弃用 CV：爆款账号方差天然大，CV 会反向惩罚有爆款的账号；改为只罚中断与暴跌。
+    gap_days 上报口径：仅当近 30 天存在 ≥gap_days 天的连续无发布空白期时上报实际天数，否则为 0（常规节奏不算空白）。
+    """
+    cfg = load_scoring_config()
+    now = now or datetime.now(CN_TZ)
     if not notes:
-        return {"score": 0.0, "quality_ratio": 0.0, "cv": 0.0}
-    quality_count = sum(1 for v in std_values if v >= 200)
-    ratio = quality_count / len(notes)
-    ratio_score = _interpolate([(0.0, 0), (0.08, 40), (0.15, 70), (0.25, 100)], ratio)
-    mean = statistics.fmean(std_values) if std_values else 0.0
-    if mean > 0 and len(std_values) >= 2:
-        cv = statistics.pstdev(std_values) / mean
-    else:
-        cv = 0.0
-    stability_term = (1 - min(cv, 1.0)) * 100 if mean > 0 else 50.0
-    score = ratio_score * 0.7 + stability_term * 0.3
+        return {"score": 0.0, "confidence": "high", "detail": {"viral_ratio": 0.0, "gap_days": 0, "cliff_detected": False}}
+
+    weighted = [_weighted(n["stats"]) for n in notes]
+    median = statistics.median(weighted)
+    mean = statistics.fmean(weighted)
+    mult = float(cfg["viral"]["median_multiplier"])
+    abs_min = int(cfg["viral"]["abs_min"])
+    threshold = median * mult if median > 0 else max(mean * mult, abs_min)
+    viral_count = sum(1 for w in weighted if w >= threshold)
+    viral_ratio = viral_count / len(notes)
+    points = cfg["viral"]["points"]  # [(0.0,0),(0.08,40),(0.1,70),(0.2,100)] 升序
+    viral_score = _interpolate(points, viral_ratio)
+
+    # 稳健性：近 30 天最长空白期 ≥ gap_days → 扣分；最新30天 vs 前60天 中位数互动跌 >50% → 扣分
+    raw_gap = _max_recent_gap_days(notes, now)
+    gap_threshold = int(cfg["stability"]["gap_days"])
+    # 空白期按设计口径只认 ≥gap_days 的连续无发布期：常规节奏（如隔天一更）不算空白，detail 上报 0
+    has_blank_period = raw_gap >= gap_threshold
+    gap_days = raw_gap if has_blank_period else 0
+    cliff_detected = _interaction_cliff(notes, now, drop=float(cfg["stability"]["cliff_drop"]))
+    penalty = float(cfg["stability"]["cliff_penalty"])
+    robustness = 100.0 - (penalty if has_blank_period else 0.0) - (penalty if cliff_detected else 0.0)
+
+    score = viral_score * 0.7 + max(0.0, robustness) * 0.3
     return {
         "score": round(score, 1),
-        "quality_ratio": round(ratio * 100, 1),
-        "cv": round(cv, 3),
+        "confidence": "high",
+        "detail": {"viral_ratio": round(viral_ratio, 4), "gap_days": gap_days, "cliff_detected": cliff_detected},
     }
+
+
+def _max_recent_gap_days(notes: list[dict], now: datetime) -> int:
+    """近 30 天窗口内连续无发布的最大天数；窗口内无笔记按 30 天计。"""
+    cutoff = now - timedelta(days=30)
+    in_window = [dt for n in notes if (dt := _parse_dt(n["published_at"])) is not None and dt >= cutoff]
+    if not in_window:
+        return 30
+    in_window.sort()
+    max_gap = 0
+    prev = cutoff
+    for dt in in_window:
+        gap = (dt - prev).days
+        if gap > max_gap:
+            max_gap = gap
+        prev = dt
+    tail = (now - prev).days
+    return max(max_gap, tail)
+
+
+def _interaction_cliff(notes: list[dict], now: datetime, drop: float = 0.5) -> bool:
+    """最新30天 vs 前60天 的标准化互动中位数下降超过 drop 比例则判定断崖。"""
+    std = _type_standardized(notes)
+    recent, older = [], []
+    for n, s in zip(notes, std):
+        dt = _parse_dt(n["published_at"])
+        if dt is None:
+            continue
+        if dt >= now - timedelta(days=30):
+            recent.append(s)
+        elif dt >= now - timedelta(days=90):
+            older.append(s)
+    if not recent or not older:
+        return False
+    m_recent = statistics.median(recent)
+    m_older = statistics.median(older)
+    return m_older > 0 and m_recent < m_older * (1 - drop)
 
 
 def _score_sustained_operation(notes: list[dict], now: datetime) -> dict:
@@ -171,6 +243,101 @@ def _score_sustained_operation(notes: list[dict], now: datetime) -> dict:
         "score": round(score, 1),
         "weekly_notes": round(weekly, 2),
         "freshness_days": round(stale_days, 1) if stale_days is not None else None,
+    }
+
+
+def _comment_participation(notes: list[dict]) -> float:
+    """评论参与度 = 评论数 / (赞+藏+评+转) 的篇均值；互动全为 0 时取 0。"""
+    ratios = []
+    for n in notes:
+        st = n["stats"]
+        total = sum(int(st.get(k, 0) or 0) for k in ("liked", "collected", "comments", "shared"))
+        if total > 0:
+            ratios.append(int(st.get("comments", 0) or 0) / total)
+    return statistics.fmean(ratios) if ratios else 0.0
+
+
+def _map_comment_participation(ratio: float) -> float:
+    """评论参与度映射（结构占位，待标定）：≥0.25→100，0.15→70，0.08→40，0→0。"""
+    points = [(0.0, 0), (0.08, 40), (0.15, 70), (0.25, 100)]
+    return _interpolate(points, ratio)
+
+
+def _comment_analysis_detail(comment_analysis: dict | None) -> dict:
+    """评论增强信号明细：意向/水评/负面占比 + 样本量；未开启时为空。"""
+    if comment_analysis is None:
+        return {}
+    return {
+        "intent_ratio": round(float(comment_analysis.get("intent_ratio", 0.0)), 4),
+        "spam_ratio": round(float(comment_analysis.get("spam_ratio", 0.0)), 4),
+        "negative_ratio": round(float(comment_analysis.get("negative_ratio", 0.0)), 4),
+        "comment_sample": int(comment_analysis.get("sample", 0) or 0),
+    }
+
+
+def _score_seeding_depth(
+    notes: list[dict],
+    fans: int,
+    tier: dict,
+    now: datetime,
+    comment_analysis: dict | None = None,
+) -> dict:
+    """种草深度：收藏(想去)45% + 分享(安利)30% + 评论信号25%。
+
+    收藏深度/分享扩散按粉丝分层映射；赞藏比只作展示信号与闸门红旗，不打分。
+    评论分析默认关闭：评论子项用参与度近似且 confidence=low、权重 ×0.5 重归一化。
+    """
+    cutoff = now - timedelta(days=ANALYSIS_WINDOW_DAYS)
+    recent = [n for n in notes if _parse_dt(n["published_at"]) is not None and _parse_dt(n["published_at"]) >= cutoff]
+    recent = recent or notes  # 无近90天笔记时回退全量（停更由闸门4兜底）
+    if not recent or fans <= 0:
+        detail = {
+            "collect_rate_percent": 0.0, "collect_like_ratio": 0.0, "share_rate_percent": 0.0,
+            "comment_signal": 0.0, "comment_signal_low_conf": True}
+        detail.update(_comment_analysis_detail(comment_analysis))
+        return {"score": 0.0, "confidence": "high", "detail": detail}
+
+    total_collect = sum(int(n["stats"].get("collected", 0) or 0) for n in recent)
+    total_share = sum(int(n["stats"].get("shared", 0) or 0) for n in recent)
+    collect_like_ratios = []
+    for n in recent:
+        liked = int(n["stats"].get("liked", 0) or 0)
+        collected = int(n["stats"].get("collected", 0) or 0)
+        if liked > 0:
+            collect_like_ratios.append(collected / liked)
+    collect_like_ratio = statistics.median(collect_like_ratios) if collect_like_ratios else 0.0
+
+    collect_rate_percent = (total_collect / len(recent) / fans) * 100.0
+    share_rate_percent = (total_share / len(recent) / fans) * 100.0
+    collect_score = _interpolate(tier["collect_rate_points"], collect_rate_percent)
+    share_score = _interpolate(tier["share_rate_points"], share_rate_percent)
+
+    comment_low_conf = comment_analysis is None
+    if comment_analysis is not None:
+        intent = float(comment_analysis.get("intent_ratio", 0.0))
+        spam = float(comment_analysis.get("spam_ratio", 0.0))
+        comment_score = max(0.0, min(100.0, intent * 100 - spam * 50))
+    else:
+        comment_score = _map_comment_participation(_comment_participation(recent))
+
+    sub_weights = {"collect": 0.45, "share": 0.30, "comment": 0.25}
+    if comment_low_conf:
+        sub_weights["comment"] *= 0.5
+    total_w = sum(sub_weights.values())
+    score = (collect_score * sub_weights["collect"] + share_score * sub_weights["share"]
+             + comment_score * sub_weights["comment"]) / total_w
+    detail = {
+        "collect_rate_percent": round(collect_rate_percent, 3),
+        "collect_like_ratio": round(collect_like_ratio, 3),
+        "share_rate_percent": round(share_rate_percent, 3),
+        "comment_signal": round(comment_score, 1),
+        "comment_signal_low_conf": comment_low_conf,
+    }
+    detail.update(_comment_analysis_detail(comment_analysis))
+    return {
+        "score": round(score, 1),
+        "confidence": "high",
+        "detail": detail,
     }
 
 
@@ -201,6 +368,31 @@ def _score_trend(std_values: list[float], notes: list[dict]) -> dict:
         "ratio": round(ratio, 3) if ratio is not None else None,
         "note": note,
     }
+
+
+def _overall_confidence(dimensions: dict, coverage_conf: str) -> str:
+    """通用置信度汇总：min(覆盖率可信度, min(五维置信度))。
+
+    被跳过（score=None）或被降权的维度按 low 计（规格 §7）；缺失 confidence 键按 low 计（fail-safe）。
+    特例：low 仅来自单个非核心维度，且种草深度非 low 时，整体取 medium。
+    覆盖率 low 已在闸门 1 拦截，此处只会是 high/medium。
+    """
+    if coverage_conf == "low":
+        return "low"
+    dim_confs = []
+    low_dims = []
+    for k, d in dimensions.items():
+        conf = "low" if d.get("score") is None else d.get("confidence", "low")
+        dim_confs.append(conf)
+        if conf == "low":
+            low_dims.append(k)
+    if not dim_confs:
+        return "low"
+    min_dim = max(dim_confs, key=lambda c: _CONF_RANK[c])  # 最不信任
+    if min_dim == "low" and len(low_dims) == 1 and low_dims[0] in _NONCORE \
+            and dimensions.get("seeding_depth", {}).get("confidence", "high") != "low":
+        return "medium"
+    return max([coverage_conf, min_dim], key=lambda c: _CONF_RANK[c])
 
 
 def _build_timeline(notes: list[dict]) -> dict:
@@ -236,6 +428,14 @@ _LEVEL_ORDER = ["待观察", "一般", "良好", "优秀", "卓越"]
 def _downgrade_level(level: str) -> str:
     idx = _LEVEL_ORDER.index(level)
     return _LEVEL_ORDER[max(0, idx - 1)]
+
+
+def _level_desc(level: str) -> str:
+    """等级标签对应的描述文案（闸门降级后同步刷新 desc）。"""
+    for _, label, d in LEVELS:
+        if label == level:
+            return d
+    return ""
 
 
 STRONG_SCORE = 70
@@ -301,7 +501,7 @@ def _score_grass_planting(notes: list[dict], fans: int, tier: dict) -> dict:
     collect_ratio = total_collects / total_likes if total_likes > 0 else 0.0
     collect_rate = total_collects / fans / len(notes) * 100.0
     share_rate = total_shares / fans / len(notes) * 100.0
-    tier_name = next((k for k, v in TIERS.items() if v is tier), "T1")
+    tier_name = str(tier.get("tier_name") or "T1")
     collect_ratio_score = _interpolate(GRASS_COLLECT_RATIO_POINTS, collect_ratio)
     collect_rate_score = _interpolate(GRASS_COLLECT_RATE_POINTS[tier_name], collect_rate)
     share_rate_score = _interpolate(GRASS_SHARE_RATE_POINTS[tier_name], share_rate)
@@ -359,7 +559,7 @@ def _score_update_stability(notes: list[dict], now: datetime) -> dict:
     }
 
 
-def _score_growth_trend(notes: list[dict], fans: int) -> dict:
+def _score_data_trend(notes: list[dict], fans: int) -> dict:
     timed = sorted(
         (n for n in notes if _parse_dt(n.get("published_at")) is not None),
         key=lambda n: _parse_dt(n.get("published_at")),
@@ -375,17 +575,17 @@ def _score_growth_trend(notes: list[dict], fans: int) -> dict:
         return statistics.median(vals) if vals else 0.0
 
     e = collect_median(earlier)
-    l = collect_median(later)
+    later_med = collect_median(later)
     if e <= 0:
         ratio = None
-        score = 60.0 if l > 0 else 30.0
-        note = "前半程收藏为0，按中性/从无到有处理" if l > 0 else "后半程无有效收藏，趋势偏低"
-    elif l <= 0:
+        score = 60.0 if later_med > 0 else 30.0
+        note = "前半程收藏为0，按中性/从无到有处理" if later_med > 0 else "后半程无有效收藏，趋势偏低"
+    elif later_med <= 0:
         ratio = 0.0
         score = 30.0
         note = "后半程无有效收藏，趋势偏低"
     else:
-        ratio = l / e
+        ratio = later_med / e
         score = _interpolate([(0.5, 15), (0.7, 40), (1.0, 60), (1.5, 85), (2.0, 100)], ratio)
         note = ""
     return {"score": round(score, 1), "ratio": round(ratio, 3) if ratio is not None else None, "note": note}
@@ -411,6 +611,170 @@ def _score_follower_growth(history: list[dict]) -> float | None:
     growth_rate = (last_fans - first_fans) / first_fans
     score = _interpolate([(-0.2, 0), (0.0, 40), (0.1, 70), (0.3, 100)], growth_rate)
     return round(score, 1)
+
+
+def _latest_growth_rate(history: list[dict] | None) -> float | None:
+    """取最近两次快照的粉丝增长率并月化；间隔需 ≤60 天，短间隔会被放大（如 1-2 天跨度 ×15-30）。
+
+    不足两次有效快照、间隔 ≤0 或 >60 天返回 None。"""
+    if not history or len(history) < 2:
+        return None
+    items = []
+    for h in history:
+        dt = _parse_dt(h.get("snapshot_at") or h.get("date") or h.get("created_at"))
+        fans = int(h.get("fans", 0) or 0)
+        if dt and fans > 0:
+            items.append((dt, fans))
+    items.sort()
+    if len(items) < 2:
+        return None
+    (dt_prev, fans_prev), (dt_last, fans_last) = items[-2], items[-1]
+    days = (dt_last - dt_prev).days
+    if days <= 0 or days > 60:
+        return None
+    if fans_prev <= 0:
+        return None
+    rate = (fans_last - fans_prev) / fans_prev
+    return rate * 30.0 / days  # 月化
+
+
+def _score_growth_trend(
+    notes: list[dict],
+    fans: int,
+    now: datetime,
+    follower_history: list[dict] | None,
+    tier: dict,
+) -> dict:
+    """增长趋势：有快照 → 涨粉分×(1-content_weight) + 内容趋势×content_weight；无快照 → 仅内容趋势，confidence=low。
+
+    无快照时不引入阶段分，避免与阶段判定的同源互动趋势信号重复计算（见设计 §4.5）。
+    fans/now 为 Task 9 五维统一调用契约预留，本维度暂未使用。
+    """
+    # 内容趋势沿用原 `_score_trend` 的加权互动口径（未做类型内标准化）；如需标准化待 Task 9 统一评估
+    trend = _score_trend(None, notes)
+    content_score = None if trend["skipped"] else trend["score"]
+    content_reason = None if not trend["skipped"] else trend["reason"]
+
+    growth_rate = _latest_growth_rate(follower_history)
+    if growth_rate is None:
+        if content_score is None:
+            return {"score": None, "confidence": "low", "detail": {
+                "growth_rate": None, "has_snapshot": False, "trend_ratio": None,
+                "reason": content_reason or "样本不足以计算内容趋势", "weight_halved": True}}
+        return {"score": content_score, "confidence": "low", "detail": {
+            "growth_rate": None, "has_snapshot": False, "trend_ratio": trend["ratio"],
+            "reason": "无涨粉快照，仅按内容趋势计分", "weight_halved": True}}
+
+    cfg = load_scoring_config()
+    baseline = float(tier.get("growth_baseline", 0.08))
+    points = cfg["growth"]["points"]  # [(0.0,15),(0.5,45),(1.0,75),(1.2,100)] 升序
+    growth_score = _interpolate(points, growth_rate / baseline if baseline else 0.0)
+    if content_score is None:
+        score = growth_score
+        conf = "high"
+        detail = {"growth_rate": round(growth_rate, 4), "has_snapshot": True, "trend_ratio": None,
+                  "reason": "内容趋势样本不足，仅按涨粉计分"}
+    else:
+        content_weight = float(cfg["growth"]["content_weight"])
+        score = growth_score * (1 - content_weight) + content_score * content_weight
+        conf = "high"
+        detail = {"growth_rate": round(growth_rate, 4), "has_snapshot": True,
+                  "trend_ratio": trend["ratio"], "reason": None}
+    return {"score": round(score, 1), "confidence": conf, "detail": detail}
+
+
+def _weekly_notes(notes: list[dict], now: datetime) -> float:
+    cutoff = now - timedelta(days=90)
+    recent = 0
+    for n in notes:
+        dt = _parse_dt(n.get("published_at"))
+        if dt is not None and dt >= cutoff:
+            recent += 1
+    return round(recent / 13.0, 2)  # 90 天 ≈ 13 周
+
+
+def _classify_stage(fans: int, notes: list[dict], now: datetime, follower_history: list[dict] | None) -> dict:
+    """账号阶段：冷启动 / 成长 / 成熟 / 衰退。独立输出标签，不参与加权。
+
+    有 ≥2 次快照 → 涨粉率 vs 分层基准 + 更新频率，置信 high/medium；
+    无快照 → 粉丝量级 + 更新频率 + 互动趋势推断，置信度恒为 low。
+    """
+    cfg = load_scoring_config()
+    tier = _tier_for(fans)
+    baseline = float(tier.get("growth_baseline", 0.08))
+    weekly = _weekly_notes(notes, now)
+    growth_rate = _latest_growth_rate(follower_history)
+    latest_dt = None
+    for n in notes:
+        dt = _parse_dt(n.get("published_at"))
+        if dt and (latest_dt is None or dt > latest_dt):
+            latest_dt = dt
+    days = (now - latest_dt).days if latest_dt is not None else None
+    stale = days is not None and days > int(cfg["gate"]["stale_days"])
+
+    if growth_rate is not None:
+        # 0.3×baseline 处刻意取严格 <：恰好达标视为「维持存量」而非衰退，避免临界样本误判
+        if growth_rate <= 0 or (growth_rate < baseline * 0.3 and weekly < 1.0):
+            label, conf = "衰退", "medium"
+        elif growth_rate >= baseline:
+            label, conf = "成长", "high"
+        elif fans >= int(cfg["stage"]["mature_fans"]) and weekly >= 1.0:
+            label, conf = "成熟", "medium"
+        else:
+            label, conf = "冷启动", "medium"
+        if stale and label in ("成长", "成熟"):
+            label, conf = "衰退", "medium"
+        evidence = [f"月化涨粉 {growth_rate * 100:.1f}%", f"周均发布 {weekly}"]
+        if stale:
+            evidence.append(f"最新笔记发布距今 {days} 天（停更）")
+    else:
+        # 无快照：仅推断，恒 low；冷启动仅限粉丝 < cold_start_fans
+        if stale:
+            label = "衰退"
+        elif fans < int(cfg["stage"]["cold_start_fans"]):
+            label = "冷启动"
+        elif weekly >= 1.0 and fans >= int(cfg["stage"]["large_fans"]):
+            label = "成熟"
+        elif weekly >= 1.0:
+            label = "成长"
+        else:
+            label = "成熟"  # 粉丝达标但低频、未停更：存量成熟账号
+        conf = "low"
+        evidence = [f"粉丝 {fans}", f"周均发布 {weekly}", "近 60 天无有效涨粉快照，阶段为推断"]
+        if stale:
+            evidence.append(f"最新笔记发布距今 {days} 天（停更）")
+    return {"label": label, "confidence": conf, "evidence": evidence}
+
+
+def _growth_anomaly(growth_rate: float, interaction_drop: float, fans: int) -> dict | None:
+    """闸门 5：涨粉异常 = 增幅超阈值 且 同期互动率下降（「且」关系）。
+
+    T1（<1w 粉）阈值放宽到 t1_growth_spike，避免小爆款有机增长误报。
+    """
+    cfg = load_scoring_config()["gate"]
+    spike = float(cfg["t1_growth_spike"]) if fans < 10000 else float(cfg["growth_spike"])
+    if growth_rate > spike and interaction_drop >= float(cfg["growth_interaction_drop"]):
+        return {"type": "growth_anomaly", "level": "warn",
+                "detail": f"粉丝增幅 {growth_rate * 100:.0f}% 且互动率下降，疑似注水"}
+    return None
+
+
+def _collect_like_inversion_hit(notes: list[dict], fans: int, tier: dict) -> bool:
+    """刷量辅助信号：赞藏比中位数 <0.2 且 篇均收藏/粉丝 低于该层最低健康线。"""
+    cfg = load_scoring_config()["gate"]
+    ratios = []
+    for n in notes:
+        liked = int(n["stats"].get("liked", 0) or 0)
+        collected = int(n["stats"].get("collected", 0) or 0)
+        if liked > 0:
+            ratios.append(collected / liked)
+    if not ratios:
+        return False
+    median_ratio = statistics.median(ratios)
+    if median_ratio >= float(cfg["collect_like_ratio_floor"]):
+        return False
+    collect_rate_percent = sum(int(n["stats"].get("collected", 0) or 0) for n in notes) / len(notes) / fans * 100.0
+    return collect_rate_percent < float(tier.get("min_healthy_rate", 1.0))
 
 
 def _summarize_follower_history(history: list[dict] | None) -> dict | None:
@@ -474,7 +838,7 @@ def _score_growth_potential(notes: list[dict], fans: int, now: datetime, followe
         components["follower_growth"] = {"score": None, "detail": {"note": "暂无粉丝历史快照，该子项不计分"}}
     components["content_system"] = _score_content_system(notes)
     components["update_stability"] = _score_update_stability(notes, now)
-    trend = _score_growth_trend(notes, fans)
+    trend = _score_data_trend(notes, fans)
     if trend["score"] is None:
         del weights["data_trend"]
         components["data_trend"] = {"score": None, "detail": {"note": trend["note"]}}
@@ -515,6 +879,33 @@ def _build_decision(grass: dict, growth: dict) -> dict:
     return {"status": "ok", "quadrant": quadrant, "recommendation": rec, "grass_level": gl, "growth_level": pl}
 
 
+def _recommendation(overall: float, stage: dict, anomalies: list[dict]) -> tuple[str, str]:
+    """合作建议：priority / ok / caution 三档（insufficient/not_recommended 已提前返回）。"""
+    red_flag_types = {a["type"] for a in anomalies}
+    has_any_flag = bool(red_flag_types)
+    stage_ok = stage["label"] in ("成长", "成熟") and stage["confidence"] != "low"
+    if overall >= 70 and not has_any_flag and stage_ok:
+        return "priority", "美食垂直度高、种草能力强，处于成长/成熟期，适合优先建联"
+    if overall >= 55 and not has_any_flag:
+        return "ok", "种草能力在线且无红旗，可以合作"
+    return "caution", "存在非致命红旗或分数偏低，建议谨慎评估"
+
+
+def _build_reasons(dimensions: dict, stage: dict) -> list[str]:
+    reasons = []
+    v = dimensions["verticality"]["detail"]
+    if v.get("food_ratio", 0) >= 0.6:
+        reasons.append(f"美食内容占比 {v['food_ratio'] * 100:.0f}%")
+    sd = dimensions["seeding_depth"]["detail"]
+    if sd.get("collect_rate_percent", 0) > 0:
+        reasons.append(f"篇均收藏率 {sd['collect_rate_percent']:.2f}%")
+    gt = dimensions["growth_trend"]["detail"]
+    if gt.get("has_snapshot") and gt.get("growth_rate") is not None:
+        reasons.append(f"月化涨粉 {gt['growth_rate'] * 100:.1f}%")
+    reasons.append(f"账号阶段：{stage['label']}")
+    return reasons
+
+
 def score_blogger(
     notes: list[dict],
     follower_count: int = 0,
@@ -523,8 +914,9 @@ def score_blogger(
     sampled: bool = False,
     coverage_denominator: int | None = None,
     follower_history: list[dict] | None = None,
+    comment_analysis: dict | None = None,
 ) -> dict:
-    """运行真实数据评分，返回可直接落库/展示的结果结构。"""
+    """运行种草能力五维评分，返回可直接落库/展示的结果结构。"""
     now = now or datetime.now(CN_TZ)
     if now.tzinfo is None:
         now = now.replace(tzinfo=CN_TZ)
@@ -534,11 +926,11 @@ def score_blogger(
     sample_size = coverage_denominator if coverage_denominator is not None else total_notes
     coverage_rate = fetched / sample_size if sample_size else 0.0
     if coverage_rate >= 0.8 and fetched >= 30:
-        confidence = "high"
+        coverage_conf = "high"
     elif coverage_rate >= 0.5 and fetched >= 15:
-        confidence = "medium"
+        coverage_conf = "medium"
     else:
-        confidence = "low"
+        coverage_conf = "low"
 
     base = {
         "note_count": len(notes),
@@ -550,12 +942,14 @@ def score_blogger(
             "fetched_notes": fetched,
             "coverage_rate": round(coverage_rate, 4),
         },
-        "confidence": confidence,
+        "confidence": coverage_conf,
         "dimensions": {},
         "overall": None,
+        "overall_score_suppressed": False,
         "grass_planting": None,
         "growth_potential": None,
         "decision": None,
+        "stage": None,
         "follower_history": _summarize_follower_history(follower_history),
         "anomalies": [],
         "insights": [],
@@ -566,43 +960,62 @@ def score_blogger(
     if sampled and sample_size:
         base["insights"].append(f"抽样分析：共 {total_notes} 篇，均匀抽取 {sample_size} 篇真实详情")
 
-    if confidence == "low":
+    # 闸门 1：覆盖率不达标 → insufficient_data（不评分、不判定低质）
+    if coverage_conf == "low":
         base["insights"].append("数据不足，暂不评分")
-        base["decision"] = {"status": "no_data", "quadrant": "数据不足", "recommendation": "数据不足，暂不评分"}
+        base["overall_score_suppressed"] = True
+        base["decision"] = {
+            "recommendation": "insufficient_data", "summary": "真实样本覆盖率不足，暂不评分",
+            "reasons": [f"已验证样本 {fetched}/{sample_size or 0}，覆盖率 {coverage_rate:.0%}"],
+            "red_flags": [], "low_quality": False,
+            "status": "no_data", "quadrant": "数据不足", "grass_level": None, "growth_level": None,
+        }
         return base
 
     tier = _tier_for(follower_count)
+    gate_cfg = load_scoring_config()["gate"]
+    # 兼容字段（前端过渡期保留；新前端切走后移除）
     grass = _score_grass_planting(real, follower_count, tier)
     growth = _score_growth_potential(real, follower_count, now, follower_history)
     base["grass_planting"] = grass
     base["growth_potential"] = growth
-    base["decision"] = _build_decision(grass, growth)
-    std_values = _type_standardized(real)
-    iq = _score_interaction_quality(real, follower_count, tier, now)
-    stability = _score_content_stability(std_values, real)
+    old_decision = _build_decision(grass, growth)  # 旧前端兼容（Task 13 切走后移除）
+
+    # 五维评分
+    seeding = _score_seeding_depth(real, follower_count, tier, now, comment_analysis=comment_analysis)
+    vert = food_verticality(real)
+    stable = _score_stable_output(real, now)
     sustained = _score_sustained_operation(real, now)
-    trend = _score_trend(std_values, real)
+    growth_trend = _score_growth_trend(real, follower_count, now, follower_history, tier)
 
     dimensions = {
-        "interaction_quality": {"score": iq["score"], "confidence": "high", "detail": {"rate_percent": iq["rate"], "sample": iq["sample"]}},
-        "content_stability": {"score": stability["score"], "confidence": "high", "detail": {"quality_ratio": stability["quality_ratio"], "cv": stability["cv"]}},
+        "seeding_depth": {"score": seeding["score"], "confidence": seeding["confidence"], "detail": seeding["detail"]},
+        "verticality": {"score": vert["score"], "confidence": vert["confidence"], "detail": vert["detail"]},
+        "stable_output": {"score": stable["score"], "confidence": stable["confidence"], "detail": stable["detail"]},
         "sustained_operation": {"score": sustained["score"], "confidence": "high", "detail": {"weekly_notes": sustained["weekly_notes"], "freshness_days": sustained["freshness_days"]}},
+        "growth_trend": {"score": growth_trend["score"], "confidence": growth_trend["confidence"], "detail": growth_trend["detail"]},
     }
-    weights = dict(DIMENSION_WEIGHTS)
-    if trend["skipped"]:
-        dimensions["trend"] = {"score": None, "confidence": "low", "detail": {"reason": trend["reason"]}}
-        del weights["trend"]
-        base["insights"].append(trend["reason"])
-    else:
-        dimensions["trend"] = {"score": trend["score"], "confidence": "high", "detail": {"ratio": trend["ratio"], "note": trend["note"]}}
+    base["dimensions"] = dimensions
+    base["confidence"] = _overall_confidence(dimensions, coverage_conf)
 
-    total_weight = sum(weights.values())
+    # 权重归一化：被跳过/降权的维度处理
+    weights = dict(load_scoring_config()["weights"])
+    if growth_trend["score"] is None:
+        del weights["growth_trend"]
+        base["insights"].append(growth_trend["detail"].get("reason") or "增长趋势样本不足，跳过")
+    elif growth_trend["confidence"] == "low":
+        weights["growth_trend"] *= 0.5  # 无快照降权
+    total_weight = sum(w for k, w in weights.items() if dimensions[k].get("score") is not None)
+    if total_weight <= 0:
+        base["overall"] = None
+        base["overall_score_suppressed"] = True
+        base["decision"] = {"recommendation": "insufficient_data", "summary": "无可用评分维度", "reasons": [], "red_flags": [], "low_quality": False}
+        return base
     overall = sum(dimensions[k]["score"] * weights[k] for k in weights if dimensions[k].get("score") is not None) / total_weight
     overall = round(overall, 1)
     level, desc = _level_for(overall)
 
-    # 资格闸门（优先级：覆盖率→刷量→倒挂→停更）
-    # 2. 刷量嫌疑
+    # 闸门 2：刷量嫌疑（含赞藏比倒挂辅助）
     likes = [int(n["stats"].get("liked", 0) or 0) for n in real]
     median_likes = statistics.median(likes) if likes else 0.0
     fake_hits = 0
@@ -611,33 +1024,83 @@ def score_blogger(
             st = n["stats"]
             liked = int(st.get("liked", 0) or 0)
             extra = int(st.get("collected", 0) or 0) + int(st.get("comments", 0) or 0) + int(st.get("shared", 0) or 0)
-            if liked >= median_likes * 3 and (extra / liked if liked else 0) < FAKE_RATIO_THRESHOLD:
+            if liked >= median_likes * 3 and (extra / liked if liked else 0) < float(gate_cfg["fake_extra_ratio"]):
                 fake_hits += 1
     fake_ratio = fake_hits / len(real) if real else 0.0
-    if fake_ratio > VOTE_BAN_RATIO:
-        base["anomalies"].append({"type": "fake_engagement", "level": "block", "detail": "疑似刷量笔记占比过高"})
+    collect_inversion = follower_count > 0 and _collect_like_inversion_hit(real, follower_count, tier)
+    spam_flag = bool(
+        comment_analysis
+        and float(comment_analysis.get("spam_ratio", 0.0)) >= float(gate_cfg["spam_ratio_threshold"])
+    )
+    if fake_ratio > float(gate_cfg["fake_ratio"]) or collect_inversion or spam_flag:
+        spam_only = spam_flag and not (
+            fake_ratio > float(gate_cfg["fake_ratio"]) or collect_inversion
+        )
+        base["anomalies"].append({
+            "type": "fake_engagement", "level": "block",
+            "detail": "疑似刷量（水评占比过高）" if spam_only else "疑似刷量（赞藏倒挂或互动结构异常）",
+        })
         base["overall"] = None
+        base["overall_score_suppressed"] = True
         base["grass_planting"] = None
         base["growth_potential"] = None
-        base["decision"] = {"status": "blocked", "quadrant": "一票否决", "recommendation": "疑似刷量，不建议合作"}
+        base["decision"] = {
+            "recommendation": "not_recommended", "summary": "疑似刷量，不建议合作",
+            "reasons": ["评论区水评占比过高"] if spam_only else ["互动结构异常（高赞低藏或赞藏比倒挂）"],
+            "red_flags": [
+                {"type": "fake_engagement", "level": "block", "detail": "疑似刷量"}],
+            "low_quality": True,
+            "status": "blocked", "quadrant": "一票否决", "grass_level": None, "growth_level": None,
+        }
         base["insights"].append("疑似刷量，不建议合作")
-        base["dimensions"] = dimensions
-        base["result_forced"] = True
         return base
 
-    # 3. 粉丝互动倒挂
-    if iq["rate"] < tier["min_healthy"]:
-        base["anomalies"].append({"type": "interaction_inversion", "level": "cap", "detail": "粉丝互动倒挂"})
-        level = "待观察"
-        desc = "粉丝互动倒挂，等级封顶待观察"
+    # 阶段判定（独立标签）
+    stage = _classify_stage(follower_count, real, now, follower_history)
+    base["stage"] = stage
 
-    # 4. 发布停滞
-    if sustained["freshness_days"] is not None and sustained["freshness_days"] > STALE_DAYS:
+    # 闸门 3：粉丝互动倒挂（粉丝数未知时不判定）
+    if follower_count > 0:
+        iq_rate = _score_interaction_quality(real, follower_count, tier, now)["rate"]
+        if iq_rate < float(tier.get("min_healthy", tier.get("min_healthy_rate", 0.0))):
+            base["anomalies"].append({"type": "interaction_inversion", "level": "cap", "detail": "粉丝互动倒挂"})
+            level = "待观察"
+            desc = "粉丝互动倒挂，等级封顶待观察"
+
+    # 闸门 4：发布停滞（有意叠加：维度已在新鲜度吃亏，等级再降一档）
+    if sustained["freshness_days"] is not None and sustained["freshness_days"] > int(gate_cfg["stale_days"]):
         base["anomalies"].append({"type": "stale", "level": "downgrade", "detail": "最新笔记发布时间超过60天"})
         level = _downgrade_level(level)
+        desc = _level_desc(level)
         base["insights"].append("账号可能已停更")
 
-    base["dimensions"] = dimensions
-    base["overall"] = {"score": overall, "level": level, "description": desc}
-    base["insights"].append(f"综合评分 {overall}，等级：{level}")
+    # 闸门 5：涨粉异常（且关系，T1 放宽）
+    if growth_rate := _latest_growth_rate(follower_history):
+        std_now = _type_standardized(real)
+        recent_std = [s for n, s in zip(real, std_now) if _parse_dt(n["published_at"]) is not None and _parse_dt(n["published_at"]) >= now - timedelta(days=30)]
+        older_std = [s for n, s in zip(real, std_now) if _parse_dt(n["published_at"]) is not None and now - timedelta(days=90) <= _parse_dt(n["published_at"]) < now - timedelta(days=30)]
+        m_recent = statistics.median(recent_std) if recent_std else 0.0
+        m_older = statistics.median(older_std) if older_std else 0.0
+        interaction_drop = max(0.0, 1.0 - (m_recent / m_older if m_older > 0 else 0.0))
+        flag = _growth_anomaly(growth_rate, interaction_drop, follower_count)
+        if flag:
+            base["anomalies"].append(flag)
+            base["insights"].append(flag["detail"])
+
+    # 合作建议（严格互斥顺序判定）
+    recommendation, rec_summary = _recommendation(overall, stage, base["anomalies"])
+    base["overall"] = {"score": overall, "level": level, "description": desc, "score_suppressed": False}
+    base["decision"] = {
+        "recommendation": recommendation,
+        "summary": rec_summary,
+        "reasons": _build_reasons(dimensions, stage),
+        "red_flags": [{"type": a["type"], "level": a["level"], "detail": a["detail"]} for a in base["anomalies"]],
+        "low_quality": False,
+        # 旧前端兼容字段（Task 13 切走后移除）
+        "status": old_decision.get("status"),
+        "quadrant": old_decision.get("quadrant"),
+        "grass_level": old_decision.get("grass_level"),
+        "growth_level": old_decision.get("growth_level"),
+    }
+    base["insights"].append(f"综合评分 {overall}，等级：{level}；阶段：{stage['label']}")
     return base

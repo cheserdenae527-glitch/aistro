@@ -139,22 +139,6 @@ def _merge_detail_note(base: dict, detail_raw: dict) -> None:
     base["full_stats"] = bool(any(base_stats.get(key) for key in ("liked", "collected", "comments", "shared")))
 
 
-# 分析结果短缓存，避免重复分析触发风控
-_ANALYSIS_CACHE: dict[str, tuple[float, dict]] = {}
-_ANALYSIS_CACHE_TTL = 900
-
-
-def _analysis_cache_get(key: str) -> dict | None:
-    item = _ANALYSIS_CACHE.get(key)
-    if item and time.time() - item[0] < _ANALYSIS_CACHE_TTL:
-        return item[1]
-    return None
-
-
-def _analysis_cache_set(key: str, value: dict) -> None:
-    _ANALYSIS_CACHE[key] = (time.time(), value)
-
-
 # 搜索/作品短缓存：短时间重复搜索相同账号/关键词时直接命中，减少爬取与风控压力
 _SEARCH_CACHE: dict[str, tuple[float, Any]] = {}
 _SEARCH_CACHE_TTL = 300
@@ -403,134 +387,38 @@ async def get_user_notes_by_id(
 
 
 @router.post("/users/{user_id}/analysis")
-async def analyze_user_notes(
+async def analyze_user_notes_deprecated(
     user_id: str,
     body: UserAnalysisRequest | None = None,
     user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
 ):
-    """抓取博主全部笔记并运行数据分析评分。"""
-    # 分析链路用低延时 + 低重试，优先速度；失败走搜索兜底
-    crawler = _get_crawler(min_delay=1.0, max_delay=2.0, max_retries=1)
-    fans = body.fans if body else 0
-    nickname = body.nickname if body else ""
-    detail_limit = body.detail_limit if body else 0
-    refresh = body.refresh if body else False
+    """[已下线] 同步分析接口：迁移到 POST /users/{user_id}/analysis-tasks。
 
-    from app.services.xhs_user_resolver import resolve_user_profile
+    阶段 1：保留入口，记录访问日志并返回 410，观察一个发布周期确认零调用后
+    阶段 2 物理删除（含 xhs_analysis.py 与 test_xhs_analysis.py）。
+    """
+    import logging
 
-    profile = await resolve_user_profile(crawler, user_id, nickname=nickname)
-    nickname = nickname or profile.get("nickname", "")
-    profile_total = int(profile.get("note_count") or 0)
-    if profile.get("ok"):
-        fans = profile.get("fans", fans)
-    cache_key = f"{user_id}:{detail_limit}"
-    if not refresh:
-        cached = _analysis_cache_get(cache_key)
-        if cached and cached.get("user_id") == user_id:
-            return cached
-
-    user_url = f"https://www.xiaohongshu.com/user/profile/{user_id}"
-    source = "user_notes"
-    raw_notes: list | None = None
-
-    # 快速模式：detail_limit=0 时直接用昵称搜索，跳过抓全部作品的慢路径
-    if detail_limit == 0 and nickname:
-        search_result = await asyncio.to_thread(crawler.search_notes, nickname, limit=100)
-        if search_result.success and search_result.data:
-            raw_notes = search_result.data
-            source = "search_quick"
-
-    if raw_notes is None:
-        fetch_cap = 100
-        if detail_limit and detail_limit > 0:
-            fetch_cap = max(detail_limit * 2, 100)
-        notes_result = None
-        for attempt in range(2):
-            notes_result = await asyncio.to_thread(crawler.get_user_notes, user_url, max_notes=fetch_cap)
-            if notes_result.success:
-                break
-            if attempt == 0:
-                await asyncio.sleep(1.0)
-        if not notes_result or not notes_result.success:
-            # 博主作品接口被风控时退化为按昵称搜索，保证仍能给出分析
-            if not nickname:
-                raise HTTPException(status_code=502, detail=(notes_result.error if notes_result else "") or "获取博主笔记失败，且昵称为空无法回退")
-            search_result = await asyncio.to_thread(crawler.search_notes, nickname, limit=100)
-            if not search_result.success:
-                raise HTTPException(status_code=502, detail=search_result.error or "获取博主笔记失败")
-            raw_notes = search_result.data or []
-            source = "search_fallback"
-        else:
-            raw_notes = notes_result.data or []
-
-    notes = []
-    for n in raw_notes:
-        if not isinstance(n, dict):
-            continue
-        n.setdefault("id", n.get("note_id", ""))
-        note = normalize_note(n)
-        if source in ("search_fallback", "search_quick"):
-            # 搜索结果是完整互动数据，但没有发布时间
-            note["full_stats"] = True
-        notes.append(note)
-
-    # C8：代表性抽样 + 比例估算 + 早停
-    if source in ("search_fallback", "search_quick"):
-        sample_mode = "search"
-    elif detail_limit == 0:
-        sample_mode = "list"
-    elif len(notes) <= detail_limit:
-        sample_mode = "full"
-        await _fetch_details_with_early_stop(crawler, notes, list(range(len(notes))))
-    else:
-        sample_mode = "stratified"
-        sample_indices = _build_stratified_sample(notes, detail_limit)
-        await _fetch_details_with_early_stop(crawler, notes, sample_indices)
-        _estimate_unfetched_stats(notes)
-
-    from app.services.xhs_analysis import analyze_notes
-    from app.services.subscription_service import load_follower_history
-    from app.services.justoneapi_client import fetch_follower_history, merge_follower_history
-
-    local_history = await load_follower_history(db, user.id, user_id)
-    platform_result = await asyncio.to_thread(fetch_follower_history, user_id)
-    follower_history = merge_follower_history(local_history, platform_result)
-    result_total = profile_total or len(notes)
-    result = analyze_notes(
-        notes,
-        follower_count=fans,
-        nickname=nickname,
-        follower_history=follower_history,
-        total_notes=result_total,
+    logger = logging.getLogger("crawler.analysis_deprecated")
+    logger.warning("deprecated sync analysis called user_id=%s nickname=%s", user_id, body.nickname if body else "")
+    raise HTTPException(
+        status_code=410,
+        detail="该接口已下线，请改用 POST /api/v1/notes/users/{user_id}/analysis-tasks（异步任务）",
     )
-    if platform_result.get("ok") and len(platform_result.get("history") or []) >= 2:
-        result["insights"].append("已获取平台历史涨粉数据，成长潜力按蒲公英官方曲线计算")
-    result["source"] = source
-    result["detail_limit"] = detail_limit
-    result["user_id"] = user_id
-    result["summary"]["sample_mode"] = sample_mode
-    result["summary"]["sample_size"] = (
-        len(notes) if sample_mode == "search" else sum(1 for n in notes if n.get("full_stats"))
-    )
-    result["summary"]["estimated_count"] = sum(1 for n in notes if n.get("estimated"))
-    result["summary"]["candidate_notes"] = result_total
-    # 响应瘦身：raw 原始 JSON 体积大，前端不需要
-    for item in result.get("notes", []):
-        item.pop("raw", None)
-    _analysis_cache_set(cache_key, result)
-    return result
 
 
 class AnalysisTaskCreateRequest(BaseModel):
     nickname: str = ""
     fans: int = Field(0, ge=0)
+    with_comments: bool = False
 
 
 def _task_payload(task: BloggerAnalysisTask) -> dict:
     return {
         "id": str(task.id),
         "xhs_user_id": task.xhs_user_id,
+        "nickname": str((task.result or {}).get("nickname") or ""),
+        "follower_count": task.follower_count,
         "status": task.status,
         "prescreen_passed": task.prescreen_passed,
         "prescreen_reason": task.prescreen_reason,
@@ -539,6 +427,7 @@ def _task_payload(task: BloggerAnalysisTask) -> dict:
         "fetched_notes": task.fetched_notes,
         "coverage": task.coverage,
         "confidence": task.confidence,
+        "with_comments": task.with_comments,
         "result": task.result,
         "error": task.error,
         "created_at": task.created_at.isoformat() if task.created_at else None,
@@ -573,6 +462,7 @@ async def create_analysis_task(
         prescreen_passed=True,
         follower_count=prescreen.get("fans", 0) or 0,
         total_notes=prescreen.get("notes", 0) or 0,
+        with_comments=bool(body.with_comments if body else False),
     )
     db.add(task)
     await db.flush()
@@ -583,6 +473,22 @@ async def create_analysis_task(
     payload = _task_payload(task)
     payload["passed_prescreen"] = True
     return payload
+
+
+@router.get("/analysis-tasks")
+async def list_analysis_tasks(
+    status: str | None = None,
+    limit: int = 100,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """只读列表：供批量筛选视图拉取成功/部分结果，按完成时间倒序。"""
+    stmt = select(BloggerAnalysisTask).where(BloggerAnalysisTask.user_id == user.id)
+    if status:
+        stmt = stmt.where(BloggerAnalysisTask.status == status)
+    stmt = stmt.order_by(BloggerAnalysisTask.finished_at.desc().nulls_last()).limit(min(max(limit, 1), 500))
+    rows = (await db.execute(stmt)).scalars().all()
+    return {"items": [_task_payload(t) for t in rows]}
 
 
 @router.get("/users/{user_id}/analysis-tasks/{task_id}")

@@ -9,10 +9,11 @@ import SubscribeButton from './SubscribeButton';
 const { Title, Text } = Typography;
 
 const DIMENSION_LABELS: Record<string, string> = {
-  interaction_quality: '真实互动质量',
-  content_stability: '内容稳定产出力',
-  sustained_operation: '持续经营度',
-  trend: '趋势',
+  seeding_depth: '种草深度',
+  verticality: '内容垂直度',
+  stable_output: '稳定产出',
+  sustained_operation: '持续经营',
+  growth_trend: '增长趋势',
 };
 
 const CONFIDENCE_TEXT: Record<string, string> = { high: '高', medium: '中', low: '低' };
@@ -26,6 +27,10 @@ const ANOMALY_TEXT: Record<string, string> = {
 function fmtNum(v: number | null | undefined, digits = 0): string {
   if (v === null || v === undefined) return '-';
   return Number(v).toLocaleString('zh-CN', { maximumFractionDigits: digits });
+}
+
+function safeValue(v: number | string | null | undefined): number | string {
+  return v == null ? '-' : v;
 }
 
 function fmtDate(v: string | null | undefined): string {
@@ -58,11 +63,7 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
   const overall = data.overall;
   const anomalies = data.anomalies || [];
   const insights = data.insights || [];
-  const grass = data.grass_planting || null;
-  const growth = data.growth_potential || null;
-  const decision = data.decision || null;
   const fh = data.follower_history || null;
-  const fg = growth?.components?.follower_growth || null;
 
   const columns = [
     { title: '标题', dataIndex: 'title', key: 'title', width: 240, render: (v: string) => <Text strong style={{ display: 'block', maxWidth: 240 }} ellipsis={{ tooltip: v }}>{v || '无标题'}</Text> },
@@ -75,20 +76,24 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
     { title: '加权互动', key: 'weighted', width: 90, render: (_: any, r: any) => <Text strong>{fmtNum(weighted(r.stats))}</Text> },
   ];
 
-  const iq = (data.dimensions?.interaction_quality?.detail || {});
-  const sustained = (data.dimensions?.sustained_operation?.detail || {});
+  const sd = (data.dimensions?.seeding_depth?.detail || {});
+  const vert = (data.dimensions?.verticality?.detail || {});
+  const so = (data.dimensions?.sustained_operation?.detail || {});
+  const gt = (data.dimensions?.growth_trend?.detail || {});
   const statCards = [
     { title: '已验证样本', value: cov.fetched_notes, suffix: `/${cov.sample_size || cov.total_notes || 0}`, color: '#1677ff' },
-    { title: '覆盖率', value: cov.coverage_rate ? (cov.coverage_rate * 100).toFixed(1) : 0, suffix: '%', color: '#1677ff' },
-    { title: '真实互动质量', value: data.dimensions?.interaction_quality?.score, suffix: '', color: '#eb2f96' },
-    { title: '内容稳定产出力', value: data.dimensions?.content_stability?.score, suffix: '', color: '#52c41a' },
-    { title: '持续经营度', value: data.dimensions?.sustained_operation?.score, suffix: '', color: '#fa8c16' },
-    { title: '趋势', value: data.dimensions?.trend?.score, suffix: '', color: '#722ed1' },
-    { title: '篇均互动率', value: iq.rate_percent, suffix: '%', color: '#f5222d' },
-    { title: '最新发布距今', value: sustained.freshness_days, suffix: '天', color: '#fa541c' },
+    { title: '覆盖率', value: cov.coverage_rate != null ? (cov.coverage_rate * 100).toFixed(1) : undefined, suffix: '%', color: '#1677ff' },
+    { title: '种草深度', value: data.dimensions?.seeding_depth?.score, suffix: '', color: '#eb2f96' },
+    { title: '内容垂直度', value: data.dimensions?.verticality?.score, suffix: '', color: '#52c41a' },
+    { title: '稳定产出', value: data.dimensions?.stable_output?.score, suffix: '', color: '#fa8c16' },
+    { title: '持续经营', value: data.dimensions?.sustained_operation?.score, suffix: '', color: '#722ed1' },
+    { title: '增长趋势', value: data.dimensions?.growth_trend?.score, suffix: '', color: '#13c2c2' },
+    { title: '篇均收藏率', value: sd.collect_rate_percent, suffix: '%', color: '#f5222d' },
+    { title: '美食占比', value: vert.food_ratio != null ? (vert.food_ratio * 100).toFixed(0) : '-', suffix: '%', color: '#52c41a' },
+    { title: '最新发布距今', value: so.freshness_days, suffix: '天', color: '#fa541c' },
   ];
-  if (fh?.growth_rate != null) {
-    statCards.push({ title: '平台涨粉率', value: (fh.growth_rate * 100).toFixed(2), suffix: '%', color: '#13c2c2' });
+  if (gt.has_snapshot && gt.growth_rate != null) {
+    statCards.push({ title: '涨粉率(月)', value: safeValue((gt.growth_rate * 100).toFixed(1)), suffix: '%', color: '#13c2c2' });
   }
 
   return (
@@ -110,7 +115,9 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
           </div>
         </Space>
         <div style={{ marginLeft: 'auto', textAlign: 'right' }}>
-          {overall ? (
+          {data.overall_score_suppressed || overall?.score_suppressed ? (
+            <Tag color="red">已抑制评分</Tag>
+          ) : overall ? (
             <>
               <div style={{ fontSize: 40, fontWeight: 700, lineHeight: 1.1, color: '#1677ff' }}>{overall.score}</div>
               <Tag color={overall.level === '卓越' ? 'magenta' : overall.level === '优秀' ? 'gold' : overall.level === '良好' ? 'green' : 'default'} style={{ marginTop: 4 }}>{overall.level}</Tag>
@@ -120,57 +127,6 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
           )}
         </div>
       </div>
-
-      {(grass || growth || decision) && (
-        <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
-          <Col xs={24} md={8}>
-            <Card size="small" title="种草效率分">
-              <div style={{ fontSize: 32, fontWeight: 700, color: '#1677ff' }}>{grass?.score ?? '-'}</div>
-              {grass?.components && (
-                <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.8, color: '#666' }}>
-                  <div>收藏率 {fmtNum(grass.components.collect_rate?.score)} · 值 {fmtNum(grass.components.collect_rate?.value_percent, 2)}%</div>
-                  <div>赞藏比 {fmtNum(grass.components.collect_ratio?.score)} · 值 {fmtNum(grass.components.collect_ratio?.value, 2)}</div>
-                  <div>分享率 {fmtNum(grass.components.share_rate?.score)} · 值 {fmtNum(grass.components.share_rate?.value_percent, 2)}%</div>
-                  {grass.calibrated === false ? <Tag style={{ marginTop: 4 }} color="orange">阈值待标定</Tag> : null}
-                </div>
-              )}
-            </Card>
-          </Col>
-          <Col xs={24} md={8}>
-            <Card size="small" title="成长潜力分">
-              <div style={{ fontSize: 32, fontWeight: 700, color: '#52c41a' }}>{growth?.score ?? '-'}</div>
-              {growth?.components && (
-                <div style={{ marginTop: 6, fontSize: 12, lineHeight: 1.8, color: '#666' }}>
-                  <div>内容系统 {fmtNum(growth.components.content_system?.score)} · 更新稳定 {fmtNum(growth.components.update_stability?.score)}</div>
-                  <div>数据趋势 {fmtNum(growth.components.data_trend?.score)} · 粉丝增长 {fg?.score != null ? fmtNum(fg.score) : '无快照'}</div>
-                  {fg?.detail?.growth_rate != null && (
-                    <div>平台涨粉 {fmtNum(fg.detail.growth_rate * 100, 2)}% · {fmtNum(fg.detail.fans_increase)} 粉 · {fg.detail.days || fh?.days || 30} 天</div>
-                  )}
-                  {fg?.detail?.source === 'justoneapi' ? (
-                    <Tag style={{ marginTop: 4 }} color="cyan">蒲公英官方曲线 · {fg.detail.points || fh?.points || 0} 个数据点</Tag>
-                  ) : fg?.detail?.snapshots ? (
-                    <Tag style={{ marginTop: 4 }} color="blue">本地快照 · {fg.detail.snapshots} 次</Tag>
-                  ) : null}
-                  <Text type="secondary" style={{ fontSize: 11 }}>{growth.note}</Text>
-                </div>
-              )}
-            </Card>
-          </Col>
-          <Col xs={24} md={8}>
-            <Card size="small" title="合作建议">
-              {decision ? (
-                <>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                    <Tag color={decision.status === 'blocked' ? 'red' : decision.quadrant === '首选合作' ? 'magenta' : decision.quadrant === '短期投放' ? 'gold' : decision.quadrant === '潜力股' ? 'green' : 'default'}>{decision.quadrant || decision.status}</Tag>
-                    <Text type="secondary">{decision.grass_level ? `种草${decision.grass_level} · 成长${decision.growth_level}` : ''}</Text>
-                  </div>
-                  <Text>{decision.recommendation}</Text>
-                </>
-              ) : <Text type="secondary">数据不足</Text>}
-            </Card>
-          </Col>
-        </Row>
-      )}
 
       {anomalies.length > 0 && (
         <Alert
@@ -186,11 +142,38 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
         {statCards.map((c) => (
           <Col key={c.title} xs={12} sm={8} md={6} lg={4}>
             <Card size="small" styles={{ body: { padding: '12px 16px' } }}>
-              <Statistic title={c.title} value={c.value} suffix={c.suffix} valueStyle={{ color: c.color, fontWeight: 600 }} />
+              <Statistic title={c.title} value={safeValue(c.value)} suffix={c.suffix} valueStyle={{ color: c.color, fontWeight: 600 }} />
             </Card>
           </Col>
         ))}
       </Row>
+
+      {data.decision && (
+        <Card size="small" style={{ marginBottom: 12, borderLeft: `4px solid ${recColor(data.decision.recommendation)}` }}>
+          <Space direction="vertical" size={4} style={{ width: '100%' }}>
+            <Space>
+              <Text strong style={{ fontSize: 16 }}>{recLabel(data.decision.recommendation)}</Text>
+              {data.stage && (
+                <Tag color={stageColor(data.stage.label)}>
+                  {data.stage.label}
+                  {data.stage.confidence === 'low' ? '（推断）' : ''}
+                </Tag>
+              )}
+              {data.overall_score_suppressed || data.overall?.score_suppressed ? <Tag color="red">已抑制评分</Tag> : null}
+            </Space>
+            <Text type="secondary">{data.decision.summary}</Text>
+            {data.decision.reasons?.length > 0 && (
+              <ul style={{ margin: 0, paddingLeft: 18 }}>
+                {data.decision.reasons.map((r: string, i: number) => <li key={i}>{r}</li>)}
+              </ul>
+            )}
+            {data.decision.red_flags?.length > 0 && (
+              <Alert type="warning" showIcon message="红旗"
+                description={<ul style={{ margin: 0, paddingLeft: 18 }}>{data.decision.red_flags.map((f: any, i: number) => <li key={i}>{f.detail}</li>)}</ul>} />
+            )}
+          </Space>
+        </Card>
+      )}
 
       {insights.length > 0 && (
         <Alert type="info" showIcon style={{ marginBottom: 12 }} message="分析洞察"
@@ -218,7 +201,7 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
           </Card>
         </Col>
         <Col xs={24} md={12} xl={10}>
-          <Card size="small" title="四维评分" extra={<Text type="secondary" style={{ fontSize: 12 }}>满分 100</Text>}>
+          <Card size="small" title="五维评分" extra={<Text type="secondary" style={{ fontSize: 12 }}>满分 100</Text>}>
             <ResponsiveContainer width="100%" height={260}>
               <RadarChart data={dims} outerRadius="72%">
                 <PolarGrid />
@@ -273,5 +256,15 @@ export default function UserAnalysisPanel({ user, data, onOpenNote }: {
       </Card>
     </div>
   );
+}
+
+function recLabel(r: string): string {
+  return { priority: '优先合作', ok: '可合作', caution: '谨慎', not_recommended: '不合作', insufficient_data: '数据不足' }[r] || r;
+}
+function recColor(r: string): string {
+  return { priority: '#52c41a', ok: '#1677ff', caution: '#fa8c16', not_recommended: '#f5222d', insufficient_data: '#8c8c8c' }[r] || '#1677ff';
+}
+function stageColor(s: string): string {
+  return { 冷启动: 'blue', 成长: 'green', 成熟: 'gold', 衰退: 'red' }[s] || 'default';
 }
 
