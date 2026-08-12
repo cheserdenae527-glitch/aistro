@@ -88,7 +88,7 @@ export default function CrawlJobsPage() {
 
   // 博主分析
   const [analysisUser, setAnalysisUser] = useState<XhsUser | null>(null);
-const [analysisTaskId, setAnalysisTaskId] = useState<string | null>(null);
+  const [analysisTaskId, setAnalysisTaskId] = useState<string | null>(null);
   const [analysisData, setAnalysisData] = useState<any | null>(null);
   const [analysisLoading, setAnalysisLoading] = useState(false);
   const [analysisProgress, setAnalysisProgress] = useState(0);

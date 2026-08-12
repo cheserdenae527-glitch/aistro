@@ -422,6 +422,8 @@ async def generate_analysis_task_summary(
     task = await db.get(BloggerAnalysisTask, tid)
     if not task or task.user_id != user.id:
         raise HTTPException(status_code=404, detail="Not found")
+    if task.status not in ("success", "partial"):
+        raise HTTPException(status_code=422, detail="分析任务尚未完成，无法生成总结")
     result = task.result or {}
     if not isinstance(result, dict):
         raise HTTPException(status_code=422, detail="任务结果格式无效")

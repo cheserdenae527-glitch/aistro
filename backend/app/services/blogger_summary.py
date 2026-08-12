@@ -67,7 +67,12 @@ def build_prompt(result: dict) -> str:
         lines.append(f"红旗：{'；'.join(str(f.get('detail')) for f in decision['red_flags'])}")
     lines.append(f"覆盖率/可信度：{_fmt(cov.get('coverage_rate'))} / {_fmt(result.get('confidence'))}")
     if gt_detail.get("growth_rate") is not None:
-        lines.append(f"月化涨粉率：{float(gt_detail['growth_rate']) * 100:.1f}%")
+        try:
+            rate = float(gt_detail["growth_rate"])
+        except (TypeError, ValueError):
+            rate = None
+        if rate is not None:
+            lines.append(f"月化涨粉率：{rate * 100:.1f}%")
     if insights:
         lines.append("分析洞察：" + "；".join(str(i) for i in insights))
     lines.append("异常：" + ("；".join(f"{a.get('type')}:{a.get('detail')}" for a in anomalies) if anomalies else "无"))

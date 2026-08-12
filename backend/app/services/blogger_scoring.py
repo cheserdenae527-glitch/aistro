@@ -40,7 +40,6 @@ LEVELS = [
 
 ANALYSIS_WINDOW_DAYS = 90
 TREND_MIN_SAMPLES = 10
-STALE_DAYS = 60
 _CONF_RANK = {"high": 0, "medium": 1, "low": 2}
 _NONCORE = {"verticality", "stable_output", "sustained_operation", "growth_trend"}
 

@@ -1955,7 +1955,7 @@ git commit -m "feat: 博主批量筛选视图（硬门槛 + 总分排序 + score
 - **Task 13**：`Statistic` null 渲染占位（`safeValue`）；头部「已抑制评分 vs 数据不足」状态区分；评论开关移到空闲态可前置 + 运行中禁用。
 - **Task 14**：`loadScreening` 补错误处理/加载态；阶段「（推断）」标记；空态区分（无数据 vs 全被筛掉）；`avatar` 死字段移除；按 `xhs_user_id` 去重取最新任务；`collect_rate`/`food_ratio` null 处理。
 
-> 阶段 2 已完成（2026-08-12，用户确认"新系统替换旧系统"）：删除 `xhs_analysis.py`、`test_xhs_analysis.py`、`UserAnalysisRequest`、410 同步端点、notes.py 5 个死 helper、blogger_scoring.py 死常量（`DIMENSION_WEIGHTS`/`VOTE_BAN_RATIO`/`FAKE_RATIO_THRESHOLD`）；`STALE_DAYS`/`_build_decision` 因新引擎仍在用而保留。旧结果已用回填脚本（`scripts/backfill_blogger_analysis.py`）全部转新五维格式。
+> 阶段 2 已完成（2026-08-12，用户确认"新系统替换旧系统"）：删除 `xhs_analysis.py`、`test_xhs_analysis.py`、`UserAnalysisRequest`、410 同步端点、notes.py 5 个死 helper、blogger_scoring.py 死常量（`DIMENSION_WEIGHTS`/`VOTE_BAN_RATIO`/`FAKE_RATIO_THRESHOLD`/`STALE_DAYS`）；`_build_decision` 因新引擎兼容字段仍在用而保留。旧结果已用回填脚本（`scripts/backfill_blogger_analysis.py`）全部转新五维格式。
 
 ---
 

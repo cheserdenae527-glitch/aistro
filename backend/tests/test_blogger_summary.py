@@ -249,7 +249,7 @@ def _auth(client, email: str | None = None) -> tuple[dict, str]:
     return {"Authorization": f"Bearer {body['access_token']}"}, str(body["user"]["id"])
 
 
-def _seed_task(user_id: str, xhs_user_id: str, *, result: dict | list | None = None) -> str:
+def _seed_task(user_id: str, xhs_user_id: str, *, result: dict | list | None = None, status: str = "success") -> str:
     """直接写库创建分析任务（绕过网络爬虫），返回任务 id。"""
 
     async def _run() -> str:
@@ -260,7 +260,7 @@ def _seed_task(user_id: str, xhs_user_id: str, *, result: dict | list | None = N
                 task = BloggerAnalysisTask(
                     user_id=uuid.UUID(user_id),
                     xhs_user_id=xhs_user_id,
-                    status="success",
+                    status=status,
                     prescreen_passed=True,
                     follower_count=12000,
                     total_notes=30,
@@ -363,3 +363,19 @@ def test_summary_non_dict_result_422(client, monkeypatch):
     monkeypatch.setattr("app.services.blogger_summary.generate_summary", fake_generate)
     resp = client.post(f"/api/v1/notes/analysis-tasks/{task_id}/summary", headers=headers)
     assert resp.status_code == 422
+
+
+def test_parse_json_embedded_fallback():
+    from app.services.blogger_summary import _parse_json
+    content = '前缀文本 {"summary":"a","strengths":["s"],"weaknesses":[],"cooperate":true,"cooperate_reason":"r"} 后缀'
+    data = _parse_json(content)
+    assert data["summary"] == "a"
+    assert data["strengths"] == ["s"]
+
+
+def test_summary_pending_task_422(client):
+    headers, user_id = _auth(client, email=f"sum-pend-{uuid.uuid4().hex[:8]}@test.com")
+    task_id = _seed_task(user_id, "xhs-sum-pend", result=_sample_result(), status="pending")
+    resp = client.post(f"/api/v1/notes/analysis-tasks/{task_id}/summary", headers=headers)
+    assert resp.status_code == 422
+    assert "尚未完成" in resp.json()["detail"]
