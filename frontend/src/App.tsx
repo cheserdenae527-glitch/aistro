@@ -12,6 +12,7 @@ const MerchantsPage = lazy(() => import("./pages/MerchantsPage"));
 const ProfileIndexPage = lazy(() => import("./pages/ProfileIndexPage"));
 const ProfileEditorPage = lazy(() => import("./pages/ProfileEditorPage"));
 const CrawlJobsPage = lazy(() => import("./pages/CrawlJobsPage"));
+const KnowledgeBasePage = lazy(() => import("./pages/KnowledgeBasePage"));
 const MerchantDetailPage = lazy(() => import("./pages/MerchantDetailPage"));
 const DesignIndexPage = lazy(() => import("./pages/DesignIndexPage"));
 const DesignEditorPage = lazy(() => import("./pages/DesignEditorPage"));
@@ -29,7 +30,8 @@ const LiveEditorPage = lazy(() => import("./pages/LiveEditorPage"));
 const MENU_ITEMS = [
   { key: "/", label: "总看板" },
   { key: "/merchants", label: "商家管理" },
-  { key: "/crawl", label: "爬虫管理" },
+  { key: "/knowledge", label: "知识库" },
+  { key: "/crawl", label: "达人寻觅" },
   { key: "/profile", label: "账号装修" },
   { key: "/design", label: "视觉设计" },
   { key: "/studio", label: "内容工坊" },
@@ -208,6 +210,16 @@ export default function App() {
           <ProtectedRoute>
             <AppLayout>
               <MerchantsPage />
+            </AppLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/knowledge"
+        element={
+          <ProtectedRoute>
+            <AppLayout>
+              <KnowledgeBasePage />
             </AppLayout>
           </ProtectedRoute>
         }
