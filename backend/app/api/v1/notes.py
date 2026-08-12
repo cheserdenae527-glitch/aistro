@@ -413,6 +413,17 @@ class AnalysisTaskCreateRequest(BaseModel):
     with_comments: bool = False
 
 
+class AnalysisTaskBatchItem(BaseModel):
+    user_id: str
+    nickname: str = ""
+    fans: int = 0
+    with_comments: bool = False
+
+
+class AnalysisTaskBatchRequest(BaseModel):
+    bloggers: list[AnalysisTaskBatchItem] = []
+
+
 def _task_payload(task: BloggerAnalysisTask) -> dict:
     return {
         "id": str(task.id),
@@ -473,6 +484,70 @@ async def create_analysis_task(
     payload = _task_payload(task)
     payload["passed_prescreen"] = True
     return payload
+
+
+@router.post("/analysis-tasks/batch")
+async def create_analysis_tasks_batch(
+    body: AnalysisTaskBatchRequest,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量真实分析：逐博主串行真实列表粗筛，通过者创建后台任务（上限 50）。"""
+    from app.services.analysis_task_runner import prescreen_user, start_analysis_task
+
+    if len(body.bloggers) > 50:
+        raise HTTPException(status_code=422, detail="批量分析单次最多 50 个博主")
+
+    created: list[dict] = []
+    rejected: list[dict] = []
+    created_task_ids: list[uuid.UUID] = []
+    for b in body.bloggers:
+        try:
+            result = await prescreen_user(b.user_id)
+        except Exception:
+            # 单个博主粗筛异常不中断整批，按拒绝处理
+            rejected.append(
+                {
+                    "xhs_user_id": b.user_id,
+                    "nickname": b.nickname or "",
+                    "reason": "粗筛异常",
+                }
+            )
+            continue
+        if not result["passed"]:
+            rejected.append(
+                {
+                    "xhs_user_id": b.user_id,
+                    "nickname": b.nickname or "",
+                    "reason": result.get("reason") or "未通过粗筛",
+                }
+            )
+            continue
+        task = BloggerAnalysisTask(
+            user_id=user.id,
+            xhs_user_id=b.user_id,
+            status="pending",
+            prescreen_passed=True,
+            prescreen_reason=None,
+            follower_count=result.get("fans") or b.fans,
+            with_comments=b.with_comments,
+        )
+        db.add(task)
+        await db.flush()
+        created_task_ids.append(task.id)
+        created.append(
+            {
+                "task_id": str(task.id),
+                "xhs_user_id": b.user_id,
+                "nickname": b.nickname or "",
+                "status": "pending",
+            }
+        )
+    # 先提交让后台任务能看到刚插入的任务行，再逐个调度（与单号分析一致）
+    await db.commit()
+    for task_id in created_task_ids:
+        start_analysis_task(task_id)
+    return {"created": created, "rejected": rejected}
 
 
 @router.get("/analysis-tasks")
