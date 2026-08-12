@@ -183,16 +183,26 @@ export default function CrawlJobsPage() {
     }
   };
 
-  const handleAnalyzeUser = async (u: XhsUser) => {
+  const handleAnalyzeUser = async (u: XhsUser, refresh = false) => {
     setAnalysisUser(u); setAnalysisTaskId(null); setAnalysisData(null); setAnalysisLoading(true); setAnalysisProgress(0);
     setAnalysisStatus('正在创建分析任务...'); setActiveTab('analysis');
     try {
       const api = (await import('../services/api')).default;
-      const res = await api.post(`/notes/users/${u.user_id}/analysis-tasks`, { nickname: u.nickname, fans: u.fans, with_comments: withComments }, { timeout: 60000 });
+      const res = await api.post(`/notes/users/${u.user_id}/analysis-tasks${refresh ? '?refresh=1' : ''}`, { nickname: u.nickname, fans: u.fans, with_comments: withComments }, { timeout: 60000 });
       if (res.data.passed_prescreen === false) {
         setAnalysisStatus('未通过粗筛：' + (res.data.reason || ''));
         setAnalysisLoading(false);
         message.warning('未通过粗筛：' + (res.data.reason || ''), 6);
+        return;
+      }
+      // 命中缓存：直接展示最近结果，不重复爬取
+      if (res.data.from_cache) {
+        setAnalysisTaskId(res.data.id);
+        setAnalysisData(res.data.result);
+        setAnalysisStatus('已复用最近分析结果（' + (res.data.cached_finished_at ? res.data.cached_finished_at.slice(0, 16).replace('T', ' ') : '') + '）');
+        setAnalysisProgress(100);
+        setAnalysisLoading(false);
+        message.success('已复用最近分析结果，未重复爬取');
         return;
       }
       const taskId = res.data.id;
@@ -346,7 +356,7 @@ export default function CrawlJobsPage() {
                     <Progress percent={analysisProgress} status="active" style={{ maxWidth: 480, margin: '0 auto' }} />
                     <Text type="secondary" style={{ display: 'block', marginTop: 8 }}>{analysisStatus || '正在分析...'}</Text>
                   </div>
-                ) : <UserAnalysisPanel user={analysisUser} data={analysisData} onOpenNote={(n) => setDetailNote(n)} taskId={analysisTaskId} onReAnalyze={() => analysisUser && handleAnalyzeUser(analysisUser)} onAnalyzeUser={(u) => handleAnalyzeUser(u as XhsUser)} />}
+                ) : <UserAnalysisPanel user={analysisUser} data={analysisData} onOpenNote={(n) => setDetailNote(n)} taskId={analysisTaskId} onReAnalyze={() => analysisUser && handleAnalyzeUser(analysisUser, true)} onAnalyzeUser={(u) => handleAnalyzeUser(u as XhsUser)} />}
               </>
             ) },
             { key:'batch', label:'批量分析', children: (

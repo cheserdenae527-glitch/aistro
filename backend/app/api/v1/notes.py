@@ -5,6 +5,7 @@ import asyncio
 import logging
 import time
 import uuid
+from datetime import datetime, timedelta, timezone
 
 from typing import Any
 
@@ -293,11 +294,40 @@ def _task_payload(task: BloggerAnalysisTask) -> dict:
 async def create_analysis_task(
     user_id: str,
     body: AnalysisTaskCreateRequest | None = None,
+    refresh: bool = Query(False, description="强制重新抓取，跳过最近结果缓存"),
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """真实数据版博主分析：先粗筛，通过后创建后台任务。"""
+    """真实数据版博主分析：先粗筛，通过后创建后台任务。
+
+    短时间重复分析同一博主时复用最近成功结果（analysis_cache_ttl_seconds 内），
+    避免反复爬取；refresh=true 强制重新抓取。
+    """
     from app.services.analysis_task_runner import prescreen_user, start_analysis_task
+
+    if not refresh:
+        # 复用最近成功/部分成功结果（同一账号、TTL 内）
+        from crawler.config import load_config as _load_crawler_cfg
+
+        cache_ttl = int(_load_crawler_cfg().get("analysis_cache_ttl_seconds", 7200))
+        cutoff = datetime.now(timezone.utc) - timedelta(seconds=cache_ttl)
+        stmt = (
+            select(BloggerAnalysisTask)
+            .where(
+                BloggerAnalysisTask.user_id == user.id,
+                BloggerAnalysisTask.xhs_user_id == user_id,
+                BloggerAnalysisTask.status.in_(["success", "partial"]),
+                BloggerAnalysisTask.finished_at >= cutoff,
+            )
+            .order_by(BloggerAnalysisTask.finished_at.desc())
+            .limit(1)
+        )
+        cached = (await db.execute(stmt)).scalar_one_or_none()
+        if cached is not None:
+            payload = _task_payload(cached)
+            payload["from_cache"] = True
+            payload["cached_finished_at"] = cached.finished_at.isoformat() if cached.finished_at else None
+            return payload
 
     prescreen = await prescreen_user(user_id)
     if not prescreen["passed"]:
@@ -408,13 +438,27 @@ async def create_analysis_tasks_batch(
         start_analysis_task(task_id)
     return {"created": created, "rejected": rejected}
 
+def _is_new_format_result(result: dict) -> bool:
+    """新五维格式判定（与回填脚本口径一致）：format_version / seeding_depth 维度 / 新 decision(low_quality)。"""
+    if result.get("format_version"):
+        return True
+    dimensions = result.get("dimensions")
+    has_new_dims = isinstance(dimensions, dict) and "seeding_depth" in dimensions
+    decision = result.get("decision")
+    has_new_decision = isinstance(decision, dict) and "low_quality" in decision
+    return has_new_dims or has_new_decision
+
+
 @router.post("/analysis-tasks/{task_id}/summary")
 async def generate_analysis_task_summary(
     task_id: str,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """基于分析结果生成 AI 总结（总结 + 优劣点 + 是否建议合作）。"""
+    """基于分析结果生成 AI 总结（总结 + 优劣点 + 是否建议合作）。
+
+    结果缓存到 task.result.ai_summary，重复请求不再调 LLM；旧四维格式不生成。
+    """
     try:
         tid = uuid.UUID(task_id)
     except ValueError:
@@ -427,12 +471,25 @@ async def generate_analysis_task_summary(
     result = task.result or {}
     if not isinstance(result, dict):
         raise HTTPException(status_code=422, detail="任务结果格式无效")
+    if not _is_new_format_result(result):
+        raise HTTPException(status_code=422, detail="该任务为旧版分析结果，请重新分析后再生成总结")
+    cached = result.get("ai_summary")
+    if isinstance(cached, dict) and cached.get("summary"):
+        return cached
     from app.services.blogger_summary import generate_summary
 
     try:
-        return await generate_summary(result)
-    except Exception as exc:
-        raise HTTPException(status_code=502, detail="AI 总结生成失败：" + str(exc))
+        summary = await generate_summary(result)
+    except Exception:
+        logger.exception("AI 总结生成失败 task=%s", task_id)
+        raise HTTPException(status_code=502, detail="AI 总结生成失败，请稍后重试")
+    # 落库缓存：同任务重复请求直接命中，避免重复计费
+    # 注意：必须赋新 dict（JSONB 列对同一对象原地修改不触发 dirty 追踪，无法持久化）
+    updated = dict(result)
+    updated["ai_summary"] = summary
+    task.result = updated
+    await db.commit()
+    return summary
 
 def _is_uuid(s: str) -> bool:
     try:

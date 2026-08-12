@@ -1,6 +1,6 @@
-import { Alert, Avatar, Button, Card, Col, Empty, message, Row, Space, Spin, Statistic, Table, Tag, Typography } from 'antd';
+import { Alert, Avatar, Button, Card, Col, Empty, message, Modal, Row, Space, Spin, Statistic, Table, Tag, Typography } from 'antd';
 import { useCallback, useEffect, useState } from 'react';
-import { BarChartOutlined, SyncOutlined, TrophyOutlined } from '@ant-design/icons';
+import { BarChartOutlined, FileTextOutlined, RobotOutlined, SyncOutlined, TrophyOutlined } from '@ant-design/icons';
 import {
   CartesianGrid, Legend, Line, LineChart, PolarAngleAxis, PolarGrid, Radar, RadarChart,
   ResponsiveContainer, Tooltip, XAxis, YAxis,
@@ -75,6 +75,8 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
 }) {
   const [summary, setSummary] = useState<any>(null);
   const [summaryLoading, setSummaryLoading] = useState(false);
+  const [summaryOpen, setSummaryOpen] = useState(false);
+  const [explainOpen, setExplainOpen] = useState(false);
 
   // 蒲公英官方数据：创作者资料 / 粉丝摘要 / 相似创作者
   const [pgyProfile, setPgyProfile] = useState<PgyCreatorProfile | null>(null);
@@ -203,23 +205,10 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
         </Space>
         <div style={{ flex: 1 }} />
         {!isOldFormat && taskId && (
-          <Card size="small" title="AI 总结" style={{ width: 320 }}>
-            {summaryLoading ? <Spin /> : summary ? (
-              <Space direction="vertical" size={4} style={{ width: '100%' }}>
-                <Text style={{ fontSize: 12 }}>{summary.summary}</Text>
-                {summary.strengths?.length > 0 && (
-                  <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12 }}>{summary.strengths.map((s: string, i: number) => <li key={i}><Text type="success">✔ {s}</Text></li>)}</ul>
-                )}
-                {summary.weaknesses?.length > 0 && (
-                  <ul style={{ margin: 0, paddingLeft: 16, fontSize: 12 }}>{summary.weaknesses.map((w: string, i: number) => <li key={i}><Text type="danger">✘ {w}</Text></li>)}</ul>
-                )}
-                <Tag color={summary.cooperate ? 'green' : 'red'}>{summary.cooperate ? '建议合作' : '不建议合作'}</Tag>
-                {summary.cooperate_reason && <Text type="secondary" style={{ fontSize: 12 }}>{summary.cooperate_reason}</Text>}
-              </Space>
-            ) : (
-              <Button size="small" type="primary" icon={<SyncOutlined />} onClick={genSummary}>生成 AI 总结</Button>
-            )}
-          </Card>
+          <Space size={8}>
+            <Button icon={<FileTextOutlined />} onClick={() => setExplainOpen(true)}>整体分析说明</Button>
+            <Button icon={<RobotOutlined />} type="primary" ghost onClick={() => setSummaryOpen(true)}>AI 总结</Button>
+          </Space>
         )}
         <div style={{ textAlign: 'right' }}>
           {data.overall_score_suppressed || overall?.score_suppressed ? (
@@ -247,7 +236,12 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
         </Card>
       ) : (
         <>
-      <ExplanationCard data={data} />
+      {!isOldFormat && (
+        <Button type="dashed" block icon={<FileTextOutlined />} style={{ marginBottom: 12 }}
+          onClick={() => setExplainOpen(true)}>
+          查看「整体分析说明（逻辑闭环）：含义 → 评分 → 依据 → 建议 → 合作结论」
+        </Button>
+      )}
 
       {anomalies.length > 0 && (
         <Alert
@@ -415,6 +409,28 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
       </Card>
         </>
       )}
+
+      <Modal title="AI 总结" open={summaryOpen} onCancel={() => setSummaryOpen(false)} footer={null} width={520}>
+        {summaryLoading ? <Spin /> : summary ? (
+          <Space direction="vertical" size={8} style={{ width: '100%' }}>
+            <Text>{summary.summary}</Text>
+            {summary.strengths?.length > 0 && (
+              <ul style={{ margin: 0, paddingLeft: 18 }}>{summary.strengths.map((s: string, i: number) => <li key={i}><Text type="success">✔ {s}</Text></li>)}</ul>
+            )}
+            {summary.weaknesses?.length > 0 && (
+              <ul style={{ margin: 0, paddingLeft: 18 }}>{summary.weaknesses.map((w: string, i: number) => <li key={i}><Text type="danger">✘ {w}</Text></li>)}</ul>
+            )}
+            <Tag color={summary.cooperate ? 'green' : 'red'}>{summary.cooperate ? '建议合作' : '不建议合作'}</Tag>
+            {summary.cooperate_reason && <Text type="secondary">{summary.cooperate_reason}</Text>}
+          </Space>
+        ) : (
+          <Button type="primary" icon={<SyncOutlined />} onClick={genSummary} loading={summaryLoading}>生成 AI 总结</Button>
+        )}
+      </Modal>
+
+      <Modal title="整体分析说明（逻辑闭环）" open={explainOpen} onCancel={() => setExplainOpen(false)} footer={null} width={760}>
+        <ExplanationCard data={data} />
+      </Modal>
     </div>
   );
 }
@@ -592,9 +608,7 @@ function ExplanationCard({ data }: { data: any }) {
   }
 
   return (
-    <Card size="small" title="整体分析说明（逻辑闭环）" style={{ marginBottom: 12 }}
-      extra={<Text type="secondary" style={{ fontSize: 12 }}>数据 → 评分 → 建议 → 合作结论</Text>}>
-      <Space direction="vertical" size={10} style={{ width: '100%' }}>
+    <Space direction="vertical" size={10} style={{ width: '100%' }}>
         <div style={{ fontSize: 12 }}>
           <Text strong>① 评分总览</Text>
           <div style={{ marginTop: 4, color: '#666' }}>
@@ -659,7 +673,6 @@ function ExplanationCard({ data }: { data: any }) {
           </ul>
         </div>
       </Space>
-    </Card>
   );
 }
 
