@@ -17,8 +17,13 @@ def _get_client() -> AsyncOpenAI:
         _client = AsyncOpenAI(
             api_key=settings.DEEPSEEK_API_KEY,
             base_url=settings.DEEPSEEK_BASE_URL,
+            timeout=30.0,
         )
     return _client
+
+
+# 字符串→布尔“建议合作”白名单（覆盖模型常见输出写法）
+_COOPERATE_TRUE = ("true", "yes", "y", "是", "建议", "建议合作", "推荐", "可以", "合作", "1")
 
 
 SYSTEM_PROMPT = """你是小红书餐饮博主种草分析助手，基于机器评分数据输出专业结论。输出严格 JSON（无代码块标记）：
@@ -59,7 +64,9 @@ def build_prompt(result: dict) -> str:
     lines.extend("  " + line for line in dim_lines)
     lines.append("")
     lines.append(f"总分/等级：{_fmt(overall.get('score'))} / {_fmt(overall.get('level'))}（{_fmt(overall.get('description'))}）")
-    lines.append(f"账号阶段：{_fmt(stage.get('label'))}（置信度 {_fmt(stage.get('confidence'))}，依据 {_fmt(stage.get('evidence'))}）")
+    evidence = stage.get("evidence")
+    evidence_str = "；".join(str(e) for e in evidence) if isinstance(evidence, list) else _fmt(evidence)
+    lines.append(f"账号阶段：{_fmt(stage.get('label'))}（置信度 {_fmt(stage.get('confidence'))}，依据 {evidence_str}）")
     lines.append(f"合作建议：{_fmt(decision.get('recommendation'))} — {_fmt(decision.get('summary'))}")
     if decision.get("reasons"):
         lines.append(f"理由：{'；'.join(str(r) for r in decision['reasons'])}")
@@ -101,7 +108,7 @@ def _parse_json(content: str) -> dict:
 def _normalize(data: dict) -> dict:
     cooperate_raw = data.get("cooperate")
     if isinstance(cooperate_raw, str):
-        cooperate = cooperate_raw.strip().lower() in ("true", "是", "建议", "1")
+        cooperate = cooperate_raw.strip().lower() in _COOPERATE_TRUE
     else:
         cooperate = bool(cooperate_raw)
     return {

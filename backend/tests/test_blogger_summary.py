@@ -200,7 +200,7 @@ def test_generate_summary_parses_fenced_json(monkeypatch):
 
 
 def test_generate_summary_cooperate_string_compat(monkeypatch):
-    cases = [("建议", True), ("不建议", False), ("谨慎", False)]
+    cases = [("建议", True), ("建议合作", True), ("推荐", True), ("不建议", False), ("谨慎", False), ("false", False)]
     for raw, expected in cases:
         payload = {
             "summary": "s",
@@ -349,8 +349,53 @@ def test_summary_generate_failure_502(client, monkeypatch):
     monkeypatch.setattr("app.services.blogger_summary.generate_summary", boom)
     resp = client.post(f"/api/v1/notes/analysis-tasks/{task_id}/summary", headers=headers)
     assert resp.status_code == 502
-    assert "AI 总结生成失败：" in resp.json()["detail"]
-    assert "LLM 挂了" in resp.json()["detail"]
+    assert resp.json()["detail"] == "AI 总结生成失败，请稍后重试"
+    assert "LLM 挂了" not in resp.json()["detail"]
+
+
+def test_summary_second_call_hits_cache(client, monkeypatch):
+    headers, user_id = _auth(client, email=f"sum-cache-{uuid.uuid4().hex[:8]}@test.com")
+    task_id = _seed_task(user_id, "xhs-sum-cache", result=_sample_result())
+    calls = {"n": 0}
+
+    async def fake_generate(result_arg: dict) -> dict:
+        calls["n"] += 1
+        return {
+            "summary": "缓存命中测试",
+            "strengths": [],
+            "weaknesses": [],
+            "cooperate": True,
+            "cooperate_reason": "r",
+        }
+
+    monkeypatch.setattr("app.services.blogger_summary.generate_summary", fake_generate)
+    first = client.post(f"/api/v1/notes/analysis-tasks/{task_id}/summary", headers=headers)
+    second = client.post(f"/api/v1/notes/analysis-tasks/{task_id}/summary", headers=headers)
+    assert first.status_code == 200 and second.status_code == 200
+    assert first.json()["summary"] == "缓存命中测试"
+    assert second.json()["summary"] == "缓存命中测试"
+    assert calls["n"] == 1  # 第二次直接命中 task.result.ai_summary，不再调 LLM
+
+
+def test_summary_old_format_result_422(client, monkeypatch):
+    headers, user_id = _auth(client, email=f"sum-old-{uuid.uuid4().hex[:8]}@test.com")
+    old_result = {
+        "dimensions": {
+            "trend": {"score": 60}, "content_stability": {"score": 60},
+            "interaction_quality": {"score": 60}, "sustained_operation": {"score": 60},
+        },
+        "overall": {"score": 57.0, "level": "良好"},
+        "decision": {"recommendation": "ok", "status": "ok", "quadrant": "推荐"},
+    }
+    task_id = _seed_task(user_id, "xhs-sum-old", result=old_result)
+
+    async def fake_generate(result_arg: dict) -> dict:
+        raise AssertionError("旧格式不应调用 AI")
+
+    monkeypatch.setattr("app.services.blogger_summary.generate_summary", fake_generate)
+    resp = client.post(f"/api/v1/notes/analysis-tasks/{task_id}/summary", headers=headers)
+    assert resp.status_code == 422
+    assert "旧版分析结果" in resp.json()["detail"]
 
 
 def test_summary_non_dict_result_422(client, monkeypatch):
