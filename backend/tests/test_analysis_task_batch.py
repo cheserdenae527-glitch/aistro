@@ -1,4 +1,4 @@
-"""批量创建博主分析任务端点测试（Task B1）— 真实粗筛 + 上限 50。
+"""批量创建博主分析任务端点测试（Task B1）— 真实粗筛 + 上限 50 + 评审修订。
 
 运行方式：
     cd D:\two\backend
@@ -89,14 +89,20 @@ def test_batch_all_passed_creates_tasks_and_starts_runner(client, monkeypatch):
         assert item["status"] == "pending"
         assert item["task_id"]
 
+    created_by_id = {it["xhs_user_id"]: it for it in body["created"]}
+    assert created_by_id["xhs-1"]["follower_count"] == 8000  # prescreen 粉丝数优先
+    assert created_by_id["xhs-1"]["notes"] == 20  # 粗筛 notes 透传
+    assert created_by_id["xhs-fallback"]["follower_count"] == 1234  # prescreen fans=0 → 回退 b.fans
+
     tasks = _fetch_tasks(user_id)
     assert len(tasks) == 3
     by_id = {t.xhs_user_id: t for t in tasks}
     assert all(t.prescreen_passed for t in tasks)
-    assert by_id["xhs-1"].follower_count == 8000  # prescreen 粉丝数优先
+    assert by_id["xhs-1"].follower_count == 8000
+    assert by_id["xhs-1"].total_notes == 20  # total_notes 从粗筛结果写入任务行
     assert by_id["xhs-1"].with_comments is True
     assert by_id["xhs-2"].with_comments is False
-    assert by_id["xhs-fallback"].follower_count == 1234  # prescreen fans=0 → 回退 b.fans
+    assert by_id["xhs-fallback"].follower_count == 1234
 
     assert called == ["xhs-1", "xhs-2", "xhs-fallback"]  # 串行逐个粗筛
     assert start_mock.call_count == 3  # 每个创建的任务都调度后台运行
@@ -127,7 +133,10 @@ def test_batch_mixed_passed_and_rejected(client, monkeypatch):
     assert body["rejected"] == [
         {"xhs_user_id": "xhs-bad", "nickname": "差号", "reason": "粉丝数不足（100 < 1000）"}
     ]
-    assert len(_fetch_tasks(user_id)) == 2
+    # 拒绝者不落任何任务行
+    tasks = _fetch_tasks(user_id)
+    assert len(tasks) == 2
+    assert {t.xhs_user_id for t in tasks} == {"xhs-good-1", "xhs-good-2"}
     assert start_mock.call_count == 2
 
 
@@ -153,8 +162,48 @@ def test_batch_prescreen_exception_rejected_others_still_processed(client, monke
     body = resp.json()
     assert [it["xhs_user_id"] for it in body["created"]] == ["xhs-ok", "xhs-ok2"]
     assert body["rejected"] == [{"xhs_user_id": "xhs-crash", "nickname": "异常号", "reason": "粗筛异常"}]
+    # 异常博主不落任务行，其余博主仍正常创建
+    tasks = _fetch_tasks(user_id)
+    assert len(tasks) == 2
+    assert "xhs-crash" not in {t.xhs_user_id for t in tasks}
+    assert start_mock.call_count == 2
+
+
+def test_batch_duplicate_user_ids_deduped(client, monkeypatch):
+    headers, user_id = _auth(client, email=f"batch-dup-{uuid.uuid4().hex[:8]}@test.com")
+    called: list[str] = []
+
+    async def fake_prescreen(user_id: str) -> dict:
+        called.append(user_id)
+        return {"passed": True, "reason": None, "fans": 5000, "notes": 18, "avg_likes": 90.0}
+
+    start_mock = mock.Mock()
+    monkeypatch.setattr("app.services.analysis_task_runner.prescreen_user", fake_prescreen)
+    monkeypatch.setattr("app.services.analysis_task_runner.start_analysis_task", start_mock)
+
+    bloggers = [
+        {"user_id": "xhs-dup", "nickname": "重复号", "fans": 100},
+        {"user_id": "xhs-ok", "nickname": "正常号"},
+        {"user_id": "xhs-dup", "nickname": "重复号2", "fans": 999},  # 重复 → first-wins，只处理首个
+    ]
+    resp = client.post("/api/v1/notes/analysis-tasks/batch", headers=headers, json={"bloggers": bloggers})
+    assert resp.status_code == 200
+    body = resp.json()
+    assert [it["xhs_user_id"] for it in body["created"]] == ["xhs-dup", "xhs-ok"]
+    assert body["created"][0]["nickname"] == "重复号"  # first-wins 使用首个条目的昵称
+    assert called == ["xhs-dup", "xhs-ok"]  # 重复 id 只粗筛一次
     assert len(_fetch_tasks(user_id)) == 2
     assert start_mock.call_count == 2
+
+
+def test_batch_empty_bloggers_returns_422(client, monkeypatch):
+    headers, _ = _auth(client, email=f"batch-empty-{uuid.uuid4().hex[:8]}@test.com")
+    # 显式空列表 → pydantic min_length 校验
+    resp = client.post("/api/v1/notes/analysis-tasks/batch", headers=headers, json={"bloggers": []})
+    assert resp.status_code == 422
+    # 缺省字段 → 处理器兜底拒绝空批，避免静默 no-op 200
+    resp = client.post("/api/v1/notes/analysis-tasks/batch", headers=headers, json={})
+    assert resp.status_code == 422
 
 
 def test_batch_over_50_returns_422(client, monkeypatch):

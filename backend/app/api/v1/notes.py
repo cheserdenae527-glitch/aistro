@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 import statistics
 import time
@@ -22,6 +23,8 @@ from crawler.processor import normalize_note, normalize_comment
 from crawler.xhs import XhsCrawler
 
 router = APIRouter(prefix="/notes", tags=["notes"])
+
+logger = logging.getLogger("crawler.analysis_task_batch")
 
 
 def _get_crawler(
@@ -416,12 +419,12 @@ class AnalysisTaskCreateRequest(BaseModel):
 class AnalysisTaskBatchItem(BaseModel):
     user_id: str
     nickname: str = ""
-    fans: int = 0
+    fans: int = Field(0, ge=0)
     with_comments: bool = False
 
 
 class AnalysisTaskBatchRequest(BaseModel):
-    bloggers: list[AnalysisTaskBatchItem] = []
+    bloggers: list[AnalysisTaskBatchItem] = Field(default_factory=list, min_length=1)
 
 
 def _task_payload(task: BloggerAnalysisTask) -> dict:
@@ -492,19 +495,34 @@ async def create_analysis_tasks_batch(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """批量真实分析：逐博主串行真实列表粗筛，通过者创建后台任务（上限 50）。"""
+    """批量真实分析：逐博主串行真实列表粗筛，通过者创建后台任务（上限 50）。
+
+    粗筛异常按博主隔离；DB 写入失败整批回滚（原子）。重复 user_id 只处理首个。
+    """
     from app.services.analysis_task_runner import prescreen_user, start_analysis_task
 
+    if not body.bloggers:
+        raise HTTPException(status_code=422, detail="批量分析至少需要 1 个博主")
     if len(body.bloggers) > 50:
         raise HTTPException(status_code=422, detail="批量分析单次最多 50 个博主")
+
+    # 去重（first-wins）：重复 user_id 不重复粗筛、不重复建任务
+    seen: set[str] = set()
+    bloggers: list[AnalysisTaskBatchItem] = []
+    for b in body.bloggers:
+        if b.user_id in seen:
+            continue
+        seen.add(b.user_id)
+        bloggers.append(b)
 
     created: list[dict] = []
     rejected: list[dict] = []
     created_task_ids: list[uuid.UUID] = []
-    for b in body.bloggers:
+    for b in bloggers:
         try:
             result = await prescreen_user(b.user_id)
-        except Exception:
+        except Exception as exc:
+            logger.warning("批量粗筛异常 user=%s: %s", b.user_id, exc)
             # 单个博主粗筛异常不中断整批，按拒绝处理
             rejected.append(
                 {
@@ -530,6 +548,7 @@ async def create_analysis_tasks_batch(
             prescreen_passed=True,
             prescreen_reason=None,
             follower_count=result.get("fans") or b.fans,
+            total_notes=result.get("notes", 0) or 0,
             with_comments=b.with_comments,
         )
         db.add(task)
@@ -541,6 +560,8 @@ async def create_analysis_tasks_batch(
                 "xhs_user_id": b.user_id,
                 "nickname": b.nickname or "",
                 "status": "pending",
+                "follower_count": task.follower_count,
+                "notes": task.total_notes,
             }
         )
     # 先提交让后台任务能看到刚插入的任务行，再逐个调度（与单号分析一致）
