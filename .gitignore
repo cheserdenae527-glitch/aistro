@@ -56,3 +56,6 @@ desktop/release/
 /RedCrack/
 # 运行时状态
 /.last_task_id.txt
+
+# 爬虫 cookie 池（真实登录态，不入库）
+/backend/services/crawler/xhs/scripts/cookie_pool.json
