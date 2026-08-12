@@ -4,7 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { Button, Card, Input, message, Space, Tag, Typography } from 'antd';
 import { ClearOutlined, DeleteOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons';
 import BloggerScreeningPanel from './BloggerScreeningPanel';
-import { AnalysisTaskPayload, createAnalysisTasksBatch, listAnalysisTasks, ScreeningRow } from '../services/analysis';
+import { createAnalysisTasksBatch, listAnalysisTasks, ScreeningRow } from '../services/analysis';
 
 const { Text, Title } = Typography;
 
@@ -21,6 +21,7 @@ interface BatchAnalysisPanelProps {
   screeningRows: ScreeningRow[];
   screeningLoading: boolean;
   onRefreshScreening: () => void;
+  onPollRefreshScreening?: () => void;
   withComments: boolean;
 }
 
@@ -38,13 +39,12 @@ function statusColor(status: string): string {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-// 每行提取一个 user_id：裸 ID 直接取；主页链接剥掉协议/域名后按规格正则取 user/profile/ 后的 ID。
-function parseUserId(line: string): string {
+// 每行提取一个 user_id：裸 ID 整行须为纯字母数字；主页链接须含 user/profile/ 路径（拒绝笔记链接/混合文本）。
+export function parseUserId(line: string): string {
   const s = line.trim();
   if (!s) return '';
   if (/^[0-9a-zA-Z]+$/.test(s)) return s;
-  const stripped = s.replace(/^https?:\/\//, '').replace(/^[^/]+\//, '');
-  const m = stripped.match(/(?:user\/profile\/)?([0-9a-zA-Z]+)/);
+  const m = s.match(/^(?:https?:\/\/)?[^\s]+\/user\/profile\/([0-9a-zA-Z]+)/);
   return m ? m[1] : '';
 }
 
@@ -77,6 +77,7 @@ export default function BatchAnalysisPanel({
   screeningRows,
   screeningLoading,
   onRefreshScreening,
+  onPollRefreshScreening,
   withComments,
 }: BatchAnalysisPanelProps) {
   const [pastedText, setPastedText] = useState('');
@@ -123,7 +124,11 @@ export default function BatchAnalysisPanel({
         queue.map((q) => ({ user_id: q.user_id, nickname: q.nickname, fans: q.fans, with_comments: withComments })),
       );
       const next: Record<string, string> = {};
-      for (const c of res.created) next[c.xhs_user_id] = '分析中';
+      const taskIdByUser = new Map<string, string>();
+      for (const c of res.created) {
+        next[c.xhs_user_id] = '分析中';
+        taskIdByUser.set(c.xhs_user_id, c.task_id);
+      }
       for (const r of res.rejected) next[r.xhs_user_id] = '已拒绝：' + r.reason;
       setStatusMap({ ...next });
       if (res.rejected.length > 0) {
@@ -143,30 +148,28 @@ export default function BatchAnalysisPanel({
         await sleep(3000);
         if (!aliveRef.current) return;
         try {
-          const pollRes = await listAnalysisTasks({ limit: 200 });
+          const pollRes = await listAnalysisTasks({ limit: 500 });
+          if (!aliveRef.current) return;
           const items = pollRes.items || [];
-          // 每个 user_id 取最新一条任务（按完成时间）
-          const latest = new Map<string, AnalysisTaskPayload>();
-          for (const t of items) {
-            const prev = latest.get(t.xhs_user_id);
-            if (!prev || (t.finished_at || '') > (prev.finished_at || '')) latest.set(t.xhs_user_id, t);
-          }
+          // 按本次批量创建的 task_id 精确定位，避免命中同博主的历史完成记录导致误判“完成”
           const upd: Record<string, string> = {};
           let allTerminal = true;
           for (const id of Object.keys(next)) {
             if (next[id].startsWith('已拒绝')) { upd[id] = next[id]; continue; }
-            const t = latest.get(id);
+            const taskId = taskIdByUser.get(id);
+            const t = taskId ? items.find((x) => x.id === taskId) : undefined;
             if (!t) { upd[id] = '分析中'; allTerminal = false; continue; }
             const st = taskStatusText(t.status);
             upd[id] = st.text;
             if (!st.terminal) allTerminal = false;
           }
           setStatusMap({ ...upd });
-          onRefreshScreening();
+          onPollRefreshScreening?.();
           terminal = allTerminal;
         } catch (err: unknown) {
+          // 轮询失败直接结束：不触发“超时”提示
           message.error('批量进度刷新失败：' + errorDetail(err, '未知错误'), 5);
-          break;
+          return;
         }
       }
       if (!terminal) message.warning('批量分析仍在进行（已超过约 3 分钟），请稍后在筛选表查看最新结果', 5);
@@ -216,6 +219,7 @@ export default function BatchAnalysisPanel({
         <Button type="primary" icon={<PlayCircleOutlined />} loading={running} disabled={running || queue.length === 0} onClick={handleStart}>
           开始批量分析
         </Button>
+        <Tag color={withComments ? 'purple' : 'default'} style={{ marginLeft: 8 }}>评论分析：{withComments ? '开' : '关'}</Tag>
         <Text type="secondary" style={{ marginLeft: 8 }}>
           {running ? '正在发起并轮询进度...' : queue.length > 0 ? `队列 ${queue.length} 个博主，将执行真实粗筛+分析` : '队列为空'}
         </Text>

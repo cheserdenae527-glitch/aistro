@@ -150,5 +150,5 @@ export interface BatchCreateResponse {
 
 /** 批量创建博主分析任务：后端逐博主真实粗筛，通过者创建后台任务（单次上限 50）。 */
 export async function createAnalysisTasksBatch(bloggers: BatchBloggerInput[]): Promise<BatchCreateResponse> {
-  return (await api.post('/notes/analysis-tasks/batch', { bloggers }, { timeout: 60000 })).data;
+  return (await api.post('/notes/analysis-tasks/batch', { bloggers }, { timeout: 300000 })).data;
 }

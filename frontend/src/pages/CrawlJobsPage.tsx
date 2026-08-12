@@ -107,8 +107,8 @@ export default function CrawlJobsPage() {
   };
   useEffect(() => { fetchTasks(); const t = setInterval(fetchTasks,3000); return () => clearInterval(t); }, []);
 
-  const loadScreening = async () => {
-    setScreeningLoading(true);
+  const loadScreening = async (silent = false) => {
+    if (!silent) setScreeningLoading(true);
     try {
       const res = await listAnalysisTasks({ status: 'success', limit: 200 });
       const items = res.items || [];
@@ -146,23 +146,42 @@ export default function CrawlJobsPage() {
   useEffect(() => { loadScreening(); }, []);
 
   const addToBatchQueue = (u: XhsUser) => {
+    if (batchQueue.length >= 50) {
+      message.warning('批量分析单次最多 50 个博主');
+      return;
+    }
     if (batchQueue.some((x) => x.user_id === u.user_id)) {
       message.info('该博主已在批量分析队列中');
       return;
     }
-    setBatchQueue((q) => [...q, { user_id: u.user_id, nickname: u.nickname, fans: u.fans }]);
     message.success(`已加入批量分析队列：${u.nickname}`);
+    // updater 内去重 + 上限：防快速双击重复入队/超限
+    setBatchQueue((q) => {
+      if (q.some((x) => x.user_id === u.user_id) || q.length >= 50) return q;
+      return [...q, { user_id: u.user_id, nickname: u.nickname, fans: u.fans }];
+    });
   };
 
   const addParsedToBatchQueue = (items: BatchQueueItem[]) => {
-    const existing = new Set(batchQueue.map((x) => x.user_id));
-    const fresh = items.filter((x) => !existing.has(x.user_id));
-    if (fresh.length === 0) {
-      message.info('这些博主已在批量分析队列中');
-      return;
+    if (items.length === 0) return;
+    const room = Math.max(0, 50 - batchQueue.length);
+    if (room === 0) {
+      message.warning('批量分析单次最多 50 个博主');
+    } else {
+      const existing = new Set(batchQueue.map((x) => x.user_id));
+      const fresh = items.filter((x) => !existing.has(x.user_id));
+      if (fresh.length === 0) {
+        message.info('这些博主已在批量分析队列中');
+      } else {
+        message.success(`已加入 ${Math.min(fresh.length, room)} 个博主到批量分析队列`);
+      }
     }
-    setBatchQueue((q) => [...q, ...fresh]);
-    message.success(`已加入 ${fresh.length} 个博主到批量分析队列`);
+    // updater 内去重 + 上限：防快速连续操作重复入队/超限
+    setBatchQueue((q) => {
+      const seen = new Set(q.map((x) => x.user_id));
+      const addable = items.filter((x) => !seen.has(x.user_id)).slice(0, Math.max(0, 50 - q.length));
+      return [...q, ...addable];
+    });
   };
 
   const removeFromBatchQueue = (userId: string) => {
@@ -478,6 +497,7 @@ export default function CrawlJobsPage() {
                 screeningRows={screeningRows}
                 screeningLoading={screeningLoading}
                 onRefreshScreening={loadScreening}
+                onPollRefreshScreening={() => loadScreening(true)}
                 withComments={withComments}
               />
             ) },
