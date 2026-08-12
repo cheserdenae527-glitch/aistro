@@ -80,14 +80,36 @@ def test_is_old_format_false_for_new_five_dimensions():
     assert not is_old_format(result)
 
 
-def test_is_old_format_false_when_no_dimensions():
-    assert not is_old_format({})
-    assert not is_old_format({"dimensions": None})
-    assert not is_old_format({"dimensions": "not-a-dict"})
+def test_is_old_format_true_when_no_dimensions():
+    assert is_old_format({})
+    assert is_old_format({"dimensions": None})
+    assert is_old_format({"dimensions": "not-a-dict"})
 
 
-def test_is_old_format_false_when_dimensions_empty():
-    assert not is_old_format({"dimensions": {}})
+def test_is_old_format_true_when_dimensions_empty():
+    assert is_old_format({"dimensions": {}})
+
+
+def test_is_old_format_false_when_new_decision_present():
+    # 转换后数据不足的行 dimensions 为空 dict，但带新 decision（含 low_quality）
+    assert not is_old_format({
+        "dimensions": {},
+        "decision": {"recommendation": "insufficient_data", "low_quality": False},
+    })
+
+
+def test_is_old_format_true_when_old_style_decision():
+    # 旧四维结果的 decision 也含 recommendation，但没有 low_quality —— 仍算旧格式
+    assert is_old_format({
+        "dimensions": {k: {"score": 60} for k in OLD_DIMS},
+        "decision": {
+            "recommendation": "ok",
+            "status": "ok",
+            "quadrant": "推荐",
+            "grass_level": None,
+            "growth_level": None,
+        },
+    })
 
 
 # ---------- recompute_result ----------

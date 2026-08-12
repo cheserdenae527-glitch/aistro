@@ -22,14 +22,25 @@ def _load_env() -> None:
         os.environ.setdefault(key.strip(), value.strip())
 
 
-def is_old_format(result: dict) -> bool:
-    """旧四维格式判定：dimensions 是 dict、无 seeding_depth、含旧维度键。"""
+def _is_new_format(result: dict) -> bool:
+    """新五维格式判定：有 seeding_depth 维度，或新结构 decision（含 low_quality）。
+
+    注意：旧四维结果的 decision 也可能含 recommendation（旧结构只有
+    grass_level/growth_level/quadrant/recommendation/status），因此不能只凭
+    recommendation 判断；新 decision 一定带 low_quality（所有分支都有）。
+    转换后数据不足的行 dimensions 为空 dict，但带新 decision，靠后者识别，
+    保证脚本重跑幂等。
+    """
     dimensions = result.get("dimensions")
-    if not isinstance(dimensions, dict):
-        return False
-    if "seeding_depth" in dimensions:
-        return False
-    return "trend" in dimensions or "content_stability" in dimensions
+    has_new_dims = isinstance(dimensions, dict) and "seeding_depth" in dimensions
+    decision = result.get("decision")
+    has_new_decision = isinstance(decision, dict) and "low_quality" in decision
+    return has_new_dims or has_new_decision
+
+
+def is_old_format(result: dict) -> bool:
+    """旧格式（可回填）判定：不是新格式即可转换。"""
+    return not _is_new_format(result)
 
 
 def recompute_result(task) -> dict:
