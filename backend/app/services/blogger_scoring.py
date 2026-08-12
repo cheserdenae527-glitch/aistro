@@ -30,13 +30,6 @@ TIERS = {
     "T4": {"min": 1000000, "max": None, "points": [(0.833, 0), (1.745, 40), (2.367, 70), (2.631, 100)], "min_healthy": 0.833},
 }
 
-DIMENSION_WEIGHTS = {
-    "interaction_quality": 0.35,
-    "content_stability": 0.30,
-    "sustained_operation": 0.20,
-    "trend": 0.15,
-}
-
 LEVELS = [
     (85, "卓越", "优先入选"),
     (70, "优秀", "推荐入选"),
@@ -48,8 +41,6 @@ LEVELS = [
 ANALYSIS_WINDOW_DAYS = 90
 TREND_MIN_SAMPLES = 10
 STALE_DAYS = 60
-VOTE_BAN_RATIO = 0.20
-FAKE_RATIO_THRESHOLD = 0.005
 _CONF_RANK = {"high": 0, "medium": 1, "low": 2}
 _NONCORE = {"verticality", "stable_output", "sustained_operation", "growth_trend"}
 

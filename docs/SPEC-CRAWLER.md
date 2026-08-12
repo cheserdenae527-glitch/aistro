@@ -378,6 +378,7 @@ Cookie 更新流程：浏览器登录小红书 → F12 → Application → Cooki
 ---
 
 ## 11. 真实数据版评分改造（基础版已实现；初版阈值已回填 2026-08-08，待人工复核）
+> **2026-08-12 状态更新**：真实数据版（五维种草模型）已全面替换旧引擎；旧 `xhs_analysis.py`、同步分析接口（410）、`UserAnalysisRequest` 与相关死代码已删除；历史分析结果已用 `scripts/backfill_blogger_analysis.py` 回填为新格式。
 
 > 基础版已实现（模型/任务/引擎/前端），分层互动质量阈值已按 2026-08-08 初版标定回填到 `blogger_scoring.py`（样本 T1=12/T2=12/T3=11/T4=4，待人工复核）；原始设计稿：`docs/DESIGN-BLOGGER-SCORING-REALDATA.md`。
 

@@ -3,8 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import math
-import statistics
 import time
 import uuid
 
@@ -26,7 +24,6 @@ router = APIRouter(prefix="/notes", tags=["notes"])
 
 logger = logging.getLogger("crawler.analysis_task_batch")
 
-
 def _get_crawler(
     min_delay: float | None = None,
     max_delay: float | None = None,
@@ -44,11 +41,9 @@ def _get_crawler(
         cookie_id=cookie_id,
     )
 
-
 class SearchUsersRequest(BaseModel):
     query: str
     limit: int = Field(20, ge=1, le=50)
-
 
 def _parse_count(v) -> int:
     """把 '1.1万' / '123' 这类字符串转成数字。"""
@@ -67,7 +62,6 @@ def _parse_count(v) -> int:
     except ValueError:
         return 0
 
-
 def _normalize_user_summary(u: dict) -> dict:
     """把 Spider_XHS 搜索用户结果转成前端友好的结构。"""
     return {
@@ -78,7 +72,6 @@ def _normalize_user_summary(u: dict) -> dict:
         "notes": _parse_count(u.get("notes", u.get("note_count", 0))),
         "desc": u.get("desc", u.get("signature", u.get("sub_title", ""))),
     }
-
 
 @router.post("/search-users")
 async def search_users(
@@ -99,14 +92,6 @@ async def search_users(
     _search_cache_set(cache_key, payload)
     return payload
 
-
-class UserAnalysisRequest(BaseModel):
-    nickname: str = ""
-    fans: int = Field(0, ge=0)
-    detail_limit: int = Field(10, ge=0, le=50)
-    refresh: bool = Field(False, description="true 时跳过缓存强制重新抓取")
-
-
 def _extract_detail_items(result) -> list[dict]:
     """从爬虫返回的详情响应中提取笔记对象列表。"""
     if not result.success:
@@ -121,7 +106,6 @@ def _extract_detail_items(result) -> list[dict]:
     if isinstance(raw, list):
         return [it for it in raw if isinstance(it, dict)]
     return []
-
 
 def _merge_detail_note(base: dict, detail_raw: dict) -> None:
     """用详情数据补齐列表笔记的发布时间与完整互动数据（空值不覆盖真实数据）。"""
@@ -141,11 +125,9 @@ def _merge_detail_note(base: dict, detail_raw: dict) -> None:
             base_stats[key] = base_stats.get(key, 0)
     base["full_stats"] = bool(any(base_stats.get(key) for key in ("liked", "collected", "comments", "shared")))
 
-
 # 搜索/作品短缓存：短时间重复搜索相同账号/关键词时直接命中，减少爬取与风控压力
 _SEARCH_CACHE: dict[str, tuple[float, Any]] = {}
 _SEARCH_CACHE_TTL = 300
-
 
 def _search_cache_get(key: str):
     item = _SEARCH_CACHE.get(key)
@@ -153,98 +135,8 @@ def _search_cache_get(key: str):
         return item[1]
     return None
 
-
 def _search_cache_set(key: str, value: Any) -> None:
     _SEARCH_CACHE[key] = (time.time(), value)
-
-
-def _note_likes(note: dict) -> int:
-    st = note.get("stats") or {}
-    return int(st.get("liked", 0) or 0)
-
-
-def _weighted(st: dict) -> int:
-    return int(st.get("liked", 0) or 0) + int(st.get("collected", 0) or 0) + int(st.get("comments", 0) or 0) * 4 + int(st.get("shared", 0) or 0) * 4
-
-
-def _build_stratified_sample(notes: list[dict], detail_limit: int) -> list[int]:
-    """按发布顺序分桶 + 桶内按点赞排序抽样，保底覆盖中位数区间。"""
-    total = len(notes)
-    if total <= detail_limit:
-        return list(range(total))
-    bucket_count = max(1, min(detail_limit // 2, 12))
-    sample_indices: set[int] = set()
-    bucket_size = max(1, math.ceil(total / bucket_count))
-    for b in range(bucket_count):
-        chunk_start = b * bucket_size
-        chunk = notes[chunk_start:chunk_start + bucket_size]
-        if not chunk:
-            continue
-        ranked = sorted(
-            range(len(chunk)),
-            key=lambda i: -_note_likes(chunk[i]),
-        )
-        take = 2 if len(sample_indices) + 2 <= detail_limit else 1
-        for i in ranked[:take]:
-            sample_indices.add(chunk_start + i)
-
-    likes_sorted = sorted(_note_likes(n) for n in notes)
-    median_likes = likes_sorted[len(likes_sorted) // 2]
-    median_idx = min(range(total), key=lambda i: abs(_note_likes(notes[i]) - median_likes))
-    if median_idx not in sample_indices and len(sample_indices) < detail_limit:
-        sample_indices.add(median_idx)
-
-    remaining = detail_limit - len(sample_indices)
-    if remaining > 0:
-        for i in sorted(range(total), key=lambda i: -_note_likes(notes[i])):
-            if i in sample_indices:
-                continue
-            sample_indices.add(i)
-            remaining -= 1
-            if remaining <= 0:
-                break
-    return sorted(sample_indices)
-
-
-async def _fetch_details_with_early_stop(crawler, notes: list[dict], indices: list[int], concurrency: int = 3) -> None:
-    """分窗口并发抓详情，窗口间按均值稳定性 <3% 提前结束。"""
-    means: list[float] = []
-    stable_streak = 0
-    if not indices:
-        return
-    pool_size = min(concurrency, len(indices))
-    pool = [crawler] if pool_size <= 1 else [_get_crawler(min_delay=1.0, max_delay=2.0, max_retries=1) for _ in range(pool_size)]
-    sem = asyncio.Semaphore(pool_size)
-
-    async def one(idx: int) -> None:
-        base_note = notes[idx]
-        nid = base_note.get("platform_note_id") or base_note.get("id")
-        token = base_note.get("xsec_token")
-        if not nid or not token:
-            return
-        url = f"https://www.xiaohongshu.com/explore/{nid}?xsec_token={token}&xsec_source=pc_user"
-        worker = pool[idx % len(pool)]
-        async with sem:
-            detail_result = await asyncio.to_thread(worker.get_note_detail, url)
-        detail_items = _extract_detail_items(detail_result)
-        if detail_items:
-            _merge_detail_note(base_note, detail_items[0])
-
-    for start in range(0, len(indices), pool_size):
-        chunk = indices[start:start + pool_size]
-        await asyncio.gather(*(one(idx) for idx in chunk))
-        detailed = [n for n in notes if n.get("full_stats")]
-        if len(detailed) >= 3:
-            mean = statistics.fmean(_weighted(n["stats"]) for n in detailed)
-            prev = means[-1] if means else None
-            means.append(mean)
-            if prev is not None and abs(mean - prev) / max(abs(prev), 1) < 0.03:
-                stable_streak += 1
-            else:
-                stable_streak = 0
-            if stable_streak >= 3:
-                break
-
 
 async def _enrich_note_details(notes: list[dict], indices: list[int], concurrency: int = 3) -> None:
     """并发抓详情补齐列表笔记的完整互动 / 时间 / 图片。"""
@@ -269,33 +161,6 @@ async def _enrich_note_details(notes: list[dict], indices: list[int], concurrenc
             _merge_detail_note(note, detail_items[0])
 
     await asyncio.gather(*(one(i) for i in indices))
-
-
-def _estimate_unfetched_stats(notes: list[dict]) -> None:
-    """用已抓详情样本拟合 (评论/收藏/分享)/点赞 比例，估算未抓笔记互动。"""
-    detailed = [n for n in notes if n.get("full_stats")]
-    if not detailed:
-        return
-    total_likes = sum(n["stats"]["liked"] for n in detailed)
-    if total_likes <= 0:
-        return
-    ratios = {
-        "comments": sum(n["stats"]["comments"] for n in detailed) / total_likes,
-        "collected": sum(n["stats"]["collected"] for n in detailed) / total_likes,
-        "shared": sum(n["stats"]["shared"] for n in detailed) / total_likes,
-    }
-    for note in notes:
-        if note.get("full_stats"):
-            continue
-        likes = note["stats"]["liked"]
-        note["stats"] = {
-            "liked": likes,
-            "collected": round(likes * ratios["collected"]),
-            "comments": round(likes * ratios["comments"]),
-            "shared": round(likes * ratios["shared"]),
-        }
-        note["estimated"] = True
-
 
 @router.get("/users/{user_id}/notes")
 async def get_user_notes_by_id(
@@ -388,33 +253,10 @@ async def get_user_notes_by_id(
     _search_cache_set(cache_key, payload)
     return payload
 
-
-@router.post("/users/{user_id}/analysis")
-async def analyze_user_notes_deprecated(
-    user_id: str,
-    body: UserAnalysisRequest | None = None,
-    user: User = Depends(get_current_user),
-):
-    """[已下线] 同步分析接口：迁移到 POST /users/{user_id}/analysis-tasks。
-
-    阶段 1：保留入口，记录访问日志并返回 410，观察一个发布周期确认零调用后
-    阶段 2 物理删除（含 xhs_analysis.py 与 test_xhs_analysis.py）。
-    """
-    import logging
-
-    logger = logging.getLogger("crawler.analysis_deprecated")
-    logger.warning("deprecated sync analysis called user_id=%s nickname=%s", user_id, body.nickname if body else "")
-    raise HTTPException(
-        status_code=410,
-        detail="该接口已下线，请改用 POST /api/v1/notes/users/{user_id}/analysis-tasks（异步任务）",
-    )
-
-
 class AnalysisTaskCreateRequest(BaseModel):
     nickname: str = ""
     fans: int = Field(0, ge=0)
     with_comments: bool = False
-
 
 class AnalysisTaskBatchItem(BaseModel):
     user_id: str
@@ -422,10 +264,8 @@ class AnalysisTaskBatchItem(BaseModel):
     fans: int = Field(0, ge=0)
     with_comments: bool = False
 
-
 class AnalysisTaskBatchRequest(BaseModel):
     bloggers: list[AnalysisTaskBatchItem] = Field(default_factory=list, min_length=1)
-
 
 def _task_payload(task: BloggerAnalysisTask) -> dict:
     return {
@@ -448,7 +288,6 @@ def _task_payload(task: BloggerAnalysisTask) -> dict:
         "started_at": task.started_at.isoformat() if task.started_at else None,
         "finished_at": task.finished_at.isoformat() if task.finished_at else None,
     }
-
 
 @router.post("/users/{user_id}/analysis-tasks", status_code=201)
 async def create_analysis_task(
@@ -487,7 +326,6 @@ async def create_analysis_task(
     payload = _task_payload(task)
     payload["passed_prescreen"] = True
     return payload
-
 
 @router.post("/analysis-tasks/batch")
 async def create_analysis_tasks_batch(
@@ -570,7 +408,6 @@ async def create_analysis_tasks_batch(
         start_analysis_task(task_id)
     return {"created": created, "rejected": rejected}
 
-
 @router.post("/analysis-tasks/{task_id}/summary")
 async def generate_analysis_task_summary(
     task_id: str,
@@ -595,14 +432,12 @@ async def generate_analysis_task_summary(
     except Exception as exc:
         raise HTTPException(status_code=502, detail="AI 总结生成失败：" + str(exc))
 
-
 def _is_uuid(s: str) -> bool:
     try:
         uuid.UUID(s)
         return True
     except ValueError:
         return False
-
 
 @router.get("/analysis-tasks")
 async def list_analysis_tasks(
@@ -629,7 +464,6 @@ async def list_analysis_tasks(
     rows = (await db.execute(stmt)).scalars().all()
     return {"items": [_task_payload(t) for t in rows]}
 
-
 @router.get("/users/{user_id}/analysis-tasks/{task_id}")
 async def get_analysis_task(
     user_id: str,
@@ -648,7 +482,6 @@ async def get_analysis_task(
     if not task:
         raise HTTPException(status_code=404, detail="Not found")
     return _task_payload(task)
-
 
 @router.delete("/users/{user_id}/analysis-tasks/{task_id}")
 async def cancel_analysis_task(
@@ -675,14 +508,12 @@ async def cancel_analysis_task(
         await db.flush()
     return _task_payload(task)
 
-
 class SearchNotesRequest(BaseModel):
     query: str
     limit: int = Field(20, ge=1, le=100)
     sort: int = Field(0, ge=0, le=4)
     note_type: int = Field(0, ge=0, le=2)
     time_range: int = Field(0, ge=0, le=3)
-
 
 @router.post("/search")
 async def search_notes(
@@ -705,7 +536,6 @@ async def search_notes(
     _search_cache_set(cache_key, payload)
     return payload
 
-
 @router.get("/{note_id}")
 async def get_note_detail(
     note_id: str,
@@ -725,7 +555,6 @@ async def get_note_detail(
         raise HTTPException(status_code=404, detail="笔记不存在")
     return normalize_note(items[0])
 
-
 @router.get("/{note_id}/comments")
 async def get_note_comments(
     note_id: str,
@@ -741,4 +570,3 @@ async def get_note_comments(
     if not result.success:
         raise HTTPException(status_code=502, detail=result.error or "获取失败")
     return {"items": [normalize_comment(c, note_id) for c in result.data]}
-
