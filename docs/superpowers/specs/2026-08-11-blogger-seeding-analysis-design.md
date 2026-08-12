@@ -307,3 +307,27 @@
 3. **关键词表准确度**：美食垂直度 V1 依赖关键词表，可能漏判/误判（如探店文案不出现关键词）；Phase 2 用大模型分类兜底。
 4. **评论抓取风控**：可选评论分析会放大请求量，需沿用 gate 节奏与失败降级（失败则回退到无评论信号，不影响主流程）。
 5. **刷收藏对抗**：收藏是种草核心信号，也意味着刷收藏是主要攻击面；V1 用赞藏比闸门 + 收藏深度分双保险，标定时需用真实刷量样本验证区分度。
+---
+
+## 14. 批量真实分析与入口整合（增量 v1.4，2026-08-12）
+
+> 决策记录：用户确认方案 C —— 批量筛选并入「博主分析」，并新增「批量真实分析」能力。
+
+### 14.1 目标
+- 「博主分析」Tab 内嵌 单号分析 / 批量分析 两个子 Tab；移除独立的「批量筛选」Tab。
+- 批量分析：粘贴/导入一批真实博主（主页链接或 xhs_user_id，或从搜索结果逐个加入队列）→ 一键批量创建真实抓取+评分任务 → 实时进度 → 结果进入批量筛选表（现有过滤/排序）。
+
+### 14.2 前端（CrawlJobsPage / BloggerScreeningPanel / analysis.ts）
+- 「博主分析」Tab 内嵌 antd Tabs：
+  - 单号分析：现有流程不变（搜索→分析→五维报告）。
+  - 批量分析：发起区（文本框粘贴链接/ID 解析入队 + 搜索结果卡片「加入批量分析」按钮）+ 队列（可删单项）+ 开始按钮 + 进度区（逐博主：排队/粗筛拒绝+原因/分析中/完成/失败）+ 批量筛选表（复用 BloggerScreeningPanel）。
+- `analysis.ts`：新增 `createAnalysisTasksBatch(bloggers)` 类型化客户端；`listAnalysisTasks` 支持不传 status 拉全部（用于进度轮询）。
+
+### 14.3 后端（notes.py）
+- 新增 `POST /api/v1/notes/analysis-tasks/batch`：
+  - Body：`{ bloggers: [{ user_id, nickname?, fans?, with_comments? }, ...] }`，上限 50。
+  - 行为：逐博主**串行** `prescreen_user`（真实列表粗筛，复用现有 gate 限流）→ 通过者创建 `BloggerAnalysisTask` + `start_analysis_task`（后台真实抓详情+评分）；拒绝者记录原因。
+  - 返回：`{ created: [{ task_id, xhs_user_id, nickname, status }], rejected: [{ xhs_user_id, nickname, reason }] }`。
+
+### 14.4 不改动
+- 五维评分引擎/闸门/评论增强/迁移等核心逻辑；单号分析流程。

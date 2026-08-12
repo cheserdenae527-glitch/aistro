@@ -1956,3 +1956,21 @@ git commit -m "feat: 博主批量筛选视图（硬门槛 + 总分排序 + score
 - **Task 14**：`loadScreening` 补错误处理/加载态；阶段「（推断）」标记；空态区分（无数据 vs 全被筛掉）；`avatar` 死字段移除；按 `xhs_user_id` 去重取最新任务；`collect_rate`/`food_ratio` null 处理。
 
 > 阶段 2 遗留（观察 1–2 周后执行）：删除 `xhs_analysis.py`、`test_xhs_analysis.py`、`UserAnalysisRequest`、410 接口本体、notes.py 5 个死 helper、blogger_scoring.py 遗留常量（`DIMENSION_WEIGHTS`/`STALE_DAYS`/`VOTE_BAN_RATIO`/`FAKE_RATIO_THRESHOLD`/`_build_decision`），并同步 SPEC-CRAWLER.md §11。
+
+---
+
+## Phase 3：批量真实分析与入口整合（2026-08-12 增量）
+
+> 设计见 SPEC §14（v1.4）。复用既有 subagent-driven 流程（实现→spec→质量审查）。
+
+### Task B1: 后端批量创建端点 `POST /notes/analysis-tasks/batch`
+- 文件：`backend/app/api/v1/notes.py`（新端点 + 请求模型）、`backend/tests/test_analysis_task_batch.py`
+- 实现：`AnalysisTaskBatchItem { user_id, nickname="", fans=0, with_comments=False }`、`AnalysisTaskBatchRequest { bloggers: list[item] }`（上限 50，超限 422）；逐博主串行 `prescreen_user`（从 analysis_task_runner 导入）→ 通过者创建任务 + `start_analysis_task`；返回 `{ created, rejected }`。
+- 测试：mock prescreen（通过/拒绝/异常三种路径）、上限校验、路由不与 `GET /analysis-tasks` 冲突、创建任务数正确。
+
+### Task B2: 前端入口整合 + 批量分析区
+- 文件：`frontend/src/services/analysis.ts`（`createAnalysisTasksBatch` + `listAnalysisTasks` 支持无 status）、`frontend/src/pages/CrawlJobsPage.tsx`（移除独立「批量筛选」Tab；博主分析内嵌「单号分析/批量分析」子 Tab；批量发起区+队列+进度+筛选表）、`frontend/src/components/BloggerScreeningPanel.tsx`（复用，如需小改）、搜索卡片加「加入批量分析」按钮。
+- 验证：`npx tsc --noEmit -p tsconfig.app.json` clean；`npx eslint` 无新 error。
+
+### Task B3: 重建前端产物 + 终审
+- 重新 `npm run build` 使桌面端加载新版本；整体终审；若需要重打安装包。
