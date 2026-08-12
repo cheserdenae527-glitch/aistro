@@ -1568,6 +1568,14 @@ def _score_cost_effectiveness(
     }
 
 
+_MATCH_SUB_LABELS = {
+    "price_overlap": "客单价重叠度",
+    "category_overlap": "品类交集",
+    "level_match": "层级一致度",
+    "city_match": "城市适配度",
+}
+
+
 def _audience_match(audience: dict, merchant_profile: dict | None, tier: dict, cfg: dict) -> dict:
     """商家目标层级匹配（v1.12）：客单价 0.40 / 品类 0.25 / 层级 0.25 / 城市 0.10，缺项权重重分配。"""
     a_cfg = cfg["audience"]
@@ -1626,5 +1634,5 @@ def _audience_match(audience: dict, merchant_profile: dict | None, tier: dict, c
     if score is not None and score < threshold:
         for k, s in sub.items():
             if s < threshold:
-                mismatches.append(f"{k}={s}")
+                mismatches.append(f"{_MATCH_SUB_LABELS.get(k, k)}={s}")
     return {"has_profile": True, "score": score, "sub_scores": sub, "mismatches": mismatches}

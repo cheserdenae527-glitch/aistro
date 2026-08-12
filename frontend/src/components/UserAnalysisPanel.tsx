@@ -17,15 +17,33 @@ const DIMENSION_LABELS: Record<string, string> = {
   stable_output: '稳定产出',
   sustained_operation: '持续经营',
   growth_trend: '增长趋势',
+  cost_effectiveness: '性价比',
 };
 
+const SUB_MATCH_LABELS: Record<string, string> = {
+  price_overlap: '客单价重叠度',
+  category_overlap: '品类交集',
+  level_match: '层级一致度',
+  city_match: '城市适配度',
+};
 const CONFIDENCE_TEXT: Record<string, string> = { high: '高', medium: '中', low: '低' };
 const CONFIDENCE_COLOR: Record<string, string> = { high: 'green', medium: 'gold', low: 'red' };
 const ANOMALY_TEXT: Record<string, string> = {
   fake_engagement: '疑似刷量',
   interaction_inversion: '粉丝互动倒挂',
   stale: '发布停滞',
+  authenticity_failed: '数据真实性存疑',
+  overpriced_low_quality: '报价虚高',
+  audience_mismatch: '目标客群不匹配',
 };
+
+function isOldFormatResult(data: any): boolean {
+  // 新格式 = 五维 dimensions 或 新 decision 结构（含 low_quality；数据不足的闸门1结果 dimensions 为空但仍是新格式）
+  return !(
+    (data.dimensions && typeof data.dimensions === 'object' && 'seeding_depth' in data.dimensions) ||
+    (data.decision && typeof data.decision === 'object' && 'low_quality' in data.decision)
+  );
+}
 
 function fmtNum(v: number | null | undefined, digits = 0): string {
   if (v === null || v === undefined) return '-';
@@ -121,11 +139,7 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
   const cost = data.dimensions?.cost_effectiveness || null;
   const audience = data.audience || null;
 
-  // 新格式 = 五维 dimensions 或 新 decision 结构（含 low_quality；数据不足的闸门1结果 dimensions 为空但仍是新格式）
-  const isOldFormat = !(
-    (data.dimensions && typeof data.dimensions === 'object' && 'seeding_depth' in data.dimensions) ||
-    (data.decision && typeof data.decision === 'object' && 'low_quality' in data.decision)
-  );
+  const isOldFormat = isOldFormatResult(data);
   const genSummary = async () => {
     if (!taskId) return;
     setSummaryLoading(true);
@@ -233,6 +247,7 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
         </Card>
       ) : (
         <>
+      <ExplanationCard data={data} />
 
       {anomalies.length > 0 && (
         <Alert
@@ -313,7 +328,7 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
           </Card>
         </Col>
         <Col xs={24} md={12} xl={10}>
-          <Card size="small" title="五维评分" extra={<Text type="secondary" style={{ fontSize: 12 }}>满分 100</Text>}>
+          <Card size="small" title="评分维度" extra={<Text type="secondary" style={{ fontSize: 12 }}>满分 100</Text>}>
             <ResponsiveContainer width="100%" height={260}>
               <RadarChart data={dims} outerRadius="72%">
                 <PolarGrid />
@@ -402,6 +417,11 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
       )}
     </div>
   );
+}
+
+function fmtMismatch(mm: string): string {
+  const [k, v] = mm.split('=');
+  return SUB_MATCH_LABELS[k] ? `${SUB_MATCH_LABELS[k]} ${v} 分` : mm;
 }
 
 function fmtPrice(v: number | null | undefined): string {
@@ -514,6 +534,135 @@ function SimilarKolCard({ data, error, onAnalyze }: { data: PgySimilarKol[]; err
   );
 }
 
+function ExplanationCard({ data }: { data: any }) {
+  if (!data || isOldFormatResult(data)) return null;
+  const dims = data.dimensions || {};
+  const overall = data.overall;
+  const decision = data.decision || {};
+  const cost = dims.cost_effectiveness || null;
+  const cd = cost?.detail || {};
+  const audience = data.audience || null;
+  const stage = data.stage || null;
+  const anomalies = data.anomalies || [];
+
+  const dimMeta: Record<string, { label: string; meaning: string }> = {
+    seeding_depth: { label: '种草深度', meaning: '真实互动质量与收藏转化力——粉丝是否真正被打动' },
+    verticality: { label: '内容垂直度', meaning: '美食品类一致性 × 受众层级集中度——能否精准触达目标客群' },
+    stable_output: { label: '稳定产出', meaning: '发布节奏与内容产出的稳定性' },
+    sustained_operation: { label: '持续经营', meaning: '账号运营新鲜度与更新频率' },
+    growth_trend: { label: '增长趋势', meaning: '粉丝增长与内容趋势的上升动力' },
+    cost_effectiveness: { label: '性价比', meaning: '蒲公英报价与真实互动价值的匹配度——投放值不值' },
+  };
+
+  const dimReason = (k: string): string => {
+    const d = (dims[k]?.detail) || {};
+    switch (k) {
+      case 'seeding_depth':
+        return d.collect_rate_percent != null ? `篇均收藏率 ${d.collect_rate_percent}%，收藏反映真实种草意愿` : '基于真实互动结构';
+      case 'verticality':
+        return d.food_ratio != null ? `美食占比 ${(d.food_ratio * 100).toFixed(0)}%${audience?.dominant_level ? `，受众以${audience.dominant_level}消费为主` : ''}` : '内容品类一致性';
+      case 'stable_output':
+        return d.gap_days != null ? `平均发布间隔 ${d.gap_days} 天${d.cliff_detected ? '，存在断崖' : ''}` : '发布节奏';
+      case 'sustained_operation':
+        return d.freshness_days != null ? `距最近发布 ${d.freshness_days} 天` : '更新频率';
+      case 'growth_trend':
+        if (d.growth_rate != null) return `月化涨粉 ${(d.growth_rate * 100).toFixed(1)}%（有快照）`;
+        return d.has_snapshot === false ? '无涨粉快照，仅按内容趋势降权' : '样本不足';
+      case 'cost_effectiveness':
+        if (cd.quality_q == null) return cd.reason === 'authenticity_failed' ? '数据真实性存疑，不提供报价参考' : '暂无蒲公英报价';
+        return `质量系数 ${cd.quality_q}，CPE ${cd.cpe != null ? Number(cd.cpe).toFixed(1) : '-'} 元/互动（${cd.industry_benchmarks?.interaction_band || '-'}）`;
+      default:
+        return '';
+    }
+  };
+
+  const whyList: string[] = [];
+  if (decision.summary) whyList.push(`结论依据：${decision.summary}`);
+  if (overall?.score != null) {
+    whyList.push(`总分 ${overall.score}（${overall.level}）${overall.score >= 70 ? '，达到「优先合作」线' : overall.score >= 55 ? '，达到「可合作」线' : '，低于可合作线'}`);
+  }
+  if (decision.reasons?.length) whyList.push(...decision.reasons);
+  if (anomalies.length) whyList.push(...anomalies.map((a: any) => `${ANOMALY_TEXT[a.type] || a.type}：${a.detail}`));
+  else whyList.push('无红旗，资格闸门全部通过');
+  if (cost?.score != null) {
+    whyList.push(`性价比 ${cost.score} 分：${cost.score >= 60 ? '报价与真实效果匹配，支持合作' : cost.score >= 40 ? '报价略高或质量偏弱，建议谈价' : '报价虚高或互动质量不足'}`);
+  }
+  if (audience?.match?.score != null) {
+    whyList.push(`商家目标匹配度 ${audience.match.score} 分（${audience.match.score >= 60 ? '匹配达标' : '匹配不足，注意目标客群错配'}）`);
+  }
+
+  return (
+    <Card size="small" title="整体分析说明（逻辑闭环）" style={{ marginBottom: 12 }}
+      extra={<Text type="secondary" style={{ fontSize: 12 }}>数据 → 评分 → 建议 → 合作结论</Text>}>
+      <Space direction="vertical" size={10} style={{ width: '100%' }}>
+        <div style={{ fontSize: 12 }}>
+          <Text strong>① 评分总览</Text>
+          <div style={{ marginTop: 4, color: '#666' }}>
+            总分 <Text strong style={{ fontSize: 15, color: '#1677ff' }}>{overall?.score ?? '-'}</Text>（{overall?.level || '-'}）
+            {overall?.score != null ? ' = Σ(维度分 × 权重)，权重：种草深度25% / 垂直度20% / 稳定15% / 持续15% / 增长15% / 性价比10%' : ''}
+            {data.confidence ? ` · 可信度 ${CONFIDENCE_TEXT[data.confidence] || data.confidence}` : ''}
+          </div>
+        </div>
+
+        <div style={{ fontSize: 12 }}>
+          <Text strong>② 各维度解读（含义 → 评分 → 依据）</Text>
+          <div style={{ marginTop: 4 }}>
+            {Object.entries(dimMeta).map(([k, meta]) => {
+              const dim = dims[k];
+              if (!dim) return null;
+              return (
+                <div key={k} style={{ marginBottom: 4 }}>
+                  <Text strong>{meta.label}</Text> <Text strong style={{ color: '#1677ff' }}>{dim.score ?? '-'}</Text> 分
+                  <Text type="secondary"> · {meta.meaning}</Text>
+                  <div style={{ color: '#666', marginLeft: 12 }}>依据：{dimReason(k)}</div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {cost?.score != null && (
+          <div style={{ fontSize: 12 }}>
+            <Text strong>③ 性价比与建议报价</Text>
+            <div style={{ marginLeft: 12, color: '#666' }}>
+              {cd.suggested_bid_picture != null ? `建议图文出价 ¥${fmtNum(cd.suggested_bid_picture)}（可谈 ${fmtNum(cd.suggested_range_picture?.[0])}–${fmtNum(cd.suggested_range_picture?.[1])} 元）` : ''}
+              {cd.suggested_bid_video != null ? ` · 建议视频出价 ¥${fmtNum(cd.suggested_bid_video)}（可谈 ${fmtNum(cd.suggested_range_video?.[0])}–${fmtNum(cd.suggested_range_video?.[1])} 元）` : ''}
+              {cd.value_ceiling_picture != null ? ` · 博主价值上限约 ¥${fmtNum(cd.value_ceiling_picture)}` : ''}
+            </div>
+          </div>
+        )}
+
+        {audience?.dominant_level && (
+          <div style={{ fontSize: 12 }}>
+            <Text strong>④ 受众画像</Text>
+            <div style={{ marginLeft: 12, color: '#666' }}>
+              以{audience.dominant_level}消费为主{audience.avg_price_band ? `（人均 ${fmtNum(audience.avg_price_band[0])}–${fmtNum(audience.avg_price_band[1])} 元）` : ''}
+              {audience.merchant_tiers?.length ? `，适配 ${audience.merchant_tiers.join('、')}` : ''}
+              {audience.signal_notes ? `；基于 ${audience.signal_notes} 篇信号笔记` : ''}
+            </div>
+          </div>
+        )}
+
+        {stage && (
+          <div style={{ fontSize: 12 }}>
+            <Text strong>⑤ 账号阶段</Text>
+            <div style={{ marginLeft: 12, color: '#666' }}>
+              {stage.label}{stage.confidence === 'low' ? '（推断）' : ''}{stage.evidence?.length ? `：${stage.evidence.join('、')}` : ''}
+            </div>
+          </div>
+        )}
+
+        <div style={{ borderTop: '1px dashed #f0f0f0', paddingTop: 8, fontSize: 12 }}>
+          <Text strong style={{ fontSize: 14, color: recColor(decision.recommendation) }}>⑥ 合作建议：{recLabel(decision.recommendation)}</Text>
+          <ul style={{ margin: '4px 0 0', paddingLeft: 18, color: '#666' }}>
+            {whyList.map((w, i) => <li key={i}>{w}</li>)}
+          </ul>
+        </div>
+      </Space>
+    </Card>
+  );
+}
+
 function CostCard({ cost }: { cost: any }) {
   if (!cost) return null;
   const d = cost.detail || {};
@@ -598,7 +747,7 @@ function AudienceCard({ audience }: { audience: any }) {
         {audience.match?.score != null ? (
           <Alert type={audience.match.score >= 60 ? 'success' : 'warning'} showIcon
             message={`商家目标匹配度 ${audience.match.score} 分`}
-            description={audience.match.mismatches?.length ? audience.match.mismatches.join('；') : undefined} />
+            description={audience.match.mismatches?.length ? audience.match.mismatches.map(fmtMismatch).join('；') : undefined} />
         ) : null}
       </Space>
     </Card>
