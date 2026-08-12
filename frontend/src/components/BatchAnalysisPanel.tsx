@@ -39,12 +39,12 @@ function statusColor(status: string): string {
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
 
-// 每行提取一个 user_id：裸 ID 整行须为纯字母数字；主页链接须含 user/profile/ 路径（拒绝笔记链接/混合文本）。
+// 每行提取一个 user_id：裸 ID 整行须为纯字母数字；主页链接须为 xiaohongshu.com 的 user/profile/ 路径。
 export function parseUserId(line: string): string {
   const s = line.trim();
   if (!s) return '';
   if (/^[0-9a-zA-Z]+$/.test(s)) return s;
-  const m = s.match(/^(?:https?:\/\/)?[^\s]+\/user\/profile\/([0-9a-zA-Z]+)/);
+  const m = s.match(/^https?:\/\/(?:www\.)?xiaohongshu\.com\/user\/profile\/([0-9a-zA-Z]+)/);
   return m ? m[1] : '';
 }
 
@@ -125,9 +125,11 @@ export default function BatchAnalysisPanel({
       );
       const next: Record<string, string> = {};
       const taskIdByUser = new Map<string, string>();
+      const createdTaskIds: string[] = [];
       for (const c of res.created) {
         next[c.xhs_user_id] = '分析中';
         taskIdByUser.set(c.xhs_user_id, c.task_id);
+        createdTaskIds.push(c.task_id);
       }
       for (const r of res.rejected) next[r.xhs_user_id] = '已拒绝：' + r.reason;
       setStatusMap({ ...next });
@@ -143,12 +145,16 @@ export default function BatchAnalysisPanel({
 
       const startTime = Date.now();
       const timeoutMs = 3 * 60 * 1000;
+      let consecutiveErrors = 0;
       let terminal = false;
       while (!terminal && Date.now() - startTime < timeoutMs) {
         await sleep(3000);
         if (!aliveRef.current) return;
         try {
-          const pollRes = await listAnalysisTasks({ limit: 500 });
+          // 只按本次批量创建的任务 id 查询，结构上避免历史任务挤出窗口
+          const pollRes = createdTaskIds.length > 0
+            ? await listAnalysisTasks({ ids: createdTaskIds })
+            : await listAnalysisTasks({ limit: 500 });
           if (!aliveRef.current) return;
           const items = pollRes.items || [];
           // 按本次批量创建的 task_id 精确定位，避免命中同博主的历史完成记录导致误判“完成”
@@ -165,11 +171,15 @@ export default function BatchAnalysisPanel({
           }
           setStatusMap({ ...upd });
           onPollRefreshScreening?.();
+          consecutiveErrors = 0;
           terminal = allTerminal;
         } catch (err: unknown) {
-          // 轮询失败直接结束：不触发“超时”提示
-          message.error('批量进度刷新失败：' + errorDetail(err, '未知错误'), 5);
-          return;
+          // 单次失败继续轮询；连续 3 次失败才停止（不触发“超时”提示）
+          consecutiveErrors += 1;
+          if (consecutiveErrors >= 3) {
+            message.error('批量进度刷新连续失败，已停止轮询：' + errorDetail(err, '未知错误'), 5);
+            return;
+          }
         }
       }
       if (!terminal) message.warning('批量分析仍在进行（已超过约 3 分钟），请稍后在筛选表查看最新结果', 5);

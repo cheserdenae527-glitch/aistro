@@ -115,9 +115,13 @@ export async function createAnalysisTask(
 }
 
 export async function listAnalysisTasks(
-  params?: { status?: string; limit?: number },
+  params?: { status?: string; limit?: number; ids?: string[] },
 ): Promise<{ items: AnalysisTaskPayload[] }> {
-  return (await api.get('/notes/analysis-tasks', { params })).data;
+  const query: Record<string, string | number> = {};
+  if (params?.status) query.status = params.status;
+  if (params?.limit != null) query.limit = params.limit;
+  if (params?.ids?.length) query.ids = params.ids.join(',');
+  return (await api.get('/notes/analysis-tasks', { params: query })).data;
 }
 
 // ---------- 批量分析 ----------

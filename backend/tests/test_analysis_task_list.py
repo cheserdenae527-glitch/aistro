@@ -142,6 +142,48 @@ def test_list_analysis_tasks_limit_applied(client):
     assert len(resp.json()["items"]) == 2  # 不超过现有行数
 
 
+def test_list_analysis_tasks_ids_filter(client):
+    headers, user_id = _auth(client, email=f"ids-{uuid.uuid4().hex[:8]}@test.com")
+    id_a = _seed_task(user_id, "xhs-ids-a")
+    id_b = _seed_task(user_id, "xhs-ids-b")
+
+    resp = client.get(f"/api/v1/notes/analysis-tasks?ids={id_a}", headers=headers)
+    assert resp.status_code == 200
+    assert [it["id"] for it in resp.json()["items"]] == [id_a]
+
+    resp = client.get(f"/api/v1/notes/analysis-tasks?ids={id_a},{id_b}", headers=headers)
+    assert resp.status_code == 200
+    assert {it["id"] for it in resp.json()["items"]} == {id_a, id_b}
+
+
+def test_list_analysis_tasks_ids_filter_ignores_invalid(client):
+    headers, user_id = _auth(client, email=f"idsbad-{uuid.uuid4().hex[:8]}@test.com")
+    id_a = _seed_task(user_id, "xhs-ids-c")
+    _seed_task(user_id, "xhs-ids-d")
+
+    # 无效 id 被忽略，合法 id 仍命中
+    resp = client.get(f"/api/v1/notes/analysis-tasks?ids=not-a-uuid,{id_a}", headers=headers)
+    assert resp.status_code == 200
+    assert [it["id"] for it in resp.json()["items"]] == [id_a]
+
+    # 全部无效 → 等价于不传 ids（不过滤）
+    resp = client.get("/api/v1/notes/analysis-tasks?ids=not-a-uuid,also-bad", headers=headers)
+    assert resp.status_code == 200
+    assert len(resp.json()["items"]) == 2
+
+
+def test_list_analysis_tasks_ids_filter_data_isolation(client):
+    headers, user_id = _auth(client, email=f"idsiso-{uuid.uuid4().hex[:8]}@test.com")
+    other_email = f"idsother-{uuid.uuid4().hex[:8]}@test.com"
+    _, other_id = _auth(client, email=other_email)
+    other_task = _seed_task(other_id, "xhs-other-ids", status="success")
+
+    # 用别的用户的 task id 查询 → 空结果（user 隔离优先于 ids 过滤）
+    resp = client.get(f"/api/v1/notes/analysis-tasks?ids={other_task}", headers=headers)
+    assert resp.status_code == 200
+    assert resp.json()["items"] == []
+
+
 def test_list_analysis_tasks_data_isolation(client):
     headers, user_id = _auth(client)
     other_email = f"other-{uuid.uuid4().hex[:8]}@test.com"

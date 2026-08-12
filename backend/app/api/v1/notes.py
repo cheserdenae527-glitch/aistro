@@ -571,17 +571,35 @@ async def create_analysis_tasks_batch(
     return {"created": created, "rejected": rejected}
 
 
+def _is_uuid(s: str) -> bool:
+    try:
+        uuid.UUID(s)
+        return True
+    except ValueError:
+        return False
+
+
 @router.get("/analysis-tasks")
 async def list_analysis_tasks(
     status: str | None = None,
     limit: int = 100,
+    ids: str | None = None,
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    """只读列表：供批量筛选视图拉取成功/部分结果，按完成时间倒序。"""
+    """只读列表：供批量筛选视图拉取成功/部分结果，按完成时间倒序。
+
+    ids 为可选逗号分隔的任务 id（UUID）列表，用于按本次批量创建的任务精确定位，
+    避免 pending/running 任务因 finished_at 倒序被历史任务挤出窗口。user 隔离仍生效。
+    """
     stmt = select(BloggerAnalysisTask).where(BloggerAnalysisTask.user_id == user.id)
     if status:
         stmt = stmt.where(BloggerAnalysisTask.status == status)
+    if ids:
+        raw_ids = [x.strip() for x in ids.split(",") if x.strip()]
+        valid = [uuid.UUID(x) for x in raw_ids if _is_uuid(x)]
+        if valid:
+            stmt = stmt.where(BloggerAnalysisTask.id.in_(valid))
     stmt = stmt.order_by(BloggerAnalysisTask.finished_at.desc().nulls_last()).limit(min(max(limit, 1), 500))
     rows = (await db.execute(stmt)).scalars().all()
     return {"items": [_task_payload(t) for t in rows]}

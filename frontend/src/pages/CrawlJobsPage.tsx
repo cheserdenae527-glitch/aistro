@@ -140,48 +140,42 @@ export default function CrawlJobsPage() {
     } catch (e: unknown) {
       message.error('批量筛选数据加载失败：' + ((e as { message?: unknown })?.message || e));
     } finally {
-      setScreeningLoading(false);
+      if (!silent) setScreeningLoading(false);
     }
   };
   useEffect(() => { loadScreening(); }, []);
 
   const addToBatchQueue = (u: XhsUser) => {
-    if (batchQueue.length >= 50) {
-      message.warning('批量分析单次最多 50 个博主');
-      return;
-    }
-    if (batchQueue.some((x) => x.user_id === u.user_id)) {
-      message.info('该博主已在批量分析队列中');
-      return;
-    }
-    message.success(`已加入批量分析队列：${u.nickname}`);
-    // updater 内去重 + 上限：防快速双击重复入队/超限
+    const result: { outcome: 'added' | 'duplicate' | 'full' | null } = { outcome: null };
+    // 去重 + 上限在 updater 内完成，提示由 updater 结果推导，避免快速双击展示过期信息
     setBatchQueue((q) => {
-      if (q.some((x) => x.user_id === u.user_id) || q.length >= 50) return q;
+      if (q.some((x) => x.user_id === u.user_id)) { result.outcome = 'duplicate'; return q; }
+      if (q.length >= 50) { result.outcome = 'full'; return q; }
+      result.outcome = 'added';
       return [...q, { user_id: u.user_id, nickname: u.nickname, fans: u.fans }];
     });
+    if (result.outcome === 'full') message.warning('批量分析单次最多 50 个博主');
+    else if (result.outcome === 'duplicate') message.info('该博主已在批量分析队列中');
+    else if (result.outcome === 'added') message.success(`已加入批量分析队列：${u.nickname}`);
   };
 
   const addParsedToBatchQueue = (items: BatchQueueItem[]) => {
     if (items.length === 0) return;
-    const room = Math.max(0, 50 - batchQueue.length);
-    if (room === 0) {
-      message.warning('批量分析单次最多 50 个博主');
-    } else {
-      const existing = new Set(batchQueue.map((x) => x.user_id));
-      const fresh = items.filter((x) => !existing.has(x.user_id));
-      if (fresh.length === 0) {
-        message.info('这些博主已在批量分析队列中');
-      } else {
-        message.success(`已加入 ${Math.min(fresh.length, room)} 个博主到批量分析队列`);
-      }
-    }
-    // updater 内去重 + 上限：防快速连续操作重复入队/超限
+    const result: { outcome: { kind: 'added'; count: number } | { kind: 'duplicate' } | { kind: 'full' } | null } = { outcome: null };
+    // 去重 + 上限在 updater 内完成，数量提示由 updater 结果推导，避免快速连续点击展示过期数量
     setBatchQueue((q) => {
       const seen = new Set(q.map((x) => x.user_id));
       const addable = items.filter((x) => !seen.has(x.user_id)).slice(0, Math.max(0, 50 - q.length));
+      if (addable.length === 0) {
+        result.outcome = q.length >= 50 ? { kind: 'full' } : { kind: 'duplicate' };
+        return q;
+      }
+      result.outcome = { kind: 'added', count: addable.length };
       return [...q, ...addable];
     });
+    if (result.outcome?.kind === 'full') message.warning('批量分析单次最多 50 个博主');
+    else if (result.outcome?.kind === 'duplicate') message.info('这些博主已在批量分析队列中');
+    else if (result.outcome?.kind === 'added') message.success(`已加入 ${result.outcome.count} 个博主到批量分析队列`);
   };
 
   const removeFromBatchQueue = (userId: string) => {
