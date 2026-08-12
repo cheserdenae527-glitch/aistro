@@ -233,7 +233,7 @@ export default function KnowledgeBasePanel() {
         columns={columns}
         dataSource={entries}
         pagination={{ current: page, pageSize, total, showSizeChanger: true, showTotal: (t) => `共 ${t} 条`, onChange: (p, ps) => fetchList(p, ps) }}
-        locale={{ emptyText: <Empty description="知识库为空，分析完成或订阅刷新后会自动同步；也可在浏览结果里手动加入" /> }}
+        locale={{ emptyText: <Empty description="知识库为空，分析完成或订阅刷新后会自动同步；也可在达人寻觅的博主作品里手动加入" /> }}
       />
 
       <Modal open={!!detail} onCancel={() => setDetail(null)} footer={null} width={820} title={detail ? (detail.title || '笔记详情').slice(0, 45) : ''}>
