@@ -55,6 +55,12 @@ async def prescreen_user(user_id: str) -> dict:
     notes_result = await asyncio.to_thread(crawler.get_user_notes, user_url, max_notes=fetch_cap)
     if not notes_result.success:
         err = notes_result.error or ""
+        # 偶发结构异常/风控（如缺 notes 字段）：间隔 3s 重试一次，瞬时失败可自愈；Cookie 失效类不重试
+        if not any(k in err for k in ("Cookie", "失效", "过期")):
+            await asyncio.sleep(3)
+            notes_result = await asyncio.to_thread(crawler.get_user_notes, user_url, max_notes=fetch_cap)
+    if not notes_result.success:
+        err = notes_result.error or ""
         if any(k in err for k in ("Cookie", "失效", "过期")):
             reason = "Cookie 已过期或账号失效，请更新 Cookie"
         else:

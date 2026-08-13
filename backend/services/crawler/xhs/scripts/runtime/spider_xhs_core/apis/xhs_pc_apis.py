@@ -347,16 +347,22 @@ class XHS_Apis():
                 success, msg, res_json = self.get_user_note_info(user_id, cursor, xsec_token, xsec_source, proxies)
                 if not success:
                     raise Exception(msg)
-                notes = res_json["data"]["notes"]
-                if 'cursor' in res_json["data"]:
-                    cursor = str(res_json["data"]["cursor"])
+                data = res_json.get("data") if isinstance(res_json, dict) else None
+                if not isinstance(data, dict) or not isinstance(data.get("notes"), list):
+                    # 风控/账号受限/结构异常：给出明确错误，避免 KeyError: 'notes'
+                    raise Exception(
+                        f"作品列表返回结构异常（可能被风控或账号受限），keys={list(data.keys()) if isinstance(data, dict) else 'None'}"
+                    )
+                notes = data["notes"]
+                if 'cursor' in data:
+                    cursor = str(data["cursor"])
                 else:
                     break
                 note_list.extend(notes)
                 if max_notes and len(note_list) >= max_notes:
                     note_list = note_list[:max_notes]
                     break
-                if len(notes) == 0 or not res_json["data"]["has_more"]:
+                if len(notes) == 0 or not data.get("has_more"):
                     break
         except Exception as e:
             success = False
