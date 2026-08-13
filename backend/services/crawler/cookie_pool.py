@@ -51,6 +51,7 @@ def _config() -> dict:
         "max_total_fail": _env_int("XHS_COOKIE_MAX_TOTAL_FAIL", 8),
         "proxy_session_seconds": _env_int("XHS_COOKIE_PROXY_SESSION_SECONDS", 300),
         "max_proxy_failures": _env_int("XHS_COOKIE_MAX_PROXY_FAILURES", 2),
+        "pool_capacity": _env_int("XHS_COOKIE_POOL_CAPACITY", 3),
     }
 
 
@@ -80,6 +81,7 @@ def _normalize_entry(entry: dict) -> dict:
     entry.setdefault("proxy_bound_at", None)
     entry.setdefault("proxy_expires_at", None)
     entry.setdefault("proxy_failures", 0)
+    entry.setdefault("in_use", False)
     entry.setdefault("created_at", _now_iso())
     entry.setdefault("updated_at", _now_iso())
     entry.pop("failure_count", None)
@@ -161,38 +163,93 @@ def pool_stats() -> dict:
     }
 
 
-def add_cookie(cookie: str, label: str = "") -> dict:
-    """添加一个 Cookie 到池中；自动生成唯一 id 并置为 available。"""
+def _webid_from_cookie(cookie: str) -> str:
+    """从 cookie 串解析 webId（账号标识，account_id ≡ webId）。"""
+    for part in str(cookie or "").split(";"):
+        k, _, v = part.strip().partition("=")
+        if k.strip() == "webId":
+            return v.strip()
+    return ""
+
+
+def _health_key(e: dict):
+    """健康度排序键（越大越差）：status 差 > 最近成功久 > 连续失败多。"""
+    rank = {"available": 0, "cooling": 1, "invalid": 2, "paused": 2}.get(e.get("status"), 0)
+    return (rank, -int(e.get("last_success") or 0), int(e.get("continuous_fail") or 0))
+
+
+def add_cookie(cookie: str, label: str = "", capacity: int | None = None) -> dict:
+    """添加/替换 Cookie（自动处理：同账号替换刷新、池满淘汰健康度最低且未使用中的一条）。
+
+    返回 {entry, action: 'added'|'replaced', evicted?: dict}。
+    """
     error = validate_cookie(cookie)
     if error:
         raise ValueError(error)
-    entry = {
-        "id": uuid.uuid4().hex[:12],
-        "label": label.strip() or f"账号 {len(list_cookies()) + 1}",
-        "cookie": cookie.strip(),
-        "status": "available",
-        "use_count": 0,
-        "success_count": 0,
-        "fail_count": 0,
-        "continuous_fail": 0,
-        "last_used": None,
-        "last_success": None,
-        "cooling_until": None,
-        "usage_history": [],
-        "last_error": "",
-        "proxy_session_id": None,
-        "proxy": None,
-        "proxy_bound_at": None,
-        "proxy_expires_at": None,
-        "proxy_failures": 0,
-        "created_at": _now_iso(),
-        "updated_at": _now_iso(),
-    }
+    cookie_str = cookie.strip()
+    account_id = _webid_from_cookie(cookie_str)
     with _LOCK:
         pool = _load()
-        pool.setdefault("cookies", []).append(entry)
+        cookies = pool.setdefault("cookies", [])
+        # 同账号替换刷新：按 webId 命中则更新值 + 重置健康度（干净状态，避免冷却残留）
+        if account_id:
+            for entry in cookies:
+                if _webid_from_cookie(entry.get("cookie", "")) == account_id:
+                    entry["cookie"] = cookie_str
+                    if label.strip():
+                        entry["label"] = label.strip()
+                    entry["status"] = "available"
+                    entry["continuous_fail"] = 0
+                    entry["cooling_until"] = None
+                    entry["last_error"] = ""
+                    entry["proxy_failures"] = 0
+                    entry["in_use"] = False
+                    entry["last_success"] = int(time.time())
+                    entry["updated_at"] = _now_iso()
+                    _save(pool)
+                    result = dict(entry)
+                    result["action"] = "replaced"
+                    return result
+        # 池满：淘汰健康度最低且未使用中的一条
+        cap = capacity if capacity is not None else int(_config().get("pool_capacity", 3))
+        evicted = None
+        if len(cookies) >= cap:
+            candidates = [c for c in cookies if not c.get("in_use")]
+            if not candidates:
+                raise ValueError(f"Cookie 池已满（{cap} 个）且均在占用中，请稍后再试或先移除一条")
+            worst = max(candidates, key=_health_key)
+            cookies.remove(worst)
+            evicted = dict(worst)
+        entry = {
+            "id": uuid.uuid4().hex[:12],
+            "label": label.strip() or f"账号 {len(cookies) + 1}",
+            "cookie": cookie_str,
+            "status": "available",
+            "use_count": 0,
+            "success_count": 0,
+            "fail_count": 0,
+            "continuous_fail": 0,
+            "last_used": None,
+            "last_success": int(time.time()),
+            "cooling_until": None,
+            "usage_history": [],
+            "last_error": "",
+            "proxy_session_id": None,
+            "proxy": None,
+            "proxy_bound_at": None,
+            "proxy_expires_at": None,
+            "proxy_failures": 0,
+            "in_use": False,
+            "created_at": _now_iso(),
+            "updated_at": _now_iso(),
+        }
+        cookies.append(entry)
         _save(pool)
-    return dict(entry)
+        result = dict(entry)
+        result["action"] = "added"
+        if evicted is not None:
+            result["evicted"] = evicted
+        return result
 
 
 def update_cookie(
@@ -301,6 +358,7 @@ def pick_cookie() -> dict | None:
         chosen = candidates[0]
         chosen["use_count"] = int(chosen.get("use_count", 0)) + 1
         chosen["last_used"] = now
+        chosen["in_use"] = True
         chosen["usage_history"] = chosen.get("usage_history", []) + [now]
         chosen["updated_at"] = _now_iso()
         _save(pool)
@@ -334,6 +392,7 @@ def pick_cookie_with_proxy(pool: list[dict]) -> tuple[dict | None, list[dict] | 
         chosen = candidates[0]
         chosen["use_count"] = int(chosen.get("use_count", 0)) + 1
         chosen["last_used"] = now
+        chosen["in_use"] = True
         chosen["usage_history"] = chosen.get("usage_history", []) + [now]
         chosen["updated_at"] = _now_iso()
 
@@ -377,6 +436,7 @@ def report_result(cookie_id: str, success: bool, error: str = "") -> dict | None
             if entry.get("id") != cookie_id:
                 continue
             entry["updated_at"] = _now_iso()
+            entry["in_use"] = False
             if success:
                 entry["success_count"] = int(entry.get("success_count", 0)) + 1
                 entry["continuous_fail"] = 0
@@ -416,6 +476,7 @@ def report_proxy_result(cookie_id: str, success: bool) -> dict | None:
             if entry.get("id") != cookie_id:
                 continue
             entry["updated_at"] = _now_iso()
+            entry["in_use"] = False
             if success:
                 entry["proxy_failures"] = 0
             else:

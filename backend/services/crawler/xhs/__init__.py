@@ -294,16 +294,25 @@ class XhsCrawler(BaseCrawler):
         source = random.choice(_XSEC_SOURCES)
         return f"https://www.xiaohongshu.com/explore/{nid}?xsec_token={token}&xsec_source={source}"
 
-    def check_cookie(self) -> bool:
-        """验证登录态：走 _execute 调 user/me（bootstrap），复用会话代理/风控门禁，
-        登录过期由 _execute 内部 _mark_cookie 回写（report_result 冷却/淘汰）。"""
+    def check_cookie_detail(self):
+        """验证登录态并返回 (ok, error)：走 _execute 调 user/me（bootstrap），
+        复用会话代理/风控门禁，登录过期由 _execute 内部 _mark_cookie 回写。"""
         try:
             self._ensure_init()
-            result = self._execute(self._api.bootstrap, job_type="user_info", target="cookie_check")
-            return bool(result.success)
+
+            def _bootstrap_wrapper(proxies=None):
+                # bootstrap 返回 self（XHS_Apis），不符合 _execute 期望的 (success, msg, data) 三元组，包装成三元组
+                self._api.bootstrap(proxies=proxies)
+                return True, "", None
+
+            result = self._execute(_bootstrap_wrapper, job_type="user_info", target="cookie_check")
+            return bool(result.success), (getattr(result, "error", "") or "")[:300]
         except Exception as e:
             logger.error("Cookie 检测失败: %s", e)
-            return False
+            return False, str(e)[:300]
+
+    def check_cookie(self) -> bool:
+        return self.check_cookie_detail()[0]
 
     def search_users(self, query: str, limit: int = 20) -> CrawlResult:
         self._ensure_init()

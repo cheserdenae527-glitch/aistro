@@ -272,3 +272,74 @@ def test_proxy_pool_stats_with_tunnel(monkeypatch: pytest.MonkeyPatch):
     assert stats["count"] == 2
     assert all("zdtps.com" in e["label"] for e in stats["entries"])
     assert "aa0001" in stats["tunnel_sids"]
+
+
+# ---- v2.3：同账号替换 / 池满淘汰 / 使用中保护 ----
+
+COOKIE_W1 = "a1=aaa;web_session=aaa;webId=w1"
+COOKIE_W1_NEW = "a1=aaa2;web_session=aaa2;webId=w1"
+COOKIE_W2 = "a1=bbb;web_session=bbb;webId=w2"
+
+
+def test_add_same_account_replaces_and_resets_health():
+    a = cookie_pool.add_cookie(COOKIE_W1, label="A")
+    assert a["action"] == "added"
+    # 用坏一次制造冷却/失败计数
+    cookie_pool.report_result(a["id"], False, "登录已过期")
+    cookie_pool.report_result(a["id"], False, "登录已过期")
+    assert cookie_pool.list_cookies()[0]["status"] == "cooling"
+    # 同账号再添加 → 替换刷新，健康度干净
+    b = cookie_pool.add_cookie(COOKIE_W1_NEW, label="A新")
+    assert b["action"] == "replaced"
+    assert b["id"] == a["id"]
+    assert b["status"] == "available"
+    assert b["continuous_fail"] == 0
+    assert b["cookie"] == COOKIE_W1_NEW
+    assert len(cookie_pool.list_cookies()) == 1
+
+
+def test_add_when_full_evicts_worst_not_in_use(monkeypatch: pytest.MonkeyPatch):
+    import time as _time
+
+    monkeypatch.setenv("XHS_COOKIE_POOL_CAPACITY", "2")
+    a = cookie_pool.add_cookie(COOKIE_W1, label="A")["id"]
+    b = cookie_pool.add_cookie(COOKIE_W2, label="B")["id"]
+    # 显式让 B 最近成功更久远 → 健康度更差，应被淘汰
+    pool = cookie_pool._load()
+    for e in pool["cookies"]:
+        if e["id"] == b:
+            e["last_success"] = int(_time.time()) - 3600
+    cookie_pool._save(pool)
+    c = cookie_pool.add_cookie("a1=ccc;web_session=ccc;webId=w3", label="C")
+    assert c["action"] == "added"
+    assert c["evicted"] is not None
+    assert c["evicted"]["id"] == b  # B 最近成功最久 → 被淘汰
+    assert len(cookie_pool.list_cookies()) == 2
+
+
+def test_add_when_full_skips_in_use(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("XHS_COOKIE_POOL_CAPACITY", "2")
+    a = cookie_pool.add_cookie(COOKIE_W1, label="A")
+    b = cookie_pool.add_cookie(COOKIE_W2, label="B")
+    # 模拟 A 被借出使用中（in_use），B 未使用
+    pool = cookie_pool._load()
+    for e in pool["cookies"]:
+        if e["id"] == a["id"]:
+            e["in_use"] = True
+    cookie_pool._save(pool)
+    # 满池 + 全新账号：只能淘汰未使用的 B
+    c = cookie_pool.add_cookie("a1=ccc;web_session=ccc;webId=w3", label="C")
+    assert c["evicted"]["id"] == b["id"]
+    remaining = {e["id"] for e in cookie_pool.list_cookies()}
+    assert a["id"] in remaining  # 使用中的 A 被保留
+
+
+def test_pick_marks_in_use_and_report_releases(monkeypatch: pytest.MonkeyPatch):
+    monkeypatch.setenv("XHS_COOKIE_MAX_USE_PER_HOUR", "100")
+    cookie_pool.add_cookie(COOKIE_W1, label="A")
+    picked, _ = cookie_pool.pick_cookie_with_proxy([])
+    assert picked is not None
+    assert picked.get("in_use") is True
+    cookie_pool.report_result(picked["id"], True)
+    entry = cookie_pool.get_cookie_entry(picked["id"])
+    assert entry.get("in_use") is False

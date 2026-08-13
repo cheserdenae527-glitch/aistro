@@ -18,6 +18,10 @@ class CookieCreateRequest(BaseModel):
     label: str = ""
 
 
+class CookieVerifyRequest(BaseModel):
+    cookie: str = Field(..., min_length=10)
+
+
 class CookieUpdateRequest(BaseModel):
     cookie: str | None = None
     label: str | None = None
@@ -37,11 +41,38 @@ async def add_cookie(
     body: CookieCreateRequest,
     current_user: User = Depends(get_current_user),
 ):
+    """添加/替换 Cookie：同账号自动替换刷新；池满自动淘汰健康度最低且未使用中的一条。"""
     try:
-        entry = cookie_pool.add_cookie(body.cookie, body.label)
+        result = cookie_pool.add_cookie(body.cookie, body.label)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
-    return entry
+    return result
+
+
+@router.post("/cookies/verify")
+async def verify_cookie(
+    body: CookieVerifyRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """验证候选 Cookie 登录态（不写池）：复用 check_cookie 真实验证，区分登录态不完整/网络异常。"""
+    from crawler.config import get_proxy_pool
+    from crawler.xhs import XhsCrawler
+
+    crawler = XhsCrawler(body.cookie.strip(), proxy_pool=get_proxy_pool())
+    ok, err = crawler.check_cookie_detail()
+    reason = None
+    if not ok:
+        low = str(err).lower()
+        if any(k in low for k in ("timeout", "timed out", "407", "connection", "refused", "reset", "熔断", "风控")):
+            reason = "network_error"  # 网络/风控/服务异常 → 提示稍后重试，不是用户扫码问题
+        else:
+            reason = "auth_incomplete"  # 登录态不完整/签名失败/失效 → 提示重新扫码
+    return {
+        "ok": ok,
+        "reason": reason,
+        "account_id": cookie_pool._webid_from_cookie(body.cookie),
+        "error": err or None,
+    }
 
 
 @router.patch("/cookies/{cookie_id}")
