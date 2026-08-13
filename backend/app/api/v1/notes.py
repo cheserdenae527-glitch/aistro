@@ -9,7 +9,13 @@ from datetime import datetime, timedelta, timezone
 
 from typing import Any
 
+from io import BytesIO
+from urllib.parse import quote
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
+from openpyxl import Workbook
+from openpyxl.styles import Font, PatternFill
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -522,6 +528,93 @@ async def list_analysis_tasks(
     stmt = stmt.order_by(BloggerAnalysisTask.finished_at.desc().nulls_last()).limit(min(max(limit, 1), 500))
     rows = (await db.execute(stmt)).scalars().all()
     return {"items": [_task_payload(t) for t in rows]}
+
+@router.get("/analysis-tasks/export")
+async def export_analysis_tasks(
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """批量导出分析报告（xlsx）：每博主取最新结果，按 可合作档位 → 性价比 → 总分 排序。"""
+    stmt = (
+        select(BloggerAnalysisTask)
+        .where(
+            BloggerAnalysisTask.user_id == user.id,
+            BloggerAnalysisTask.status.in_(["success", "partial"]),
+        )
+        .order_by(BloggerAnalysisTask.finished_at.desc())
+    )
+    rows = (await db.execute(stmt)).scalars().all()
+    latest: dict[str, BloggerAnalysisTask] = {}
+    for t in rows:
+        if t.xhs_user_id not in latest:
+            latest[t.xhs_user_id] = t
+    tasks = list(latest.values())
+
+    REC_RANK = {"priority": 0, "ok": 1, "caution": 2, "not_recommended": 3, "insufficient_data": 4}
+    REC_LABEL = {"priority": "优先合作", "ok": "可合作", "caution": "谨慎", "not_recommended": "不合作", "insufficient_data": "数据不足"}
+
+    def _result(t) -> dict:
+        return t.result if isinstance(t.result, dict) else {}
+
+    def _cost(t) -> dict:
+        return (_result(t).get("dimensions") or {}).get("cost_effectiveness") or {}
+
+    def _bid(t, key):
+        return (_cost(t).get("detail") or {}).get(key)
+
+    def sort_key(t):
+        rec = (_result(t).get("decision") or {}).get("recommendation") or "insufficient_data"
+        cs = _cost(t).get("score")
+        ov = (_result(t).get("overall") or {}).get("score")
+        return (REC_RANK.get(rec, 4), -(cs if cs is not None else -1), -(ov if ov is not None else -1))
+
+    tasks.sort(key=sort_key)
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "博主分析对比"
+    headers = ["可合作", "性价比", "总分", "等级", "昵称", "XHS ID", "粉丝", "图文建议报价", "视频建议报价", "账号阶段", "受众层级", "人均区间", "适配商家", "分析时间"]
+    ws.append(headers)
+    for c in ws[1]:
+        c.font = Font(bold=True)
+        c.fill = PatternFill("solid", fgColor="D9E1F2")
+    for t in tasks:
+        r = _result(t)
+        rec = (r.get("decision") or {}).get("recommendation") or "insufficient_data"
+        overall = r.get("overall") or {}
+        aud = r.get("audience") or {}
+        stage = r.get("stage") or {}
+        cs = _cost(t).get("score")
+        avg_band = aud.get("avg_price_band")
+        ws.append([
+            REC_LABEL.get(rec, rec),
+            round(cs, 1) if cs is not None else "-",
+            overall.get("score"),
+            overall.get("level"),
+            r.get("nickname") or t.xhs_user_id or "",
+            t.xhs_user_id,
+            t.follower_count,
+            _bid(t, "suggested_bid_picture"),
+            _bid(t, "suggested_bid_video"),
+            (stage.get("label") or "") + ("" if stage.get("confidence") != "low" else "（推断）"),
+            aud.get("dominant_level") or "",
+            f"{avg_band[0]}-{avg_band[1]}" if isinstance(avg_band, list) and len(avg_band) == 2 else "",
+            "、".join(aud.get("merchant_tiers") or []),
+            t.finished_at.strftime("%Y-%m-%d %H:%M") if t.finished_at else "",
+        ])
+    for col, w in zip("ABCDEFGHIJKLMN", [10, 8, 6, 8, 24, 22, 10, 12, 12, 12, 10, 12, 26, 16]):
+        ws.column_dimensions[col].width = w
+
+    buf = BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    filename = f"博主分析对比_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+    return StreamingResponse(
+        buf,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(filename)}"},
+    )
+
 
 @router.get("/users/{user_id}/analysis-tasks/{task_id}")
 async def get_analysis_task(

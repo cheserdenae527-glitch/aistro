@@ -22,6 +22,10 @@ export interface DimensionDetail {
   freshness_days?: number;
   growth_rate?: number | null;
   has_snapshot?: boolean;
+  suggested_bid_picture?: number | null;
+  suggested_bid_video?: number | null;
+  suggested_range_picture?: [number, number] | null;
+  suggested_range_video?: [number, number] | null;
   trend_ratio?: number | null;
   reason?: string | null;
 }
@@ -165,6 +169,11 @@ export interface BatchCreateResponse {
 }
 
 /** 批量创建博主分析任务：后端逐博主真实粗筛，通过者创建后台任务（单次上限 50）。 */
+export async function exportAnalysisReport(): Promise<Blob> {
+  const res = await api.get('/notes/analysis-tasks/export', { responseType: 'blob', timeout: 60000 });
+  return res.data;
+}
+
 export async function createAnalysisTasksBatch(bloggers: BatchBloggerInput[]): Promise<BatchCreateResponse> {
   return (await api.post('/notes/analysis-tasks/batch', { bloggers }, { timeout: 300000 })).data;
 }

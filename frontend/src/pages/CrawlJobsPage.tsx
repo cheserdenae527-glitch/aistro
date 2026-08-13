@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Button, Drawer, Input, message, Progress, Typography, Tabs, Row, Col, Space, Avatar, Switch } from 'antd';
 import { SearchOutlined, HistoryOutlined, UserOutlined, EyeOutlined, BarChartOutlined, DatabaseOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
 import { NoteCardView, type NoteCardData } from '../components/NoteCard';
@@ -8,7 +8,6 @@ import CrawlerPoolPanel from '../components/CrawlerPoolPanel';
 import UserAnalysisPanel from '../components/UserAnalysisPanel';
 import BatchAnalysisPanel, { type BatchQueueItem } from '../components/BatchAnalysisPanel';
 import SubscribeButton from '../components/SubscribeButton';
-import { listAnalysisTasks, ScreeningRow, BloggerAnalysisResult, AnalysisTaskPayload } from '../services/analysis';
 
 const { Title, Text } = Typography;
 
@@ -65,50 +64,8 @@ export default function CrawlJobsPage() {
   const [analysisStatus, setAnalysisStatus] = useState('');
   const [withComments, setWithComments] = useState(false);
 
-  // 批量筛选
-  const [screeningRows, setScreeningRows] = useState<ScreeningRow[]>([]);
-  const [screeningLoading, setScreeningLoading] = useState(false);
-
   // 批量分析队列
   const [batchQueue, setBatchQueue] = useState<BatchQueueItem[]>([]);
-
-  const loadScreening = async (silent = false) => {
-    if (!silent) setScreeningLoading(true);
-    try {
-      const res = await listAnalysisTasks({ status: 'success', limit: 200 });
-      const items = res.items || [];
-      // 去重：每个 xhs_user_id 保留最新 finished_at 的一条
-      const latest = new Map<string, AnalysisTaskPayload>();
-      for (const t of items) {
-        const prev = latest.get(t.xhs_user_id);
-        if (!prev || (t.finished_at || '') > (prev.finished_at || '')) latest.set(t.xhs_user_id, t);
-      }
-      const rows: ScreeningRow[] = Array.from(latest.values()).map((t) => {
-        const r = (t.result || {}) as BloggerAnalysisResult;
-        return {
-          user_id: t.xhs_user_id,
-          nickname: t.nickname || '',
-          fans: t.follower_count || 0,
-          overall_score: r.overall?.score ?? null,
-          score_suppressed: !!(r.overall_score_suppressed || r.overall?.score_suppressed),
-          level: r.overall?.level || '-',
-          recommendation: r.decision?.recommendation || 'insufficient_data',
-          stage_label: r.stage?.label || '-',
-          stage_confidence: r.stage?.confidence || 'low',
-          red_flags: (r.decision?.red_flags || []).map((f) => f.detail),
-          collect_rate: r.dimensions?.seeding_depth?.detail?.collect_rate_percent ?? null,
-          food_ratio: r.dimensions?.verticality?.detail?.food_ratio ?? null,
-          confidence: r.confidence || 'low',
-        };
-      });
-      setScreeningRows(rows);
-    } catch (e: unknown) {
-      message.error('批量筛选数据加载失败：' + ((e as { message?: unknown })?.message || e));
-    } finally {
-      if (!silent) setScreeningLoading(false);
-    }
-  };
-  useEffect(() => { loadScreening(); }, []);
 
   const addToBatchQueue = (u: XhsUser) => {
     const result: { outcome: 'added' | 'duplicate' | 'full' | null } = { outcome: null };
@@ -183,7 +140,7 @@ export default function CrawlJobsPage() {
     }
   };
 
-  const handleAnalyzeUser = async (u: XhsUser, refresh = false) => {
+  const handleAnalyzeUser = async (u: XhsUser, refresh = true) => {
     setAnalysisUser(u); setAnalysisTaskId(null); setAnalysisData(null); setAnalysisLoading(true); setAnalysisProgress(0);
     setAnalysisStatus('正在创建分析任务...'); setActiveTab('analysis');
     try {
@@ -364,10 +321,6 @@ export default function CrawlJobsPage() {
                 queue={batchQueue}
                 onRemoveFromQueue={removeFromBatchQueue}
                 onAddFromQueue={addParsedToBatchQueue}
-                screeningRows={screeningRows}
-                screeningLoading={screeningLoading}
-                onRefreshScreening={loadScreening}
-                onPollRefreshScreening={() => loadScreening(true)}
                 withComments={withComments}
               />
             ) },

@@ -1,10 +1,9 @@
 // frontend/src/components/BatchAnalysisPanel.tsx
-// 批量真实分析面板：粘贴博主主页链接/user_id 入队 -> 一键批量发起 -> 轮询进度 -> 结果进筛选表。
+// 批量真实分析面板：粘贴博主主页链接/user_id 入队 -> 一键批量发起 -> 实时进度（每博主独立进度条）。
 import { useEffect, useRef, useState } from 'react';
-import { Button, Card, Input, message, Space, Tag, Typography } from 'antd';
+import { Button, Card, Input, message, Progress, Space, Tag, Typography } from 'antd';
 import { ClearOutlined, DeleteOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons';
-import BloggerScreeningPanel from './BloggerScreeningPanel';
-import { createAnalysisTasksBatch, listAnalysisTasks, ScreeningRow } from '../services/analysis';
+import { createAnalysisTasksBatch, listAnalysisTasks } from '../services/analysis';
 
 const { Text, Title } = Typography;
 
@@ -18,10 +17,6 @@ interface BatchAnalysisPanelProps {
   queue: BatchQueueItem[];
   onRemoveFromQueue: (userId: string) => void;
   onAddFromQueue: (items: BatchQueueItem[]) => void;
-  screeningRows: ScreeningRow[];
-  screeningLoading: boolean;
-  onRefreshScreening: () => void;
-  onPollRefreshScreening?: () => void;
   withComments: boolean;
 }
 
@@ -38,6 +33,12 @@ function statusColor(status: string): string {
 }
 
 const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
+
+interface TaskProgress {
+  status: string;
+  fetched?: number;
+  target?: number;
+}
 
 // 每行提取一个 user_id：裸 ID 整行须为纯字母数字；主页链接须为 xiaohongshu.com 的 user/profile/ 路径。
 export function parseUserId(line: string): string {
@@ -74,15 +75,11 @@ export default function BatchAnalysisPanel({
   queue,
   onRemoveFromQueue,
   onAddFromQueue,
-  screeningRows,
-  screeningLoading,
-  onRefreshScreening,
-  onPollRefreshScreening,
   withComments,
 }: BatchAnalysisPanelProps) {
   const [pastedText, setPastedText] = useState('');
   const [running, setRunning] = useState(false);
-  const [statusMap, setStatusMap] = useState<Record<string, string>>({});
+  const [progressMap, setProgressMap] = useState<Record<string, TaskProgress>>({});
   const aliveRef = useRef(true);
   useEffect(() => () => { aliveRef.current = false; }, []);
 
@@ -118,63 +115,62 @@ export default function BatchAnalysisPanel({
   const handleStart = async () => {
     if (running || queue.length === 0) return;
     setRunning(true);
-    setStatusMap({});
+    setProgressMap({});
     try {
       const res = await createAnalysisTasksBatch(
         queue.map((q) => ({ user_id: q.user_id, nickname: q.nickname, fans: q.fans, with_comments: withComments })),
       );
-      const next: Record<string, string> = {};
+      const next: Record<string, TaskProgress> = {};
       const taskIdByUser = new Map<string, string>();
       const createdTaskIds: string[] = [];
       for (const c of res.created) {
-        next[c.xhs_user_id] = '分析中';
+        next[c.xhs_user_id] = { status: '分析中' };
         taskIdByUser.set(c.xhs_user_id, c.task_id);
         createdTaskIds.push(c.task_id);
       }
-      for (const r of res.rejected) next[r.xhs_user_id] = '已拒绝：' + r.reason;
-      setStatusMap({ ...next });
+      for (const r of res.rejected) next[r.xhs_user_id] = { status: '已拒绝：' + r.reason };
+      setProgressMap({ ...next });
       if (res.rejected.length > 0) {
         message.warning(`批量发起完成：创建 ${res.created.length} 个任务，${res.rejected.length} 个未通过粗筛`);
       } else {
         message.success(`批量发起完成：已创建 ${res.created.length} 个分析任务`);
       }
       if (Object.keys(next).length === 0) return;
-      // 全部被粗筛拒绝则无需轮询
-      const allRejected = Object.values(next).every((v) => v.startsWith('已拒绝'));
+      const allRejected = Object.values(next).every((v) => v.status.startsWith('已拒绝'));
       if (allRejected) return;
 
       const startTime = Date.now();
-      const timeoutMs = 3 * 60 * 1000;
+      const timeoutMs = 10 * 60 * 1000;
       let consecutiveErrors = 0;
       let terminal = false;
       while (!terminal && Date.now() - startTime < timeoutMs) {
         await sleep(3000);
         if (!aliveRef.current) return;
         try {
-          // 只按本次批量创建的任务 id 查询，结构上避免历史任务挤出窗口
           const pollRes = createdTaskIds.length > 0
             ? await listAnalysisTasks({ ids: createdTaskIds })
             : await listAnalysisTasks({ limit: 500 });
           if (!aliveRef.current) return;
           const items = pollRes.items || [];
-          // 按本次批量创建的 task_id 精确定位，避免命中同博主的历史完成记录导致误判“完成”
-          const upd: Record<string, string> = {};
+          const upd: Record<string, TaskProgress> = {};
           let allTerminal = true;
           for (const id of Object.keys(next)) {
-            if (next[id].startsWith('已拒绝')) { upd[id] = next[id]; continue; }
+            if (next[id].status.startsWith('已拒绝')) { upd[id] = next[id]; continue; }
             const taskId = taskIdByUser.get(id);
             const t = taskId ? items.find((x) => x.id === taskId) : undefined;
-            if (!t) { upd[id] = '分析中'; allTerminal = false; continue; }
+            if (!t) { upd[id] = { status: '分析中' }; allTerminal = false; continue; }
             const st = taskStatusText(t.status);
-            upd[id] = st.text;
+            upd[id] = {
+              status: st.text,
+              fetched: t.fetched_notes ?? undefined,
+              target: t.target_notes || t.total_notes || undefined,
+            };
             if (!st.terminal) allTerminal = false;
           }
-          setStatusMap({ ...upd });
-          onPollRefreshScreening?.();
+          setProgressMap({ ...upd });
           consecutiveErrors = 0;
           terminal = allTerminal;
         } catch (err: unknown) {
-          // 单次失败继续轮询；连续 3 次失败才停止（不触发“超时”提示）
           consecutiveErrors += 1;
           if (consecutiveErrors >= 3) {
             message.error('批量进度刷新连续失败，已停止轮询：' + errorDetail(err, '未知错误'), 5);
@@ -182,7 +178,7 @@ export default function BatchAnalysisPanel({
           }
         }
       }
-      if (!terminal) message.warning('批量分析仍在进行（已超过约 3 分钟），请稍后在筛选表查看最新结果', 5);
+      if (!terminal) message.warning('批量分析仍在进行（已超过约 10 分钟），可稍后在「博主订阅」页的分析结果中查看最新结果', 5);
     } catch (err: unknown) {
       message.error('批量发起失败：' + errorDetail(err, '未知错误'), 6);
     } finally {
@@ -231,30 +227,34 @@ export default function BatchAnalysisPanel({
         </Button>
         <Tag color={withComments ? 'purple' : 'default'} style={{ marginLeft: 8 }}>评论分析：{withComments ? '开' : '关'}</Tag>
         <Text type="secondary" style={{ marginLeft: 8 }}>
-          {running ? '正在发起并轮询进度...' : queue.length > 0 ? `队列 ${queue.length} 个博主，将执行真实粗筛+分析` : '队列为空'}
+          {running ? '正在发起并实时跟踪进度...' : queue.length > 0 ? `队列 ${queue.length} 个博主，将执行真实粗筛+分析` : '队列为空'}
         </Text>
       </div>
 
-      <Card size="small" title={<Title level={5} style={{ margin: 0 }}>分析进度</Title>} style={{ marginTop: 12 }}>
-        {Object.keys(statusMap).length === 0 ? (
+      <Card size="small" title={<Title level={5} style={{ margin: 0 }}>实时进度</Title>} style={{ marginTop: 12 }}>
+        {Object.keys(progressMap).length === 0 ? (
           <Text type="secondary">暂无进行中的批量分析</Text>
         ) : (
-          <Space wrap>
-            {Object.entries(statusMap).map(([userId, status]) => {
+          <div>
+            {Object.entries(progressMap).map(([userId, p]) => {
               const q = queue.find((x) => x.user_id === userId);
+              const pct = p.target ? Math.min(100, Math.round(((p.fetched || 0) / p.target) * 100)) : (p.status === '分析中' ? 10 : 100);
               return (
-                <Tag key={userId} color={statusColor(status)}>
-                  {q?.nickname || userId}：{status}
-                </Tag>
+                <div key={userId} style={{ display: 'flex', alignItems: 'center', gap: 12, padding: '6px 0', borderBottom: '1px solid #f5f5f5' }}>
+                  <Text strong style={{ width: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{q?.nickname || userId}</Text>
+                  <div style={{ flex: 1, maxWidth: 360 }}>
+                    <Progress percent={pct} size="small" status={p.status === '失败' ? 'exception' : p.status === '完成' ? 'success' : 'active'} />
+                  </div>
+                  <Text type="secondary" style={{ fontSize: 12, width: 120 }}>
+                    {p.status === '完成' ? '完成' : p.status === '失败' ? '失败' : p.target ? `抓取 ${p.fetched || 0}/${p.target}` : '分析中'}
+                  </Text>
+                  <Tag color={statusColor(p.status)} style={{ minWidth: 60, textAlign: 'center' }}>{p.status.replace(/^已拒绝：/, '已拒绝')}</Tag>
+                </div>
               );
             })}
-          </Space>
+          </div>
         )}
       </Card>
-
-      <div style={{ marginTop: 12 }}>
-        <BloggerScreeningPanel rows={screeningRows} loading={screeningLoading} onRefresh={onRefreshScreening} />
-      </div>
     </div>
   );
 }
