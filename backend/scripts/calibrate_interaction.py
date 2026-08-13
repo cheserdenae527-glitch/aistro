@@ -84,7 +84,7 @@ async def main() -> None:
             latest[xid] = dict(r)
 
     buckets: dict[str, list[dict]] = defaultdict(list)
-    skipped = {"old_format": 0, "no_notes": 0, "no_fans": 0, "fans_range": 0}
+    skipped = {"old_format": 0, "insufficient": 0, "no_notes": 0, "no_fans": 0, "fans_range": 0}
     for r in latest.values():
         fans = int(r["follower_count"] or 0)
         res = r["result"]
@@ -97,8 +97,15 @@ async def main() -> None:
             skipped["old_format"] += 1
             continue
         dims = res.get("dimensions")
-        if not isinstance(dims, dict) or "seeding_depth" not in dims:
+        is_new = (isinstance(dims, dict) and "seeding_depth" in dims) or (
+            isinstance(res.get("decision"), dict) and "low_quality" in res["decision"]
+        )
+        if not is_new:
             skipped["old_format"] += 1
+            continue
+        if not (isinstance(dims, dict) and "seeding_depth" in dims):
+            # 新格式但数据不足（闸门1 insufficient_data）：不计入有效标定样本
+            skipped["insufficient"] += 1
             continue
         notes = res.get("notes") or []
         if not notes:
@@ -134,7 +141,7 @@ async def main() -> None:
         )
 
     print("=" * 72)
-    print(f"真实样本标定预览 ｜ 去重博主 {len(latest)} 个（跳过：旧格式 {skipped['old_format']} / 无笔记 {skipped['no_notes']} / 无粉丝 {skipped['no_fans']} / 粉丝范围 {skipped['fans_range']}）")
+    print(f"真实样本标定预览 ｜ 去重博主 {len(latest)} 个（跳过：旧格式 {skipped['old_format']} / 数据不足 {skipped['insufficient']} / 无笔记 {skipped['no_notes']} / 无粉丝 {skipped['no_fans']} / 粉丝范围 {skipped['fans_range']}）")
     print("=" * 72)
     tier_order = ["T1", "T2", "T3", "T4"]
     for t in tier_order:
