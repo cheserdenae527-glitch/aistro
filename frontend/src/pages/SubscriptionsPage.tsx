@@ -34,7 +34,7 @@ interface ViewingAnalysis {
   loading: boolean;
 }
 
-export default function SubscriptionsPage() {
+export default function SubscriptionsPage({ refreshSignal = 0 }: { refreshSignal?: number }) {
   const [subs, setSubs] = useState<Subscription[]>([]);
   const [loading, setLoading] = useState(false);
   const [modalOpen, setModalOpen] = useState(false);
@@ -54,8 +54,8 @@ export default function SubscriptionsPage() {
   const fetchSubs = async () => { setLoading(true); try { const r = await subService.list(); setSubs(r.data); } catch { message.error("加载订阅失败"); } finally { setLoading(false); } };
   useEffect(() => { fetchSubs(); }, []);
 
-  const loadResults = async () => {
-    setResultsLoading(true);
+  const loadResults = async (silent = false) => {
+    if (!silent) setResultsLoading(true);
     try {
       const res = await listAnalysisTasks({ limit: 500 });
       const latest = new Map<string, AnalysisTaskPayload>();
@@ -68,9 +68,16 @@ export default function SubscriptionsPage() {
       // 可合作档位 → 性价比降序 → 总分降序（与导出一致）
       rows.sort((a, b) => (rowRank(a) - rowRank(b)) || (rowCost(b) - rowCost(a)) || (rowOverall(b) - rowOverall(a)));
       setResults(rows);
-    } catch { message.error('分析结果加载失败'); } finally { setResultsLoading(false); }
+    } catch { if (!silent) message.error('分析结果加载失败'); } finally { if (!silent) setResultsLoading(false); }
   };
   useEffect(() => { loadResults(); }, []);
+  // 定时静默刷新：批量分析等完成后结果能自动同步到订阅页
+  useEffect(() => {
+    const t = setInterval(() => loadResults(true), 60000);
+    return () => clearInterval(t);
+  }, []);
+  // 批量分析完成信号：父页面检测到新完成的任务时触发即时刷新
+  useEffect(() => { if (refreshSignal > 0) loadResults(true); }, [refreshSignal]);
 
   const handleExport = async () => {
     try {
