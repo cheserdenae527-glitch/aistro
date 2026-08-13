@@ -295,10 +295,12 @@ class XhsCrawler(BaseCrawler):
         return f"https://www.xiaohongshu.com/explore/{nid}?xsec_token={token}&xsec_source={source}"
 
     def check_cookie(self) -> bool:
+        """验证登录态：走 _execute 调 user/me（bootstrap），复用会话代理/风控门禁，
+        登录过期由 _execute 内部 _mark_cookie 回写（report_result 冷却/淘汰）。"""
         try:
             self._ensure_init()
-            success, msg, data = self._api.get_user_self_info()
-            return bool(success)
+            result = self._execute(self._api.bootstrap, job_type="user_info", target="cookie_check")
+            return bool(result.success)
         except Exception as e:
             logger.error("Cookie 检测失败: %s", e)
             return False

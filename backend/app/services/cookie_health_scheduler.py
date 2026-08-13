@@ -85,13 +85,10 @@ class CookieHealthScheduler:
                 logger.warning("Cookie 探测异常 cookie=%s: %s", cid, exc)
                 skipped += 1
                 continue
+            # _execute 内部已通过 _mark_cookie 回写 report_result（成功恢复/失败冷却淘汰），此处只计数
             if ok:
-                cookie_pool.report_result(cid, True)
                 healthy += 1
             else:
-                # check_cookie 失败：登录过期/网络/风控都会返回 False；连续 2 次才冷却、恢复即清零，
-                # 且登录过期会持续失败 → 冷却→淘汰，因此误杀风险低
-                cookie_pool.report_result(cid, False, "登录态探测失败（check_cookie）")
-                logger.warning("Cookie 登录态探测失败已降级 cookie=%s", cid)
+                logger.warning("Cookie 登录态探测失败 cookie=%s", cid)
                 expired += 1
         logger.info("Cookie 健康检查完成：健康 %d / 失效 %d / 跳过 %d", healthy, expired, skipped)
