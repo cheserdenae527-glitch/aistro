@@ -206,8 +206,8 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
         <div style={{ flex: 1 }} />
         {!isOldFormat && taskId && (
           <Space size={8}>
-            <Button icon={<FileTextOutlined />} onClick={() => setExplainOpen(true)}>整体分析说明</Button>
-            <Button icon={<RobotOutlined />} type="primary" ghost onClick={() => setSummaryOpen(true)}>AI 总结</Button>
+            <Button icon={<RobotOutlined />} type="primary" ghost
+              onClick={() => { setSummaryOpen(true); if (!summary && !summaryLoading) genSummary(); }}>AI 总结</Button>
           </Space>
         )}
         <div style={{ textAlign: 'right' }}>
@@ -293,7 +293,7 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
       {(cost || audience) && (
         <Row gutter={[12, 12]} style={{ marginBottom: 12 }}>
           <Col xs={24} xl={10}>
-            <CostCard cost={cost} />
+            <CostCard cost={cost} onRefresh={onReAnalyze} />
           </Col>
           <Col xs={24} xl={14}>
             <AudienceCard audience={audience} />
@@ -423,8 +423,10 @@ export default function UserAnalysisPanel({ user, data, onOpenNote, taskId, onRe
             <Tag color={summary.cooperate ? 'green' : 'red'}>{summary.cooperate ? '建议合作' : '不建议合作'}</Tag>
             {summary.cooperate_reason && <Text type="secondary">{summary.cooperate_reason}</Text>}
           </Space>
+        ) : summaryLoading ? (
+          <div style={{ padding: 32, textAlign: 'center' }}><Spin /><Text type="secondary" style={{ marginLeft: 8 }}>正在生成 AI 总结...</Text></div>
         ) : (
-          <Button type="primary" icon={<SyncOutlined />} onClick={genSummary} loading={summaryLoading}>生成 AI 总结</Button>
+          <Button type="primary" icon={<SyncOutlined />} onClick={genSummary}>生成 AI 总结</Button>
         )}
       </Modal>
 
@@ -676,14 +678,15 @@ function ExplanationCard({ data }: { data: any }) {
   );
 }
 
-function CostCard({ cost }: { cost: any }) {
+function CostCard({ cost, onRefresh }: { cost: any; onRefresh?: () => void }) {
   if (!cost) return null;
   const d = cost.detail || {};
   const ib = d.industry_benchmarks || null;
   const confTag = cost.confidence === 'low' ? <Tag color="default">无报价</Tag>
     : cost.confidence === 'medium' ? <Tag color="gold">低置信</Tag> : <Tag color="green">官方数据</Tag>;
   return (
-    <Card size="small" title="性价比与建议报价" extra={confTag}>
+    <Card size="small" title="性价比与建议报价"
+      extra={<Space size={4}>{confTag}{onRefresh ? <Button size="small" type="link" icon={<SyncOutlined />} onClick={onRefresh}>刷新报价</Button> : null}</Space>}>
       {cost.score == null ? (
         <Empty image={Empty.PRESENTED_IMAGE_SIMPLE}
           description={d.reason === 'authenticity_failed' ? '数据真实性存疑，不提供报价参考' : '暂无蒲公英报价数据'}

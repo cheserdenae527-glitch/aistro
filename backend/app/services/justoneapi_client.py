@@ -287,3 +287,15 @@ def fetch_similar_kol(user_id: str, page_num: int = 1) -> dict:
         return {"ok": False, "data": None, "error": "平台暂未收录该博主", "cached": False}
     _cache_write(user_id, data, key=cache_key)
     return {"ok": True, "data": data, "error": "", "cached": False}
+
+
+def clear_pgy_cache(user_id: str) -> None:
+    """清除该博主的所有蒲公英数据缓存（创作者资料/粉丝摘要/相似创作者），用于「刷新报价」强制重拉。"""
+    import glob
+
+    safe = "".join(ch if ch.isalnum() else "_" for ch in user_id)
+    for path in glob.glob(str(_cache_dir() / f"pgy_*{safe}*.json")):
+        try:
+            Path(path).unlink()
+        except OSError:
+            pass

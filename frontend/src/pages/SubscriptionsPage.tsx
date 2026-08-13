@@ -285,7 +285,7 @@ export default function SubscriptionsPage({ refreshSignal = 0 }: { refreshSignal
           viewing.loading ? (
             <div style={{ padding: 48, textAlign: 'center' }}><Spin /> <Text type="secondary" style={{ marginLeft: 8 }}>正在分析（可复用最近结果，最长约 1 分钟）...</Text></div>
           ) : viewing.data ? (
-            <UserAnalysisPanel user={viewing.user} data={viewing.data} taskId={viewing.taskId} onOpenNote={(n) => setDetailNote(n)} onAnalyzeUser={(u) => handleAnalyzeSub({ xhs_user_id: u.user_id, nickname: u.nickname, follower_count: u.fans })} />
+            <UserAnalysisPanel user={viewing.user} data={viewing.data} taskId={viewing.taskId} onOpenNote={(n) => setDetailNote(n)} onAnalyzeUser={(u) => handleAnalyzeSub({ xhs_user_id: u.user_id, nickname: u.nickname, follower_count: u.fans })} onReAnalyze={() => viewing && handleAnalyzeSub({ xhs_user_id: viewing.user.user_id, nickname: viewing.user.nickname, follower_count: viewing.user.fans })} />
           ) : (
             <div style={{ padding: 48, textAlign: 'center', color: '#999' }}>暂无分析结果（未通过粗筛或分析失败）</div>
           )

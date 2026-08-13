@@ -346,6 +346,12 @@ async def create_analysis_task(
     """
     from app.services.analysis_task_runner import prescreen_user, start_analysis_task
 
+    if refresh:
+        # 强制刷新：先清蒲公英报价缓存，重新拉最新报价后重算性价比
+        from app.services.justoneapi_client import clear_pgy_cache
+
+        clear_pgy_cache(user_id)
+
     if not refresh:
         # 复用最近成功/部分成功结果（同一账号、TTL 内）
         from crawler.config import load_config as _load_crawler_cfg
