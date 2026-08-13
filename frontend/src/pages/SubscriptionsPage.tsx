@@ -89,7 +89,7 @@ export default function SubscriptionsPage() {
     setViewing({ user, data, taskId, loading: false });
   };
 
-  const handleAnalyzeSub = async (sub: Subscription) => {
+  const handleAnalyzeSub = async (sub: { xhs_user_id: string; nickname: string; follower_count?: number }) => {
     const u = { user_id: sub.xhs_user_id, nickname: sub.nickname, fans: sub.follower_count || 0 };
     setViewing({ user: u, data: null, taskId: null, loading: true });
     try {
@@ -215,7 +215,7 @@ export default function SubscriptionsPage() {
           viewing.loading ? (
             <div style={{ padding: 48, textAlign: 'center' }}><Spin /> <Text type="secondary" style={{ marginLeft: 8 }}>正在分析（可复用最近结果，最长约 1 分钟）...</Text></div>
           ) : viewing.data ? (
-            <UserAnalysisPanel user={viewing.user} data={viewing.data} taskId={viewing.taskId} onOpenNote={(n) => setDetailNote(n)} />
+            <UserAnalysisPanel user={viewing.user} data={viewing.data} taskId={viewing.taskId} onOpenNote={(n) => setDetailNote(n)} onAnalyzeUser={(u) => handleAnalyzeSub({ xhs_user_id: u.user_id, nickname: u.nickname, follower_count: u.fans })} />
           ) : (
             <div style={{ padding: 48, textAlign: 'center', color: '#999' }}>暂无分析结果（未通过粗筛或分析失败）</div>
           )
