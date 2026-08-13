@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from 'react';
-import { Button, Form, Input, message, Modal, Popconfirm, Select, Space, Table, Tag, Typography } from 'antd';
-import { DeleteOutlined, DisconnectOutlined, EditOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, ReloadOutlined, SyncOutlined } from '@ant-design/icons';
+import { Alert, Button, Form, Input, message, Modal, Popconfirm, Select, Space, Table, Tag, Typography } from 'antd';
+import { DeleteOutlined, DisconnectOutlined, EditOutlined, PauseCircleOutlined, PlayCircleOutlined, PlusOutlined, QrcodeOutlined, ReloadOutlined, SyncOutlined } from '@ant-design/icons';
 import { crawlerPoolService, type CookiePoolItem, type CookiePoolStats, type CrawlCallRecord, type ProxyPoolStats } from '../services/crawlerPool';
 
 const { Title, Text } = Typography;
@@ -57,6 +57,7 @@ export default function CrawlerPoolPanel() {
   const [proxyLoading, setProxyLoading] = useState(false);
   const [callsLoading, setCallsLoading] = useState(false);
   const [addOpen, setAddOpen] = useState(false);
+  const [loginLoading, setLoginLoading] = useState(false);
   const [editItem, setEditItem] = useState<CookiePoolItem | null>(null);
   const [addForm] = Form.useForm();
   const [editForm] = Form.useForm();
@@ -73,6 +74,40 @@ export default function CrawlerPoolPanel() {
       setLoading(false);
     }
   }, []);
+
+  const handleScanLogin = async () => {
+    const desk = (window as any).aistroDesktop;
+    if (!desk || typeof desk.login !== 'function') {
+      message.warning('扫码登录仅桌面端可用，请在 AiRestro 桌面端操作');
+      return;
+    }
+    setLoginLoading(true);
+    try {
+      const token = localStorage.getItem('token') || '';
+      const r = await desk.login(token);
+      if (r && r.ok) {
+        const ev = r.evicted ? `（已淘汰 Cookie ${String(r.evicted).slice(0, 8)}）` : '';
+        message.success(r.action === 'replaced' ? `已替换刷新该账号 Cookie${ev}` : `已新增 Cookie${ev}`, 5);
+      } else {
+        const reason = r?.reason;
+        let msg = '';
+        switch (r?.action) {
+          case 'cancel': msg = '已取消扫码'; break;
+          case 'timeout': msg = '扫码超时，请重试'; break;
+          case 'token_expired': msg = '系统登录已过期，请先重新登录'; break;
+          case 'verify_failed': msg = reason === 'network_error' ? '验证服务异常，请稍后重试' : '登录态不完整，请重新扫码'; break;
+          case 'pool_full': msg = 'Cookie 池已满且均在占用，请先移除一条'; break;
+          default: msg = '扫码登录失败';
+        }
+        message.error(msg + (r?.error ? `：${r.error}` : ''), 6);
+      }
+      fetch(false);
+    } catch (e: any) {
+      message.error('扫码登录失败：' + (e?.message || e), 6);
+    } finally {
+      setLoginLoading(false);
+    }
+  };
 
   const fetchProxy = useCallback(async () => {
     setProxyLoading(true);
@@ -200,6 +235,18 @@ export default function CrawlerPoolPanel() {
       dataIndex: 'label',
       width: 140,
       render: (v: string) => <Text strong>{v || '-'}</Text>,
+    },
+    {
+      title: '最近成功',
+      dataIndex: 'last_success',
+      width: 120,
+      render: (v: number | null) => {
+        if (!v) return <Text type="secondary">-</Text>;
+        const mins = Math.floor(Date.now() / 1000 - v);
+        const hours = Math.floor(mins / 60);
+        const txt = hours > 0 ? `${hours} 小时前` : `${Math.max(0, mins)} 分钟前`;
+        return hours >= 24 ? <Tag color="orange">即将过期（{txt}）</Tag> : <Text>{txt}</Text>;
+      },
     },
     {
       title: '状态',
@@ -349,8 +396,15 @@ export default function CrawlerPoolPanel() {
             : '加载中'}
         </Text>
         <Button icon={<ReloadOutlined />} loading={loading} onClick={() => fetch(false)}>刷新</Button>
+        <Button icon={<QrcodeOutlined />} loading={loginLoading} onClick={handleScanLogin}>扫码登录刷新 Cookie</Button>
         <Button type="primary" icon={<PlusOutlined />} onClick={() => setAddOpen(true)}>添加 Cookie</Button>
       </div>
+
+      {stats && stats.counts.available === 0 && stats.total > 0 && (
+        <Alert type="error" showIcon style={{ marginBottom: 12 }}
+          message="Cookie 池无可用 Cookie（可能已过期）"
+          description="请点右上角「扫码登录刷新 Cookie」扫码补充，或手动添加。" />
+      )}
 
       {cfg && (
         <div style={{ marginBottom: 12, fontSize: 12, color: '#888' }}>

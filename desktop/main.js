@@ -1,5 +1,5 @@
 /* AiRestro 桌面端主进程：窗口 + 内置静态服务 + 后端自动拉起。 */
-const { app, BrowserWindow, dialog } = require("electron");
+const { app, BrowserWindow, dialog, ipcMain, session } = require("electron");
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
@@ -120,6 +120,114 @@ function startStaticServer() {
     server.listen(STATIC_PORT, "127.0.0.1", () => resolve(server));
   });
 }
+
+// ---- 小红书 Cookie 扫码登录（阶段A）：弹出登录窗口 → 真实验证 → 写入 Cookie 池 ----
+async function apiPost(path, token, body) {
+  const res = await fetch(`${BACKEND_URL}/api/v1${path}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(body),
+  });
+  if (res.status === 401 || res.status === 403) return { httpStatus: res.status };
+  return { httpStatus: res.status, body: await res.json().catch(() => null) };
+}
+
+function xhsLogin(token) {
+  return new Promise((resolve) => {
+    const LOGIN_PARTITION = "persist:xhs-login";
+    const ses = session.fromPartition(LOGIN_PARTITION);
+    ses.clearStorageData().catch(() => {});
+    let win = new BrowserWindow({
+      width: 480,
+      height: 720,
+      title: "小红书登录 - 扫码后自动抓取 Cookie",
+      autoHideMenuBar: true,
+      webPreferences: { session: ses, contextIsolation: true, nodeIntegration: false },
+    });
+    let settled = false;
+    let verifying = false;
+    let verifyFailCount = 0;
+    let pollTimer = null;
+    let timeoutTimer = null;
+
+    const finish = (result) => {
+      if (settled) return;
+      settled = true;
+      if (pollTimer) clearInterval(pollTimer);
+      if (timeoutTimer) clearTimeout(timeoutTimer);
+      try { if (!win.isDestroyed()) win.close(); } catch {}
+      resolve(result);
+    };
+    win.on("closed", () => finish({ ok: false, action: "cancel" }));
+    timeoutTimer = setTimeout(() => finish({ ok: false, action: "timeout" }), 10 * 60 * 1000);
+
+    pollTimer = setInterval(async () => {
+      if (verifying) return;
+      try {
+        const cookies = await ses.cookies.get({ domain: ".xiaohongshu.com" });
+        if (!cookies.find((c) => c.name === "web_session" && c.value)) {
+          verifyFailCount = 0;
+          return;
+        }
+        const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
+        verifying = true;
+        verifyFailCount += 1;
+        // 延迟 500ms 再验证：防页面跳转/cookie 未写稳的时序竞态
+        setTimeout(async () => {
+          try {
+            const v = await apiPost("/crawler/pool/cookies/verify", token, { cookie: cookieStr });
+            if (v.httpStatus === 401 || v.httpStatus === 403) {
+              finish({ ok: false, action: "token_expired", error: "登录态已过期，请重新登录系统" });
+              return;
+            }
+            if (!v.body || v.body.ok !== true) {
+              if (v.body && v.body.reason === "network_error") {
+                finish({ ok: false, action: "verify_failed", reason: "network_error", error: v.body.error || "" });
+              } else if (verifyFailCount >= 3) {
+                // 登录态确实不完整（可能扫错/游客态），提示重扫
+                finish({ ok: false, action: "verify_failed", reason: "auth_incomplete", error: (v.body && v.body.error) || "" });
+              }
+              return;
+            }
+            const add = await apiPost("/crawler/pool/cookies", token, { cookie: cookieStr, label: "" });
+            if (add.httpStatus === 401 || add.httpStatus === 403) {
+              finish({ ok: false, action: "token_expired", error: "登录态已过期，请重新登录系统" });
+              return;
+            }
+            if (add.body && (add.body.action === "added" || add.body.action === "replaced")) {
+              finish({
+                ok: true,
+                action: add.body.action,
+                cookieId: add.body.id,
+                evicted: add.body.evicted ? add.body.evicted.id : null,
+                account_id: v.body.account_id || "",
+              });
+            } else {
+              finish({ ok: false, action: "pool_full", error: (add.body && add.body.detail) || "Cookie 池已满" });
+            }
+          } catch (e) {
+            finish({ ok: false, action: "network_error", error: String((e && e.message) || e) });
+          } finally {
+            verifying = false;
+          }
+        }, 500);
+      } catch { /* 轮询异常忽略，继续下一轮 */ }
+    }, 2000);
+
+    win.loadURL("https://www.xiaohongshu.com").catch(() => {
+      finish({ ok: false, action: "network_error", error: "无法打开小红书登录页" });
+    });
+  });
+}
+
+ipcMain.handle("xhs:login", async (_event, token) => {
+  if (!token) return { ok: false, action: "token_expired", error: "缺少登录态" };
+  try {
+    return await xhsLogin(token);
+  } catch (e) {
+    return { ok: false, action: "network_error", error: String((e && e.message) || e) };
+  }
+});
 
 async function createWindow() {
   const backendOk = await ensureBackend();
