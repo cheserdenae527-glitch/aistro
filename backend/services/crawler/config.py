@@ -43,6 +43,7 @@ DEFAULT_CONFIG = {
     "analysis_max_notes_per_task": 150,
     "analysis_task_timeout_minutes": 45,
     "analysis_cache_ttl_seconds": 604800,
+    "cookie_check_interval_minutes": 60,
     "subscription_deep_sync_min_interval_hours": 24,
     "subscription_deep_sync_max_per_run": 200,
     "blogger_scoring": {

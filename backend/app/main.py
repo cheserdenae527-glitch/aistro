@@ -16,6 +16,7 @@ from app.core.config import settings
 
 
 _subscription_scheduler = None
+_cookie_scheduler = None
 
 
 @asynccontextmanager
@@ -26,10 +27,17 @@ async def lifespan(_app: FastAPI):
 
     _subscription_scheduler = SubscriptionScheduler()
     _subscription_scheduler.start()
+    from app.services.cookie_health_scheduler import CookieHealthScheduler
+
+    global _cookie_scheduler
+    _cookie_scheduler = CookieHealthScheduler()
+    _cookie_scheduler.start()
     yield
     # 关闭时：停止调度器并清理引擎
     if _subscription_scheduler is not None:
         _subscription_scheduler.shutdown()
+    if _cookie_scheduler is not None:
+        _cookie_scheduler.shutdown()
     from app.core.database import engine
 
     await engine.dispose()

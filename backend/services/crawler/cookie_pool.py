@@ -126,6 +126,15 @@ def list_cookies() -> list[dict]:
         return [dict(c) for c in _load().get("cookies", [])]
 
 
+def get_cookie_entry(cookie_id: str) -> dict | None:
+    """按 id 取单个 Cookie 条目（含绑定的代理），供主动探测使用。"""
+    with _LOCK:
+        for c in _load().get("cookies", []):
+            if c.get("id") == cookie_id:
+                return dict(c)
+    return None
+
+
 def pool_stats() -> dict:
     """返回池状态概览，供管理界面展示。"""
     with _LOCK:
