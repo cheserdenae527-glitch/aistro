@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react';
-import { Button, Form, Input, message, Modal, Table, Typography, Popconfirm, Space, Row, Col, Spin, Tag } from 'antd';
+import { useEffect, useMemo, useState } from 'react';
+import { Button, Form, Input, InputNumber, message, Modal, Select, Table, Typography, Popconfirm, Space, Row, Col, Spin, Tag } from 'antd';
 import { DownloadOutlined, PlusOutlined, ReloadOutlined, BarChartOutlined } from '@ant-design/icons';
 import { NoteCardView, type NoteCardData } from '../components/NoteCard';
 import NoteDetail from '../components/NoteDetail';
@@ -8,6 +8,7 @@ import { subService, type Subscription } from '../services/subscriptions';
 import { listAnalysisTasks, exportAnalysisReport, AnalysisTaskPayload } from '../services/analysis';
 const { Title, Text } = Typography;
 
+const DATE_RANGE_MS: Record<string, number> = { d7: 7 * 864e5, d30: 30 * 864e5, d90: 90 * 864e5 };
 const REC_RANK: Record<string, number> = { priority: 0, ok: 1, caution: 2, not_recommended: 3, insufficient_data: 4 };
 const REC_TAG: Record<string, { color: string; label: string }> = {
   priority: { color: 'green', label: '优先合作' },
@@ -48,6 +49,16 @@ export default function SubscriptionsPage({ refreshSignal = 0 }: { refreshSignal
   // 长期分析结果列表
   const [results, setResults] = useState<AnalysisTaskPayload[]>([]);
   const [resultsLoading, setResultsLoading] = useState(false);
+  // 筛选与排序
+  const [dateRange, setDateRange] = useState<string>('all');
+  const [recFilter, setRecFilter] = useState<string>('all');
+  const [audFilter, setAudFilter] = useState<string>('all');
+  const [minScore, setMinScore] = useState<number | null>(null);
+  const [maxScore, setMaxScore] = useState<number | null>(null);
+  const [minBid, setMinBid] = useState<number | null>(null);
+  const [maxBid, setMaxBid] = useState<number | null>(null);
+  const [sortMode, setSortMode] = useState<string>('composite');
+  const [nowTs] = useState(() => Date.now());
   // 分析详情（从订阅行发起 或 结果列表点击查看，均不重复爬取）
   const [viewing, setViewing] = useState<ViewingAnalysis | null>(null);
 
@@ -78,6 +89,43 @@ export default function SubscriptionsPage({ refreshSignal = 0 }: { refreshSignal
   }, []);
   // 批量分析完成信号：父页面检测到新完成的任务时触发即时刷新
   useEffect(() => { if (refreshSignal > 0) loadResults(true); }, [refreshSignal]);
+
+  // 过滤 + 综合排序（筛选栏）
+  const bidValue = useMemo(() => (t: AnalysisTaskPayload): number => t.result?.dimensions?.cost_effectiveness?.detail?.suggested_bid_picture ?? -1, []);
+  const filteredSorted = useMemo(() => {
+    const now = nowTs;
+    const filtered = results.filter((t) => {
+      if (dateRange !== 'all') {
+        const ts = t.finished_at ? new Date(t.finished_at).getTime() : 0;
+        if (!ts || ts < now - DATE_RANGE_MS[dateRange]) return false;
+      }
+      const rec = (t.result?.decision?.recommendation) || 'insufficient_data';
+      if (recFilter !== 'all' && rec !== recFilter) return false;
+      const aud = t.result?.audience?.dominant_level;
+      if (audFilter !== 'all' && aud !== audFilter) return false;
+      const score = t.result?.overall?.score;
+      if (score != null) {
+        if (minScore != null && score < minScore) return false;
+        if (maxScore != null && score > maxScore) return false;
+      }
+      const bid = bidValue(t);
+      if (bid >= 0) {
+        if (minBid != null && bid < minBid) return false;
+        if (maxBid != null && bid > maxBid) return false;
+      }
+      return true;
+    });
+    const sorted = [...filtered];
+    switch (sortMode) {
+      case 'score': sorted.sort((a, b) => rowOverall(b) - rowOverall(a)); break;
+      case 'cost': sorted.sort((a, b) => rowCost(b) - rowCost(a)); break;
+      case 'date': sorted.sort((a, b) => (b.finished_at || '').localeCompare(a.finished_at || '')); break;
+      case 'bid': sorted.sort((a, b) => bidValue(b) - bidValue(a)); break;
+      case 'fans': sorted.sort((a, b) => (b.follower_count || 0) - (a.follower_count || 0)); break;
+      default: sorted.sort((a, b) => (rowRank(a) - rowRank(b)) || (rowCost(b) - rowCost(a)) || (rowOverall(b) - rowOverall(a))); break;
+    }
+    return sorted;
+  }, [results, dateRange, recFilter, audFilter, minScore, maxScore, minBid, maxBid, sortMode, bidValue, nowTs]);
 
   const handleExport = async () => {
     try {
@@ -195,10 +243,25 @@ export default function SubscriptionsPage({ refreshSignal = 0 }: { refreshSignal
 
       <div style={{ display:'flex', justifyContent:'space-between', alignItems:'center', margin: '24px 0 12px' }}>
         <Title level={3} style={{ margin:0 }}>分析结果（长期保存，点击查看无需重新分析）</Title>
-        <Button icon={<DownloadOutlined />} onClick={handleExport} disabled={results.length === 0}>批量导出报告（Excel）</Button>
+        <Button icon={<DownloadOutlined />} onClick={handleExport} disabled={filteredSorted.length === 0}>批量导出报告（Excel）</Button>
+      </div>
+      <div style={{ marginBottom: 12, display: 'flex', gap: 8, flexWrap: 'wrap', alignItems: 'center' }}>
+        <Select value={dateRange} onChange={setDateRange} style={{ width: 110 }}
+          options={[{ value: 'all', label: '全部日期' }, { value: 'd7', label: '近7天' }, { value: 'd30', label: '近30天' }, { value: 'd90', label: '近90天' }]} />
+        <Select value={recFilter} onChange={setRecFilter} style={{ width: 110 }}
+          options={[{ value: 'all', label: '全部建议' }, { value: 'priority', label: '优先合作' }, { value: 'ok', label: '可合作' }, { value: 'caution', label: '谨慎' }, { value: 'not_recommended', label: '不合作' }, { value: 'insufficient_data', label: '数据不足' }]} />
+        <Select value={audFilter} onChange={setAudFilter} style={{ width: 110 }}
+          options={[{ value: 'all', label: '全部受众' }, { value: '大众', label: '大众' }, { value: '中端', label: '中端' }, { value: '高端', label: '高端' }, { value: '奢华', label: '奢华' }]} />
+        <InputNumber placeholder="总分≥" min={0} max={100} value={minScore} onChange={setMinScore} style={{ width: 92 }} />
+        <InputNumber placeholder="总分≤" min={0} max={100} value={maxScore} onChange={setMaxScore} style={{ width: 92 }} />
+        <InputNumber placeholder="报价≥" min={0} value={minBid} onChange={setMinBid} style={{ width: 100 }} />
+        <InputNumber placeholder="报价≤" min={0} value={maxBid} onChange={setMaxBid} style={{ width: 100 }} />
+        <Select value={sortMode} onChange={setSortMode} style={{ width: 200 }}
+          options={[{ value: 'composite', label: '综合排序（可合作→性价比→总分）' }, { value: 'score', label: '按总分' }, { value: 'cost', label: '按性价比' }, { value: 'bid', label: '按建议报价' }, { value: 'date', label: '按分析时间' }, { value: 'fans', label: '按粉丝' }]} />
+        <Text type="secondary" style={{ fontSize: 12 }}>共 {filteredSorted.length} 位</Text>
       </div>
       <Table
-        dataSource={results}
+        dataSource={filteredSorted}
         columns={resultColumns}
         rowKey='id'
         loading={resultsLoading}
