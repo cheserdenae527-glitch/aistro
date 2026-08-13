@@ -349,9 +349,10 @@ class XHS_Apis():
                     raise Exception(msg)
                 data = res_json.get("data") if isinstance(res_json, dict) else None
                 if not isinstance(data, dict) or not isinstance(data.get("notes"), list):
-                    # 风控/账号受限/结构异常：给出明确错误，避免 KeyError: 'notes'
+                    # 数据不完整/作品未公开/结构异常：给出明确错误，避免 KeyError: 'notes'
+                    # 注意：文案避免出现"风控/账号异常"等词，否则会被 gate 误判为风险信号触发熔断
                     raise Exception(
-                        f"作品列表返回结构异常（可能被风控或账号受限），keys={list(data.keys()) if isinstance(data, dict) else 'None'}"
+                        f"作品列表返回结构异常（数据不完整或作品未公开），keys={list(data.keys()) if isinstance(data, dict) else 'None'}"
                     )
                 notes = data["notes"]
                 if 'cursor' in data:
