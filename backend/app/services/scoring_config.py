@@ -95,8 +95,9 @@ DEFAULT_SCORING_CONFIG: dict = {
         # v1.12：性价比与建议报价（锚点/单价为初值，待真实样本标定）
         "read_rates": {"T1": 0.15, "T2": 0.10, "T3": 0.06, "T4": 0.04},
         "price_anchors": {
+            # T2 已按真实样本标定（2026-08-13，蒲公英相似创作者 38 样本 P50）；其余层为初值待标定
             "T1": {"picture": 500, "video": 800},
-            "T2": {"picture": 1500, "video": 2500},
+            "T2": {"picture": 2050, "video": 2800},
             "T3": {"picture": 4000, "video": 6500},
             "T4": {"picture": 12000, "video": 20000},
         },
