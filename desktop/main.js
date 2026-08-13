@@ -146,7 +146,8 @@ function xhsLogin(token) {
     });
     let settled = false;
     let verifying = false;
-    let seenCount = 0;
+    let firstSeenAt = 0;
+    let verifyOkOnce = false;
     let verifyFailCount = 0;
     let pollTimer = null;
     let timeoutTimer = null;
@@ -167,14 +168,15 @@ function xhsLogin(token) {
       try {
         const cookies = await ses.cookies.get({ domain: ".xiaohongshu.com" });
         if (!cookies.find((c) => c.name === "web_session" && c.value)) {
-          seenCount = 0;
+          firstSeenAt = 0;
+          verifyOkOnce = false;
           verifyFailCount = 0;
           return;
         }
-        seenCount += 1;
-        // 小红书扫码后有约 3 秒「确认登录」界面，期间 web_session 可能已提前下发；
-        // 必须连续 2 轮（约 4 秒）稳定存在后才验证录入，避免在正式登录前就写入 Cookie。
-        if (seenCount < 2) return;
+        if (!firstSeenAt) firstSeenAt = Date.now();
+        // 小红书扫码后有约 3 秒「确认登录」界面，期间 web_session 已提前下发；
+        // web_session 出现后至少等 5 秒（覆盖确认界面）才允许验证，避免正式登录前误录入。
+        if (Date.now() - firstSeenAt < 5000) return;
         const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
         verifying = true;
         verifyFailCount += 1;
@@ -193,6 +195,12 @@ function xhsLogin(token) {
                 // 登录态确实不完整（可能扫错/游客态），提示重扫
                 finish({ ok: false, action: "verify_failed", reason: "auth_incomplete", error: (v.body && v.body.error) || "" });
               }
+              verifyOkOnce = false;
+              return;
+            }
+            // 双确认：第一次 verify 通过只标记，下一轮（约 2 秒后）再 verify 一次，连续两次通过才写入
+            if (!verifyOkOnce) {
+              verifyOkOnce = true;
               return;
             }
             const add = await apiPost("/crawler/pool/cookies", token, { cookie: cookieStr, label: "" });
