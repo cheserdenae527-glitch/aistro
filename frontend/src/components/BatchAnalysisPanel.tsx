@@ -1,9 +1,9 @@
 // frontend/src/components/BatchAnalysisPanel.tsx
 // 批量真实分析面板：粘贴博主主页链接/user_id 入队 -> 一键批量发起 -> 实时进度（每博主独立进度条）。
-import { useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { Button, Card, Input, message, Progress, Space, Tag, Typography } from 'antd';
 import { ClearOutlined, DeleteOutlined, PlayCircleOutlined, PlusOutlined } from '@ant-design/icons';
-import { createAnalysisTasksBatch, listAnalysisTasks } from '../services/analysis';
+import { createAnalysisTasksBatch } from '../services/analysis';
 
 const { Text, Title } = Typography;
 
@@ -13,11 +13,19 @@ export interface BatchQueueItem {
   fans: number;
 }
 
-interface BatchAnalysisPanelProps {
+export interface TaskProgress {
+  status: string;
+  fetched?: number;
+  target?: number;
+}
+
+export interface BatchAnalysisPanelProps {
   queue: BatchQueueItem[];
   onRemoveFromQueue: (userId: string) => void;
   onAddFromQueue: (items: BatchQueueItem[]) => void;
   withComments: boolean;
+  progressMap: Record<string, TaskProgress>;
+  onBatchStarted: (taskIds: string[], initial: Record<string, TaskProgress>) => void;
 }
 
 const STATUS_COLOR: Record<string, string> = {
@@ -30,14 +38,6 @@ const STATUS_COLOR: Record<string, string> = {
 function statusColor(status: string): string {
   if (status.startsWith('已拒绝')) return 'orange';
   return STATUS_COLOR[status] || 'default';
-}
-
-const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms));
-
-interface TaskProgress {
-  status: string;
-  fetched?: number;
-  target?: number;
 }
 
 // 每行提取一个 user_id：裸 ID 整行须为纯字母数字；主页链接支持带/不带协议头、带前缀文字。
@@ -59,34 +59,16 @@ function errorDetail(err: unknown, fallback: string): string {
   return e?.response?.data?.detail || e?.message || fallback;
 }
 
-function taskStatusText(status: string): { text: string; terminal: boolean } {
-  switch (status) {
-    case 'success':
-    case 'partial':
-      return { text: '完成', terminal: true };
-    case 'failed':
-      return { text: '失败', terminal: true };
-    case 'cancelled':
-      return { text: '已取消', terminal: true };
-    case 'pending':
-    case 'running':
-      return { text: '分析中', terminal: false };
-    default:
-      return { text: '分析中', terminal: false };
-  }
-}
-
 export default function BatchAnalysisPanel({
   queue,
   onRemoveFromQueue,
   onAddFromQueue,
   withComments,
+  progressMap,
+  onBatchStarted,
 }: BatchAnalysisPanelProps) {
   const [pastedText, setPastedText] = useState('');
   const [running, setRunning] = useState(false);
-  const [progressMap, setProgressMap] = useState<Record<string, TaskProgress>>({});
-  const aliveRef = useRef(true);
-  useEffect(() => () => { aliveRef.current = false; }, []);
 
   const expandShortLink = async (line: string): Promise<string> => {
     try {
@@ -134,74 +116,28 @@ export default function BatchAnalysisPanel({
   const handleStart = async () => {
     if (running || queue.length === 0) return;
     setRunning(true);
-    setProgressMap({});
     try {
       const res = await createAnalysisTasksBatch(
         queue.map((q) => ({ user_id: q.user_id, nickname: q.nickname, fans: q.fans, with_comments: withComments })),
       );
-      const next: Record<string, TaskProgress> = {};
-      const taskIdByUser = new Map<string, string>();
+      const initial: Record<string, TaskProgress> = {};
       const createdTaskIds: string[] = [];
       for (const c of res.created) {
-        next[c.xhs_user_id] = { status: '分析中' };
-        taskIdByUser.set(c.xhs_user_id, c.task_id);
+        initial[c.xhs_user_id] = { status: '分析中' };
         createdTaskIds.push(c.task_id);
       }
-      for (const r of res.rejected) next[r.xhs_user_id] = { status: '已拒绝：' + r.reason };
-      setProgressMap({ ...next });
+      for (const r of res.rejected) initial[r.xhs_user_id] = { status: '已拒绝：' + r.reason };
+      // 交给父页面常驻轮询（切走 tab 不中断，切回仍可看进度）
+      onBatchStarted(createdTaskIds, initial);
       if (res.rejected.length > 0) {
         message.warning(`批量发起完成：创建 ${res.created.length} 个任务，${res.rejected.length} 个未通过粗筛`);
       } else {
         message.success(`批量发起完成：已创建 ${res.created.length} 个分析任务`);
       }
-      if (Object.keys(next).length === 0) return;
-      const allRejected = Object.values(next).every((v) => v.status.startsWith('已拒绝'));
-      if (allRejected) return;
-
-      const startTime = Date.now();
-      const timeoutMs = 10 * 60 * 1000;
-      let consecutiveErrors = 0;
-      let terminal = false;
-      while (!terminal && Date.now() - startTime < timeoutMs) {
-        await sleep(3000);
-        if (!aliveRef.current) return;
-        try {
-          const pollRes = createdTaskIds.length > 0
-            ? await listAnalysisTasks({ ids: createdTaskIds })
-            : await listAnalysisTasks({ limit: 500 });
-          if (!aliveRef.current) return;
-          const items = pollRes.items || [];
-          const upd: Record<string, TaskProgress> = {};
-          let allTerminal = true;
-          for (const id of Object.keys(next)) {
-            if (next[id].status.startsWith('已拒绝')) { upd[id] = next[id]; continue; }
-            const taskId = taskIdByUser.get(id);
-            const t = taskId ? items.find((x) => x.id === taskId) : undefined;
-            if (!t) { upd[id] = { status: '分析中' }; allTerminal = false; continue; }
-            const st = taskStatusText(t.status);
-            upd[id] = {
-              status: st.text,
-              fetched: t.fetched_notes ?? undefined,
-              target: t.target_notes || t.total_notes || undefined,
-            };
-            if (!st.terminal) allTerminal = false;
-          }
-          setProgressMap({ ...upd });
-          consecutiveErrors = 0;
-          terminal = allTerminal;
-        } catch (err: unknown) {
-          consecutiveErrors += 1;
-          if (consecutiveErrors >= 3) {
-            message.error('批量进度刷新连续失败，已停止轮询：' + errorDetail(err, '未知错误'), 5);
-            return;
-          }
-        }
-      }
-      if (!terminal) message.warning('批量分析仍在进行（已超过约 10 分钟），可稍后在「博主订阅」页的分析结果中查看最新结果', 5);
     } catch (err: unknown) {
       message.error('批量发起失败：' + errorDetail(err, '未知错误'), 6);
     } finally {
-      if (aliveRef.current) setRunning(false);
+      setRunning(false);
     }
   };
 
@@ -252,7 +188,7 @@ export default function BatchAnalysisPanel({
 
       <Card size="small" title={<Title level={5} style={{ margin: 0 }}>实时进度</Title>} style={{ marginTop: 12 }}>
         {Object.keys(progressMap).length === 0 ? (
-          <Text type="secondary">暂无进行中的批量分析</Text>
+          <Text type="secondary">暂无进行中的批量分析（发起后切到其他栏目也会继续，切回即可查看实时进度）</Text>
         ) : (
           <div>
             {Object.entries(progressMap).map(([userId, p]) => {

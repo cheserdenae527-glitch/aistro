@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Button, Drawer, Input, message, Progress, Typography, Tabs, Row, Col, Space, Avatar, Switch } from 'antd';
 import { SearchOutlined, HistoryOutlined, UserOutlined, EyeOutlined, BarChartOutlined, DatabaseOutlined, PlusOutlined, SettingOutlined } from '@ant-design/icons';
 import { NoteCardView, type NoteCardData } from '../components/NoteCard';
@@ -6,7 +6,8 @@ import NoteDetail from '../components/NoteDetail';
 import SubscriptionsPage from './SubscriptionsPage';
 import CrawlerPoolPanel from '../components/CrawlerPoolPanel';
 import UserAnalysisPanel from '../components/UserAnalysisPanel';
-import BatchAnalysisPanel, { type BatchQueueItem } from '../components/BatchAnalysisPanel';
+import BatchAnalysisPanel, { type BatchQueueItem, type TaskProgress } from '../components/BatchAnalysisPanel';
+import { listAnalysisTasks } from '../services/analysis';
 import SubscribeButton from '../components/SubscribeButton';
 
 const { Title, Text } = Typography;
@@ -66,6 +67,39 @@ export default function CrawlJobsPage() {
 
   // 批量分析队列
   const [batchQueue, setBatchQueue] = useState<BatchQueueItem[]>([]);
+  // 批量进度（父页面常驻，切 tab 不中断）：taskIds 用于轮询，progressMap 按 xhs_user_id 展示
+  const [batchTaskIds, setBatchTaskIds] = useState<string[]>([]);
+  const [batchProgress, setBatchProgress] = useState<Record<string, TaskProgress>>({});
+
+  useEffect(() => {
+    if (batchTaskIds.length === 0) return;
+    let alive = true;
+    const poll = async () => {
+      try {
+        const res = await listAnalysisTasks({ ids: batchTaskIds, limit: 500 });
+        if (!alive) return;
+        const items = res.items || [];
+        const upd: Record<string, TaskProgress> = {};
+        let allTerminal = true;
+        for (const t of items) {
+          const st = t.status;
+          const text = ['success', 'partial'].includes(st) ? '完成' : st === 'failed' ? '失败' : st === 'cancelled' ? '已取消' : '分析中';
+          upd[t.xhs_user_id] = { status: text, fetched: t.fetched_notes ?? undefined, target: t.target_notes || t.total_notes || undefined };
+          if (!['success', 'partial', 'failed', 'cancelled'].includes(st)) allTerminal = false;
+        }
+        setBatchProgress((prev) => ({ ...prev, ...upd }));
+        if (allTerminal) setBatchTaskIds([]); // 全部结束 → 停止轮询，保留最终进度供查看
+      } catch { /* 单次失败继续轮询 */ }
+    };
+    poll();
+    const timer = setInterval(poll, 3000);
+    return () => { alive = false; clearInterval(timer); };
+  }, [batchTaskIds]);
+
+  const handleBatchStarted = (taskIds: string[], initial: Record<string, TaskProgress>) => {
+    setBatchTaskIds(taskIds);
+    setBatchProgress(initial);
+  };
 
   const addToBatchQueue = (u: XhsUser) => {
     const result: { outcome: 'added' | 'duplicate' | 'full' | null } = { outcome: null };
@@ -322,6 +356,8 @@ export default function CrawlJobsPage() {
                 onRemoveFromQueue={removeFromBatchQueue}
                 onAddFromQueue={addParsedToBatchQueue}
                 withComments={withComments}
+                progressMap={batchProgress}
+                onBatchStarted={handleBatchStarted}
               />
             ) },
           ]} />
