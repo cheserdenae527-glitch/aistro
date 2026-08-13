@@ -105,6 +105,24 @@ async def recent_calls(
     return {"items": crawler_config.recent_request_logs(limit)}
 
 
+@router.post("/cookies/check")
+async def check_cookies(
+    user: User = Depends(get_current_user),
+):
+    """主动探测池内可用 Cookie 登录态（check_cookie 真实验证），返回可用性摘要。"""
+    from app.services.cookie_health_scheduler import CookieHealthScheduler
+
+    await CookieHealthScheduler()._check_job()
+    cookies = cookie_pool.list_cookies()
+    return {
+        "total": len(cookies),
+        "available": sum(1 for c in cookies if c.get("status") == "available" and c.get("cookie")),
+        "cooling": sum(1 for c in cookies if c.get("status") == "cooling"),
+        "invalid": sum(1 for c in cookies if c.get("status") == "invalid"),
+        "has_usable": any(c.get("status") == "available" and c.get("cookie") for c in cookies),
+    }
+
+
 @router.get("/proxies")
 async def proxy_status(
     current_user: User = Depends(get_current_user),

@@ -79,25 +79,19 @@ class CookieHealthScheduler:
                 crawler = self._build_crawler(cid)
                 if crawler is None:
                     continue
-                res = await __import__("asyncio").to_thread(crawler.search_users, "美食探店", 1)
+                # 用 check_cookie（get_user_self_info）真正验证登录态；搜索接口可能游客可用，无法区分登录过期
+                ok = await __import__("asyncio").to_thread(crawler.check_cookie)
             except Exception as exc:  # 探测异常不判定 Cookie 失效
                 logger.warning("Cookie 探测异常 cookie=%s: %s", cid, exc)
                 skipped += 1
                 continue
-            err = (res.error or "") if hasattr(res, "error") else ""
-            low = str(err).lower()
-            if res.success:
+            if ok:
                 cookie_pool.report_result(cid, True)
                 healthy += 1
-            elif any(k in low for k in _EXPIRED_KEYWORDS):
-                cookie_pool.report_result(cid, False, err)
-                logger.warning("Cookie 登录态失效已降级 cookie=%s: %s", cid, err[:120])
-                expired += 1
-            elif any(k in low for k in _SKIP_KEYWORDS):
-                logger.info("Cookie 探测跳过（风控/网络） cookie=%s: %s", cid, err[:80])
-                skipped += 1
             else:
-                # 其他失败（如接口结构异常）：不判定 Cookie 失效，避免误杀
-                logger.info("Cookie 探测其他失败 cookie=%s: %s", cid, err[:80])
-                skipped += 1
+                # check_cookie 失败：登录过期/网络/风控都会返回 False；连续 2 次才冷却、恢复即清零，
+                # 且登录过期会持续失败 → 冷却→淘汰，因此误杀风险低
+                cookie_pool.report_result(cid, False, "登录态探测失败（check_cookie）")
+                logger.warning("Cookie 登录态探测失败已降级 cookie=%s", cid)
+                expired += 1
         logger.info("Cookie 健康检查完成：健康 %d / 失效 %d / 跳过 %d", healthy, expired, skipped)

@@ -117,6 +117,14 @@ export default function BatchAnalysisPanel({
     if (running || queue.length === 0) return;
     setRunning(true);
     try {
+      const api = (await import('../services/api')).default;
+      // 发起前先探测 Cookie 池登录态，避免整批失败
+      const chk = await api.post('/crawler/pool/cookies/check');
+      if (!chk.data?.has_usable) {
+        message.error('Cookie 池无可用 Cookie（可能已过期），请先在「采集设置」中刷新 Cookie 后重试', 6);
+        setRunning(false);
+        return;
+      }
       const res = await createAnalysisTasksBatch(
         queue.map((q) => ({ user_id: q.user_id, nickname: q.nickname, fans: q.fans, with_comments: withComments })),
       );
