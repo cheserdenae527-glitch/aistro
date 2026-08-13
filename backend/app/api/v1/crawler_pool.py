@@ -54,11 +54,22 @@ async def verify_cookie(
     body: CookieVerifyRequest,
     current_user: User = Depends(get_current_user),
 ):
-    """验证候选 Cookie 登录态（不写池）：复用 check_cookie 真实验证，区分登录态不完整/网络异常。"""
+    """验证候选 Cookie（不写池）：
+    1) 复用 check_cookie 真实验证登录态；
+    2) 登录态有效后追加一次轻量搜索探测，识别「登录正常但无搜索权限」的账号
+       （小红书对新号/被限制账号会在搜索接口返回『没有权限访问』，user/me 检测不到）。
+    返回 reason: auth_incomplete / network_error / no_permission。
+    """
     from crawler.config import get_proxy_pool
     from crawler.xhs import XhsCrawler
 
-    crawler = XhsCrawler(body.cookie.strip(), proxy_pool=get_proxy_pool())
+    crawler = XhsCrawler(
+        body.cookie.strip(),
+        proxy_pool=get_proxy_pool(),
+        min_delay=0.5,
+        max_delay=1.0,
+        max_retries=1,
+    )
     ok, err = crawler.check_cookie_detail()
     reason = None
     if not ok:
@@ -67,8 +78,22 @@ async def verify_cookie(
             reason = "network_error"  # 网络/风控/服务异常 → 提示稍后重试，不是用户扫码问题
         else:
             reason = "auth_incomplete"  # 登录态不完整/签名失败/失效 → 提示重新扫码
+    else:
+        # 登录态有效，再探测搜索权限（用极小查询，只验证接口是否放行）
+        perm = crawler.search_users("小红书", limit=1)
+        if not perm.success:
+            low = str(perm.error or "").lower()
+            if "没有权限" in str(perm.error or ""):
+                reason = "no_permission"
+                err = perm.error
+            elif any(k in low for k in ("timeout", "timed out", "407", "connection", "refused", "reset", "熔断", "风控", "签名")):
+                reason = "network_error"
+                err = perm.error
+            else:
+                reason = "auth_incomplete"
+                err = perm.error
     return {
-        "ok": ok,
+        "ok": ok and reason is None,
         "reason": reason,
         "account_id": cookie_pool._webid_from_cookie(body.cookie),
         "error": err or None,
@@ -125,6 +150,16 @@ async def rebind_cookie(
     if entry is None:
         raise HTTPException(status_code=404, detail="Cookie 不存在")
     return entry
+
+
+@router.get("/gate")
+async def gate_status(
+    current_user: User = Depends(get_current_user),
+):
+    """查看全局请求熔断状态（熔断中剩余秒数）。"""
+    from crawler.gate import gate
+
+    return gate.status()
 
 
 @router.get("/calls")

@@ -191,6 +191,9 @@ function xhsLogin(token) {
             if (!v.body || v.body.ok !== true) {
               if (v.body && v.body.reason === "network_error") {
                 finish({ ok: false, action: "verify_failed", reason: "network_error", error: v.body.error || "" });
+              } else if (v.body && v.body.reason === "no_permission") {
+                // 登录正常但该账号无搜索权限（新号/被限制）：永久性问题，无需重扫，直接提示换账号
+                finish({ ok: false, action: "verify_failed", reason: "no_permission", error: v.body.error || "" });
               } else if (verifyFailCount >= 3) {
                 // 登录态确实不完整（可能扫错/游客态），提示重扫
                 finish({ ok: false, action: "verify_failed", reason: "auth_incomplete", error: (v.body && v.body.error) || "" });

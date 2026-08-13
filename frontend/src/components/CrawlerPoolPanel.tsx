@@ -95,7 +95,7 @@ export default function CrawlerPoolPanel() {
           case 'cancel': msg = '已取消扫码'; break;
           case 'timeout': msg = '扫码超时，请重试'; break;
           case 'token_expired': msg = '系统登录已过期，请先重新登录'; break;
-          case 'verify_failed': msg = reason === 'network_error' ? '验证服务异常，请稍后重试' : '登录态不完整，请重新扫码'; break;
+          case 'verify_failed': msg = reason === 'network_error' ? '验证服务异常，请稍后重试' : reason === 'no_permission' ? '该账号无搜索权限（新号或被限制），请更换有搜索权限的账号扫码' : '登录态不完整，请重新扫码'; break;
           case 'pool_full': msg = 'Cookie 池已满且均在占用，请先移除一条'; break;
           default: msg = '扫码登录失败';
         }

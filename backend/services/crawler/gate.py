@@ -69,6 +69,17 @@ class RiskGate:
             if wait > 0:
                 time.sleep(wait)
 
+    def status(self) -> dict:
+        """当前熔断状态（供管理界面展示剩余冷却时间）。"""
+        with self._lock:
+            remaining = max(0.0, self._open_until - time.monotonic())
+            return {
+                "open": self._open_until > time.monotonic(),
+                "remaining_seconds": int(remaining) if remaining > 0 else 0,
+                "cooldown_seconds": int(self._cooldown),
+                "failures_last_60s": len(self._failures),
+            }
+
     def mark_request(self) -> None:
         with self._lock:
             self._last_ok_at = time.monotonic()
@@ -97,14 +108,20 @@ class RiskGate:
         if not message:
             return False
         low = str(message).lower()
+        # 账号无权限（新号/被限制）不是风控信号：不应累计进熔断，
+        # 由上层按「登录失效」路径标记 Cookie invalid 即可，避免把熔断打爆。
+        if "没有权限" in low:
+            return False
         return any(kw.lower() in low for kw in RISK_KEYWORDS)
 
     @staticmethod
     def classify_risk_error(message: str) -> str:
-        """把风控错误分类为 risk_type（data_null/captcha/x_rap_param/login_expired/rate_limit/other）。"""
+        """把风控错误分类为 risk_type（data_null/captcha/x_rap_param/login_expired/rate_limit/no_permission/other）。"""
         low = str(message or "").lower()
         if not low:
             return "other"
+        if "没有权限" in low:
+            return "no_permission"
         if "x-rap-param" in low:
             return "x_rap_param"
         if "data:null" in low or "data: none" in low or "nonetype" in low:
