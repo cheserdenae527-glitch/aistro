@@ -146,6 +146,7 @@ function xhsLogin(token) {
     });
     let settled = false;
     let verifying = false;
+    let seenCount = 0;
     let verifyFailCount = 0;
     let pollTimer = null;
     let timeoutTimer = null;
@@ -166,9 +167,14 @@ function xhsLogin(token) {
       try {
         const cookies = await ses.cookies.get({ domain: ".xiaohongshu.com" });
         if (!cookies.find((c) => c.name === "web_session" && c.value)) {
+          seenCount = 0;
           verifyFailCount = 0;
           return;
         }
+        seenCount += 1;
+        // 小红书扫码后有约 3 秒「确认登录」界面，期间 web_session 可能已提前下发；
+        // 必须连续 2 轮（约 4 秒）稳定存在后才验证录入，避免在正式登录前就写入 Cookie。
+        if (seenCount < 2) return;
         const cookieStr = cookies.map((c) => `${c.name}=${c.value}`).join("; ");
         verifying = true;
         verifyFailCount += 1;

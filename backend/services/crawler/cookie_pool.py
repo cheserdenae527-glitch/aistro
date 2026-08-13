@@ -450,6 +450,14 @@ def report_result(cookie_id: str, success: bool, error: str = "") -> dict | None
                 entry["continuous_fail"] = int(entry.get("continuous_fail", 0)) + 1
                 entry["proxy_failures"] = int(entry.get("proxy_failures", 0)) + 1
                 entry["last_error"] = str(error)[:300]
+                if "没有权限" in str(error):
+                    # 账号无权限（如搜索权限未开通/被限制）：永久性问题，直接标记 invalid，
+                    # 避免轮换到它反复失败；后续可由用户重新扫码有权限账号
+                    entry["status"] = "invalid"
+                    entry["cooling_until"] = None
+                    _clear_proxy_binding(entry)
+                    _save(pool)
+                    return dict(entry)
                 if entry["continuous_fail"] >= int(cfg["max_continuous_fail"]):
                     entry["status"] = "cooling"
                     entry["cooling_until"] = now + int(cfg["cooling_seconds"])

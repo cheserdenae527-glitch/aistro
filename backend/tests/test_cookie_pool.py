@@ -343,3 +343,10 @@ def test_pick_marks_in_use_and_report_releases(monkeypatch: pytest.MonkeyPatch):
     cookie_pool.report_result(picked["id"], True)
     entry = cookie_pool.get_cookie_entry(picked["id"])
     assert entry.get("in_use") is False
+
+
+def test_no_permission_marks_invalid_immediately():
+    entry = cookie_pool.add_cookie(COOKIE_W1, label="A")
+    r = cookie_pool.report_result(entry["id"], False, "您当前登录的账号没有权限访问")
+    assert r["status"] == "invalid"
+    assert r["cooling_until"] is None
