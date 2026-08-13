@@ -110,6 +110,14 @@ class Settings(BaseSettings):
     XHS_SHORT_PROXY_TIMESPAN: int = 3
     XHS_SHORT_PROXY_REFRESH_SECONDS: int = 90
 
+    # --- Cookie 池（crawler.cookie_pool 用 os.getenv 读取，这里声明以通过 Settings 校验） ---
+    XHS_COOKIE_MAX_USE_PER_HOUR: int = 25
+    XHS_COOKIE_MAX_CONTINUOUS_FAIL: int = 2
+    XHS_COOKIE_COOLING_SECONDS: int = 1800
+    XHS_COOKIE_MAX_TOTAL_FAIL: int = 8
+    XHS_COOKIE_PROXY_SESSION_SECONDS: int = 300
+    XHS_COOKIE_MAX_PROXY_FAILURES: int = 2
+
     # --- JustOneAPI（小红书蒲公英平台历史涨粉数据） ---
     # Token 在 JustOneAPI 控制台获取；留空时分析任务自动回退到本地订阅快照
     JUST_ONE_API_TOKEN: str = ""
