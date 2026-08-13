@@ -80,6 +80,37 @@ def _normalize_user_summary(u: dict) -> dict:
         "desc": u.get("desc", u.get("signature", u.get("sub_title", ""))),
     }
 
+@router.post("/unshorten")
+async def unshorten_url(
+    body: UnshortenRequest,
+    user: User = Depends(get_current_user),
+):
+    """展开 xhslink 等短链（跟随重定向），返回真实 URL，供批量分析解析博主主页。"""
+    import urllib.request
+
+    url = body.url.strip()
+
+    def _follow(method: str):
+        req = urllib.request.Request(
+            url,
+            method=method,
+            headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36"},
+        )
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            final = resp.geturl()
+        return final
+
+    try:
+        try:
+            final = _follow("HEAD")
+        except Exception:
+            # 部分短链服务不支持 HEAD，fallback GET（只取最终 URL，不读 body）
+            final = _follow("GET")
+        return {"url": final, "status": 200}
+    except Exception as exc:
+        return {"url": url, "status": 0, "error": str(exc)[:120]}
+
+
 @router.post("/search-users")
 async def search_users(
     body: SearchUsersRequest,
@@ -259,6 +290,10 @@ async def get_user_notes_by_id(
     payload = {"items": items, "total": total_notes, "user_id": user_id, "source": source}
     _search_cache_set(cache_key, payload)
     return payload
+
+class UnshortenRequest(BaseModel):
+    url: str = Field(..., min_length=5)
+
 
 class AnalysisTaskCreateRequest(BaseModel):
     nickname: str = ""

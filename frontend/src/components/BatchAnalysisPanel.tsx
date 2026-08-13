@@ -40,13 +40,18 @@ interface TaskProgress {
   target?: number;
 }
 
-// 每行提取一个 user_id：裸 ID 整行须为纯字母数字；主页链接须为 xiaohongshu.com 的 user/profile/ 路径。
+// 每行提取一个 user_id：裸 ID 整行须为纯字母数字；主页链接支持带/不带协议头、带前缀文字。
 export function parseUserId(line: string): string {
   const s = line.trim();
   if (!s) return '';
   if (/^[0-9a-zA-Z]+$/.test(s)) return s;
-  const m = s.match(/^https?:\/\/(?:www\.)?xiaohongshu\.com\/user\/profile\/([0-9a-zA-Z]+)/);
+  const m = s.match(/(?:https?:\/\/)?(?:www\.)?xiaohongshu\.com\/user\/profile\/([0-9a-zA-Z]+)/);
   return m ? m[1] : '';
+}
+
+// 是否为 xhslink 短链（App 分享默认格式，需展开后才能解析出博主主页）
+export function isShortLink(line: string): boolean {
+  return /https?:\/\/(?:www\.)?xhslink\.(?:com|cn)\/\S+/i.test(line.trim());
 }
 
 function errorDetail(err: unknown, fallback: string): string {
@@ -83,11 +88,25 @@ export default function BatchAnalysisPanel({
   const aliveRef = useRef(true);
   useEffect(() => () => { aliveRef.current = false; }, []);
 
-  const parsePasted = (): BatchQueueItem[] => {
+  const expandShortLink = async (line: string): Promise<string> => {
+    try {
+      const api = (await import('../services/api')).default;
+      const r = await api.post('/notes/unshorten', { url: line.trim() });
+      return (r.data?.url || line).trim();
+    } catch { return line; }
+  };
+
+  const parsePasted = async (): Promise<BatchQueueItem[]> => {
     const seen = new Set<string>();
     const items: BatchQueueItem[] = [];
     for (const line of pastedText.split('\n')) {
-      const id = parseUserId(line);
+      const s = line.trim();
+      if (!s) continue;
+      let id = parseUserId(s);
+      if (!id && isShortLink(s)) {
+        const expanded = await expandShortLink(s);
+        id = parseUserId(expanded);
+      }
       if (id && !seen.has(id)) {
         seen.add(id);
         items.push({ user_id: id, nickname: id, fans: 0 });
@@ -96,10 +115,10 @@ export default function BatchAnalysisPanel({
     return items;
   };
 
-  const handleAddParsed = () => {
-    const items = parsePasted();
+  const handleAddParsed = async () => {
+    const items = await parsePasted();
     if (items.length === 0) {
-      message.info('未解析到有效的博主主页链接或 user_id');
+      message.info('未解析到有效的博主主页链接或 user_id（xhslink 短链会自动展开）');
       return;
     }
     onAddFromQueue(items);
@@ -193,7 +212,7 @@ export default function BatchAnalysisPanel({
           rows={4}
           value={pastedText}
           onChange={(e) => setPastedText(e.target.value)}
-          placeholder="每行一个小红书博主主页链接或 user_id，如 https://www.xiaohongshu.com/user/profile/xxxxxx 或 xxxxxx"
+          placeholder="每行一个小红书博主主页链接或 user_id，如 https://www.xiaohongshu.com/user/profile/xxxxxx、App 分享的 xhslink.com 短链，或 xxxxxx"
         />
         <Space style={{ marginTop: 8 }}>
           <Button icon={<PlusOutlined />} onClick={handleAddParsed}>加入队列</Button>
